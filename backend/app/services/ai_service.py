@@ -36,8 +36,8 @@ def _extract_content(data: dict) -> str:
     if reasoning:
         # Take the last chunk — reasoning models typically end with the answer
         tail = reasoning[-300:]
-        # Clean common thinking prefixes from the start of the tail
-        tail = re.sub(r'^.*?(?=[\n]|$)', '', tail, count=1) if '\n' in tail else tail
+        # Skip partial first line (may be cut mid-sentence)
+        tail = tail.split('\n', 1)[-1] if '\n' in tail else tail
         return tail.strip()
 
     return ""
