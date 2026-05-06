@@ -79,6 +79,10 @@ async def send_message(content: str, user: User = Depends(get_current_user), db:
 @router.post("/stream")
 async def stream_message(content: str, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Stream AI reply via Server-Sent Events."""
+    from app.services.ai_service import detect_intent
+    from app.services.task_service import complete_task_by_dimension, skip_task_by_dimension, get_today_tasks_dict
+    from app.services.weight_service import record_weight as record_weight_service
+
     user_id = str(user.id)
     nickname = user.nickname
 
@@ -87,7 +91,37 @@ async def stream_message(content: str, user: User = Depends(get_current_user), d
     db.add(user_msg)
     await db.flush()
 
-    # Get recent history while session is still open
+    # Detect intent
+    today_tasks = await get_today_tasks_dict(db, user_id)
+    intent = await detect_intent(content, today_tasks)
+
+    # Execute intent
+    action_context = ""
+    if intent["intent"] == "complete_task":
+        dim = intent.get("dimension", "")
+        result = await complete_task_by_dimension(db, user_id, dim)
+        if result["success"]:
+            action_context = f"[系统操作] {result['message']}"
+            if result.get("score_change"):
+                action_context += f"，评分变动：{result['score_change']}"
+        else:
+            action_context = f"[系统提示] {result['message']}"
+    elif intent["intent"] == "skip_task":
+        dim = intent.get("dimension", "")
+        result = await skip_task_by_dimension(db, user_id, dim)
+        if result["success"]:
+            action_context = f"[系统操作] {result['message']}"
+        else:
+            action_context = f"[系统提示] {result['message']}"
+    elif intent["intent"] == "record_weight":
+        weight_kg = intent.get("weight_kg")
+        if weight_kg and isinstance(weight_kg, (int, float)) and 20 < weight_kg < 300:
+            result = await record_weight_service(db, user_id, float(weight_kg))
+            action_context = f"[系统操作] {result['message']}"
+        else:
+            action_context = "[系统提示] 未能识别有效的体重数据"
+
+    # Get recent history
     result = await db.execute(
         select(Conversation).where(Conversation.user_id == user.id)
         .order_by(Conversation.created_at.desc()).limit(10)
@@ -95,7 +129,10 @@ async def stream_message(content: str, user: User = Depends(get_current_user), d
     history = list(reversed(result.scalars().all()))
     messages = [{"role": h.role.value, "content": h.content} for h in history]
     messages.append({"role": "user", "content": content})
+
     user_context = f"用户昵称：{nickname}"
+    if action_context:
+        user_context += f"\n{action_context}"
 
     async def event_generator():
         full_reply = []
