@@ -52,6 +52,10 @@ async def send_message(content: str, user: User = Depends(get_current_user), db:
         else:
             action_context = "[系统提示] 未能识别有效的体重数据"
 
+    # Commit intent execution results to database
+    if action_context:
+        await db.commit()
+
     # Get recent history for context (last 10 messages)
     result = await db.execute(
         select(Conversation).where(Conversation.user_id == user.id)
@@ -120,6 +124,10 @@ async def stream_message(content: str, user: User = Depends(get_current_user), d
             action_context = f"[系统操作] {result['message']}"
         else:
             action_context = "[系统提示] 未能识别有效的体重数据"
+
+    # Commit intent execution results to database
+    if action_context:
+        await db.commit()
 
     # Get recent history
     result = await db.execute(
