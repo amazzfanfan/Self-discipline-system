@@ -314,10 +314,10 @@ INTENT_PROMPT = """分析用户消息，判断意图。只返回JSON，不要其
 - chat: 普通对话、提问、闲聊
 
 返回格式：
-{"intent": "complete_task", "dimension": "exercise"}
-{"intent": "skip_task", "dimension": "diet"}
-{"intent": "record_weight", "weight_kg": 72.5}
-{"intent": "chat"}
+{{"intent": "complete_task", "dimension": "exercise"}}
+{{"intent": "skip_task", "dimension": "diet"}}
+{{"intent": "record_weight", "weight_kg": 72.5}}
+{{"intent": "chat"}}
 
 dimension 只能是: exercise, diet, sleep, appearance
 
