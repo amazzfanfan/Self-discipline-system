@@ -28,22 +28,35 @@ async def send_message(content: str, user: User = Depends(get_current_user), db:
 
     # Execute intent
     action_context = ""
+    valid_dims = {"exercise", "diet", "sleep", "appearance"}
     if intent["intent"] == "complete_task":
         dim = intent.get("dimension", "")
-        result = await complete_task_by_dimension(db, str(user.id), dim)
-        if result["success"]:
-            action_context = f"[系统操作] {result['message']}"
-            if result.get("score_change"):
-                action_context += f"，评分变动：{result['score_change']}"
+        if dim not in valid_dims:
+            action_context = "[系统提示] 无法识别任务维度"
         else:
-            action_context = f"[系统提示] {result['message']}"
+            try:
+                result = await complete_task_by_dimension(db, str(user.id), dim)
+                if result["success"]:
+                    action_context = f"[系统操作] {result['message']}"
+                    if result.get("score_change"):
+                        action_context += f"，评分变动：{result['score_change']}"
+                else:
+                    action_context = f"[系统提示] {result['message']}"
+            except Exception as e:
+                action_context = f"[系统提示] 任务操作失败: {e}"
     elif intent["intent"] == "skip_task":
         dim = intent.get("dimension", "")
-        result = await skip_task_by_dimension(db, str(user.id), dim)
-        if result["success"]:
-            action_context = f"[系统操作] {result['message']}"
+        if dim not in valid_dims:
+            action_context = "[系统提示] 无法识别任务维度"
         else:
-            action_context = f"[系统提示] {result['message']}"
+            try:
+                result = await skip_task_by_dimension(db, str(user.id), dim)
+                if result["success"]:
+                    action_context = f"[系统操作] {result['message']}"
+                else:
+                    action_context = f"[系统提示] {result['message']}"
+            except Exception as e:
+                action_context = f"[系统提示] 任务操作失败: {e}"
     elif intent["intent"] == "record_weight":
         weight_kg = intent.get("weight_kg")
         if weight_kg and isinstance(weight_kg, (int, float)) and 20 < weight_kg < 300:
@@ -101,27 +114,43 @@ async def stream_message(content: str, user: User = Depends(get_current_user), d
 
     # Execute intent
     action_context = ""
+    valid_dims = {"exercise", "diet", "sleep", "appearance"}
     if intent["intent"] == "complete_task":
         dim = intent.get("dimension", "")
-        result = await complete_task_by_dimension(db, user_id, dim)
-        if result["success"]:
-            action_context = f"[系统操作] {result['message']}"
-            if result.get("score_change"):
-                action_context += f"，评分变动：{result['score_change']}"
+        if dim not in valid_dims:
+            action_context = "[系统提示] 无法识别任务维度"
         else:
-            action_context = f"[系统提示] {result['message']}"
+            try:
+                result = await complete_task_by_dimension(db, user_id, dim)
+                if result["success"]:
+                    action_context = f"[系统操作] {result['message']}"
+                    if result.get("score_change"):
+                        action_context += f"，评分变动：{result['score_change']}"
+                else:
+                    action_context = f"[系统提示] {result['message']}"
+            except Exception as e:
+                action_context = f"[系统提示] 任务操作失败: {e}"
     elif intent["intent"] == "skip_task":
         dim = intent.get("dimension", "")
-        result = await skip_task_by_dimension(db, user_id, dim)
-        if result["success"]:
-            action_context = f"[系统操作] {result['message']}"
+        if dim not in valid_dims:
+            action_context = "[系统提示] 无法识别任务维度"
         else:
-            action_context = f"[系统提示] {result['message']}"
+            try:
+                result = await skip_task_by_dimension(db, user_id, dim)
+                if result["success"]:
+                    action_context = f"[系统操作] {result['message']}"
+                else:
+                    action_context = f"[系统提示] {result['message']}"
+            except Exception as e:
+                action_context = f"[系统提示] 任务操作失败: {e}"
     elif intent["intent"] == "record_weight":
         weight_kg = intent.get("weight_kg")
         if weight_kg and isinstance(weight_kg, (int, float)) and 20 < weight_kg < 300:
-            result = await record_weight_service(db, user_id, float(weight_kg))
-            action_context = f"[系统操作] {result['message']}"
+            try:
+                result = await record_weight_service(db, user_id, float(weight_kg))
+                action_context = f"[系统操作] {result['message']}"
+            except Exception as e:
+                action_context = f"[系统提示] 体重记录失败: {e}"
         else:
             action_context = "[系统提示] 未能识别有效的体重数据"
 

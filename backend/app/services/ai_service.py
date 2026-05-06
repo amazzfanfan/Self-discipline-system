@@ -305,54 +305,77 @@ async def analyze_image(image_url: str, analysis_type: str) -> str:
 
 # --- Intent detection ---
 
-INTENT_PROMPT = """分析用户消息，判断意图。只返回JSON，不要其他内容。
 
-意图类型：
-- complete_task: 用户报告完成了某个任务（运动/饮食/睡眠/外貌）
-- skip_task: 用户表示不想做或放弃某个任务
-- record_weight: 用户报告体重数据
-- chat: 普通对话、提问、闲聊
+def _detect_intent_rules(message: str, today_tasks: list[dict]) -> dict | None:
+    """Rule-based intent detection. Returns intent dict or None if no match."""
+    msg = message.strip()
 
-返回格式：
-{{"intent": "complete_task", "dimension": "exercise"}}
-{{"intent": "skip_task", "dimension": "diet"}}
-{{"intent": "record_weight", "weight_kg": 72.5}}
-{{"intent": "chat"}}
+    # Check for weight recording: "体重XX" or "XX公斤" or "XXkg"
+    weight_patterns = [
+        r'体重\s*(\d+\.?\d*)',
+        r'(\d+\.?\d*)\s*(?:公斤|kg|斤)',
+        r'称了\s*(\d+\.?\d*)',
+    ]
+    for pattern in weight_patterns:
+        m = re.search(pattern, msg, re.IGNORECASE)
+        if m:
+            weight = float(m.group(1))
+            # If unit is 斤, convert to kg
+            if '斤' in msg:
+                weight = weight / 2
+            if 20 < weight < 300:
+                return {"intent": "record_weight", "weight_kg": weight}
 
-dimension 只能是: exercise, diet, sleep, appearance
+    # Check for task completion/skip keywords
+    complete_keywords = ['完成', '做了', '搞定了', '搞完', '已做', '已完成', '打卡', '搞定']
+    skip_keywords = ['不想', '放弃', '跳过', '不做', '算了', '今天不']
 
-今日任务：
-{today_tasks}
+    has_complete = any(kw in msg for kw in complete_keywords)
+    has_skip = any(kw in msg for kw in skip_keywords)
 
-用户消息：{message}"""
+    if not has_complete and not has_skip:
+        return None
+
+    # Match dimension from task titles or keywords
+    dimension_keywords = {
+        'exercise': ['运动', '快走', '跑步', '健身', '锻炼', '散步', '走路', '游泳', '俯卧撑', '深蹲', '有氧'],
+        'diet': ['饮食', '三餐', '吃饭', '记录三餐', '餐食', '食物'],
+        'sleep': ['睡眠', '放下手机', '睡觉', '早睡', '作息'],
+        'appearance': ['护肤', '外貌', '皮肤', '面膜', '形象'],
+    }
+
+    # First try to match against task titles
+    for task in today_tasks:
+        dim = task['dimension']
+        title = task.get('title', '')
+        if title and title in msg:
+            if has_complete:
+                return {"intent": "complete_task", "dimension": dim}
+            else:
+                return {"intent": "skip_task", "dimension": dim}
+
+    # Then try keyword matching
+    for dim, keywords in dimension_keywords.items():
+        for kw in keywords:
+            if kw in msg:
+                if has_complete:
+                    return {"intent": "complete_task", "dimension": dim}
+                else:
+                    return {"intent": "skip_task", "dimension": dim}
+
+    # If we have completion/skip keywords but no dimension match,
+    # check if there's only one pending task in that dimension
+    if has_complete:
+        pending_dims = [t['dimension'] for t in today_tasks if t.get('status') == 'pending']
+        if len(set(pending_dims)) == 1:
+            return {"intent": "complete_task", "dimension": pending_dims[0]}
+
+    return None
 
 
 async def detect_intent(message: str, today_tasks: list[dict]) -> dict:
     """Detect user intent from chat message. Returns structured intent dict."""
-    tasks_str = "\n".join(
-        f"- {t['dimension']}: {t['title']} ({t['status']})"
-        for t in today_tasks
-    ) if today_tasks else "无任务"
-
-    prompt = INTENT_PROMPT.format(today_tasks=tasks_str, message=message)
-
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(
-                f"{settings.AI_BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
-                json={"model": settings.chat_model, "messages": [{"role": "user", "content": prompt}], "max_tokens": 100},
-            )
-            data = response.json()
-            content = _extract_content(data)
-            # Parse JSON from response
-            if "{" in content:
-                json_str = content[content.index("{"):content.rindex("}") + 1]
-                result = json.loads(json_str)
-                # Validate intent type
-                if result.get("intent") in ("complete_task", "skip_task", "record_weight", "chat"):
-                    return result
-    except Exception:
-        pass
-
+    result = _detect_intent_rules(message, today_tasks)
+    if result:
+        return result
     return {"intent": "chat"}
