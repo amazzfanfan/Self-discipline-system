@@ -133,10 +133,16 @@ async def generate_task(nickname: str, dimension: str, score: float, difficulty:
                 task_title = parsed.get("task", "")
                 task_title = _clean_task_title(task_title)
                 if task_title:
+                    print(f"[任务生成] AI成功: {dimension} -> {task_title}")
                     return task_title
-    except Exception:
-        pass
+                else:
+                    print(f"[任务生成] AI返回无效标题: {parsed}")
+            else:
+                print("[任务生成] AI返回空内容")
+    except Exception as e:
+        print(f"[任务生成] AI异常: {e}")
 
+    print(f"[任务生成] 使用默认标题: {dimension} -> {TASK_DEFAULTS.get(dimension, '完成一个今日任务')}")
     return TASK_DEFAULTS.get(dimension, "完成一个今日任务")
 
 
@@ -151,13 +157,13 @@ def _clean_task_title(text: str) -> str:
     for prefix in ["任务：", "任务:", "标题：", "标题:", "今日任务：", "今日任务:"]:
         if text.startswith(prefix):
             text = text[len(prefix):].strip()
-    # Reject if looks like thinking/reasoning
+    # Reject if looks like thinking/reasoning (not a task description)
     thinking_keywords = [
-        "首先", "用户", "要求", "维度", "生成", "系统",
-        "难度", "评分", "意味着", "所以", "应该是", "需要",
-        "当前", "最近", "避免重复", "匹配",
+        "首先", "用户要求", "维度", "生成", "系统",
+        "难度：", "评分：", "意味着", "所以", "应该是",
+        "当前评分", "最近做过的", "避免重复", "匹配难度",
     ]
-    if len(text) > 60 or any(kw in text for kw in thinking_keywords):
+    if len(text) > 150 or any(kw in text for kw in thinking_keywords):
         return ""
     return text
 
