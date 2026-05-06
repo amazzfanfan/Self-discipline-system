@@ -55,7 +55,7 @@ async def chat_completion(messages: list[dict], user_context: str = "") -> str:
         response = await client.post(
             f"{settings.AI_BASE_URL}/chat/completions",
             headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
-            json={"model": settings.AI_MODEL, "messages": full_messages, "max_tokens": 1500},
+            json={"model": settings.chat_model, "messages": full_messages, "max_tokens": 1500},
         )
         data = response.json()
         return _extract_content(data)
@@ -74,7 +74,7 @@ async def chat_completion_stream(messages: list[dict], user_context: str = "") -
             "POST",
             f"{settings.AI_BASE_URL}/chat/completions",
             headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
-            json={"model": settings.AI_MODEL, "messages": full_messages, "max_tokens": 1500, "stream": True},
+            json={"model": settings.chat_model, "messages": full_messages, "max_tokens": 1500, "stream": True},
         ) as response:
             async for line in response.aiter_lines():
                 if not line.startswith("data: "):
@@ -120,7 +120,7 @@ async def generate_task(nickname: str, dimension: str, score: float, difficulty:
             response = await client.post(
                 f"{settings.AI_BASE_URL}/chat/completions",
                 headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
-                json={"model": settings.AI_MODEL, "messages": [{"role": "user", "content": prompt}], "max_tokens": 50},
+                json={"model": settings.chat_model, "messages": [{"role": "user", "content": prompt}], "max_tokens": 50},
             )
             data = response.json()
             result = _extract_content(data)
@@ -181,7 +181,7 @@ async def generate_appearance_analysis(
         response = await client.post(
             f"{settings.AI_BASE_URL}/chat/completions",
             headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
-            json={"model": settings.AI_MODEL, "messages": messages, "max_tokens": 1000},
+            json={"model": settings.chat_model, "messages": messages, "max_tokens": 1000},
         )
         data = response.json()
         result = _extract_content(data)
@@ -217,7 +217,7 @@ async def evaluate_initial_score(
         response = await client.post(
             f"{settings.AI_BASE_URL}/chat/completions",
             headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
-            json={"model": settings.AI_MODEL, "messages": messages, "max_tokens": 2000},
+            json={"model": settings.analysis_model, "messages": messages, "max_tokens": 2000},
         )
         data = response.json()
         content = _extract_content(data)
@@ -248,7 +248,7 @@ async def analyze_image(image_url: str, analysis_type: str) -> str:
             f"{settings.AI_BASE_URL}/chat/completions",
             headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
             json={
-                "model": settings.AI_MODEL,
+                "model": settings.analysis_model,
                 "messages": [{"role": "user", "content": [
                     {"type": "text", "text": prompt},
                     {"type": "image_url", "image_url": {"url": image_url}},
