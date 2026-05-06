@@ -107,12 +107,11 @@ async def generate_task(nickname: str, dimension: str, score: float, difficulty:
     recent = "、".join(recent_tasks[-5:]) if recent_tasks else "无"
     diff_cn = {"easy": "简单", "medium": "中等", "hard": "困难"}.get(difficulty, "中等")
 
-    # Single message, no system message - forces the model to answer directly
     prompt = (
         f"请为用户生成1个{dimension}维度的今日任务。\n"
         f"难度：{diff_cn}，当前评分：{score}分，最近做过的：{recent}（避免重复）。\n"
-        f"要求：具体可执行，有明确完成标准。\n"
-        f"只输出任务标题，不要任何解释，不要加引号，不要加序号。"
+        f"要求：具体可执行，有明确完成标准。\n\n"
+        f'返回JSON格式：{{"task": "任务标题"}}'
     )
 
     try:
@@ -120,13 +119,21 @@ async def generate_task(nickname: str, dimension: str, score: float, difficulty:
             response = await client.post(
                 f"{settings.AI_BASE_URL}/chat/completions",
                 headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
-                json={"model": settings.chat_model, "messages": [{"role": "user", "content": prompt}], "max_tokens": 50},
+                json={
+                    "model": settings.chat_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 100,
+                    "response_format": {"type": "json_object"},
+                },
             )
             data = response.json()
-            result = _extract_content(data)
-            result = _clean_task_title(result)
-            if result:
-                return result
+            content = (data.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+            if content:
+                parsed = json.loads(content)
+                task_title = parsed.get("task", "")
+                task_title = _clean_task_title(task_title)
+                if task_title:
+                    return task_title
     except Exception:
         pass
 
@@ -144,8 +151,13 @@ def _clean_task_title(text: str) -> str:
     for prefix in ["任务：", "任务:", "标题：", "标题:", "今日任务：", "今日任务:"]:
         if text.startswith(prefix):
             text = text[len(prefix):].strip()
-    # If still too long or looks like thinking, reject
-    if len(text) > 100 or any(kw in text for kw in ["首先", "用户", "要求", "维度", "生成", "系统"]):
+    # Reject if looks like thinking/reasoning
+    thinking_keywords = [
+        "首先", "用户", "要求", "维度", "生成", "系统",
+        "难度", "评分", "意味着", "所以", "应该是", "需要",
+        "当前", "最近", "避免重复", "匹配",
+    ]
+    if len(text) > 60 or any(kw in text for kw in thinking_keywords):
         return ""
     return text
 
