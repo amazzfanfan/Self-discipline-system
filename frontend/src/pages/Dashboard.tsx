@@ -18,10 +18,10 @@ export default function Dashboard() {
   const avgScore = scores ? scores.reduce((a: number, s: any) => a + s.score, 0) / scores.length : 0;
 
   return (
-    <div className="min-h-screen bg-slate-950 p-6">
+    <div className="h-full overflow-y-auto p-6">
       <div className="max-w-2xl mx-auto">
         <motion.h1 initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-          className="text-2xl font-bold text-white mb-6">⚡ 系统</motion.h1>
+          className="text-2xl font-bold text-white mb-6">仪表盘</motion.h1>
 
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
           className="bg-slate-900 rounded-2xl p-6 border border-slate-800 mb-6 flex items-center gap-8">

@@ -1,0 +1,47 @@
+import uuid
+from datetime import datetime, timezone
+from sqlalchemy import Column, String, DateTime, ForeignKey, Numeric, Integer, Enum as SAEnum, JSON
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
+from app.core.database import Base
+import enum
+
+
+class GenderEnum(str, enum.Enum):
+    male = "male"
+    female = "female"
+    other = "other"
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    password_hash = Column(String(255), nullable=False)
+    nickname = Column(String(100), nullable=False)
+    avatar_url = Column(String(500))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    profile = relationship("UserProfile", back_populates="user", uselist=False)
+    scores = relationship("UserScore", back_populates="user")
+    tasks = relationship("Task", back_populates="user")
+
+
+class UserProfile(Base):
+    __tablename__ = "user_profiles"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), unique=True, nullable=False)
+    height_cm = Column(Numeric(5, 1))
+    weight_kg = Column(Numeric(5, 1))
+    age = Column(Integer)
+    gender = Column(SAEnum(GenderEnum))
+    body_fat_pct = Column(Numeric(4, 1))
+    front_photo_url = Column(String(500))
+    side_photo_url = Column(String(500))
+    ai_profile_score = Column(JSON)
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    user = relationship("User", back_populates="profile")

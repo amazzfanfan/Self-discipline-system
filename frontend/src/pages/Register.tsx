@@ -15,7 +15,13 @@ export default function Register() {
     e.preventDefault();
     try {
       await register(email, password, nickname);
-      navigate('/login');
+      // Auto-login after register, then go to onboarding
+      const { default: api } = await import('../services/api');
+      const { data } = await api.post('/auth/login', { email, password });
+      localStorage.setItem('access_token', data.access_token);
+      localStorage.setItem('refresh_token', data.refresh_token);
+      useAuthStore.setState({ isAuthenticated: true });
+      navigate('/onboarding');
     } catch {
       setError('注册失败，邮箱可能已被使用');
     }
