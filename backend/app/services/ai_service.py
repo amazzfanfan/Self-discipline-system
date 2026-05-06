@@ -405,12 +405,17 @@ async def detect_intent(message: str, today_tasks: list[dict]) -> dict:
     if not RULES_ONLY:
         result = await _detect_intent_ai(message, today_tasks)
         if result:
+            print(f"[意图检测] AI成功: {result}")
             return result
+        else:
+            print("[意图检测] AI失败，降级到关键词匹配")
 
     # 关键词匹配作为兜底
     result = _detect_intent_rules(message, today_tasks)
     if result:
+        print(f"[意图检测] 关键词匹配: {result}")
         return result
+    print("[意图检测] 未识别意图，返回chat")
     return {"intent": "chat"}
 
 
@@ -441,7 +446,11 @@ async def _detect_intent_ai(message: str, today_tasks: list[dict]) -> dict | Non
                 parsed = json.loads(content)
                 if parsed.get("intent") in ("complete_task", "skip_task", "record_weight", "chat"):
                     return parsed
-    except Exception:
-        pass
+                else:
+                    print(f"[意图检测] AI返回无效intent: {parsed}")
+            else:
+                print("[意图检测] AI返回空内容")
+    except Exception as e:
+        print(f"[意图检测] AI异常: {e}")
 
     return None
