@@ -7,7 +7,7 @@ from app.core.deps import get_current_user
 from app.models.user import User
 from app.models.task import Task, TaskStatusEnum
 from app.models.score import DimensionEnum
-from app.services.score_service import record_task_completion
+from app.services.task_service import complete_task_by_dimension
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
@@ -41,6 +41,7 @@ async def complete_task(task_id: str, user: User = Depends(get_current_user), db
     task.status = TaskStatusEnum.completed
     task.completed_at = datetime.now(timezone.utc)
 
+    from app.services.score_service import record_task_completion
     score_change = await record_task_completion(db, user.id, task.dimension)
 
     return {
