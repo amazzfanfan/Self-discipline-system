@@ -32,3 +32,11 @@ app.include_router(weight_router)
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+from app.services.scheduler_service import start_scheduler
+
+
+@app.on_event("startup")
+async def startup():
+    start_scheduler()
