@@ -19,7 +19,7 @@ async def complete_task_by_dimension(db: AsyncSession, user_id: str, dimension: 
             )
         )
     )
-    task = result.scalar_one_or_none()
+    task = result.scalars().first()
     if not task:
         return {"success": False, "message": "该维度今日无待完成任务"}
 
@@ -48,7 +48,7 @@ async def skip_task_by_dimension(db: AsyncSession, user_id: str, dimension: str)
             )
         )
     )
-    task = result.scalar_one_or_none()
+    task = result.scalars().first()
     if not task:
         return {"success": False, "message": "该维度今日无待完成任务"}
 
