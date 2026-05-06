@@ -22,12 +22,22 @@ class Settings(BaseSettings):
     AI_API_KEY: str = ""
     AI_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     AI_MODEL: str = "qwen-vl-plus"
+    AI_CHAT_MODEL: str = ""        # Non-reasoning model for chat/tasks (e.g. qwen-plus)
+    AI_ANALYSIS_MODEL: str = ""    # Reasoning model for scoring/image analysis (e.g. mimo-v2.5-pro)
 
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:5173"]
 
     class Config:
         env_file = ".env"
+
+    @property
+    def chat_model(self) -> str:
+        return self.AI_CHAT_MODEL or self.AI_MODEL
+
+    @property
+    def analysis_model(self) -> str:
+        return self.AI_ANALYSIS_MODEL or self.AI_MODEL
 
 
 @lru_cache
