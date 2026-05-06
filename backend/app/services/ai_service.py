@@ -1,4 +1,7 @@
+import json
+import re
 import httpx
+from collections.abc import AsyncGenerator
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -12,7 +15,32 @@ SYSTEM_PROMPT = """你是一个名为"系统"的AI助手，灵感来源于小说
 - 承认人性，偶尔放松是正常的
 - 关注趋势，单次失败不代表失败
 - 主动关怀，检测到异常时主动询问
-- 保持人设，始终以"系统"身份对话"""
+- 保持人设，始终以"系统"身份对话
+- 绝对不要输出你的思考过程、推理步骤或内心独白，只输出面向用户的回复内容"""
+
+
+def _extract_content(data: dict) -> str:
+    """Extract content from AI response.
+
+    Non-reasoning models: content is in choices[0].message.content.
+    Reasoning models (fallback): content may be in reasoning_content.
+    """
+    msg = data["choices"][0]["message"]
+    content = (msg.get("content") or "").strip()
+
+    if content:
+        return content
+
+    # Fallback for reasoning models: take last 300 chars of reasoning_content
+    reasoning = (msg.get("reasoning_content") or "").strip()
+    if reasoning:
+        # Take the last chunk — reasoning models typically end with the answer
+        tail = reasoning[-300:]
+        # Clean common thinking prefixes from the start of the tail
+        tail = re.sub(r'^.*?(?=[\n]|$)', '', tail, count=1) if '\n' in tail else tail
+        return tail.strip()
+
+    return ""
 
 
 async def chat_completion(messages: list[dict], user_context: str = "") -> str:
@@ -27,49 +55,184 @@ async def chat_completion(messages: list[dict], user_context: str = "") -> str:
         response = await client.post(
             f"{settings.AI_BASE_URL}/chat/completions",
             headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
-            json={"model": settings.AI_MODEL, "messages": full_messages, "max_tokens": 500},
+            json={"model": settings.AI_MODEL, "messages": full_messages, "max_tokens": 1500},
         )
         data = response.json()
-        return data["choices"][0]["message"]["content"]
+        return _extract_content(data)
+
+
+async def chat_completion_stream(messages: list[dict], user_context: str = "") -> AsyncGenerator[str, None]:
+    """Stream AI model chat completion, yielding content chunks."""
+    system_msg = SYSTEM_PROMPT
+    if user_context:
+        system_msg += f"\n\n用户上下文：{user_context}"
+
+    full_messages = [{"role": "system", "content": system_msg}] + messages
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        async with client.stream(
+            "POST",
+            f"{settings.AI_BASE_URL}/chat/completions",
+            headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
+            json={"model": settings.AI_MODEL, "messages": full_messages, "max_tokens": 1500, "stream": True},
+        ) as response:
+            async for line in response.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                data_str = line[6:]
+                if data_str.strip() == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data_str)
+                    delta = chunk["choices"][0].get("delta", {})
+                    content = delta.get("content") or ""
+                    if content:
+                        yield content
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    continue
+
+
+# --- Task generation ---
+
+TASK_DEFAULTS = {
+    "exercise": "快走30分钟",
+    "diet": "记录今日三餐",
+    "sleep": "23:00前放下手机",
+    "appearance": "认真护肤一次",
+}
 
 
 async def generate_task(nickname: str, dimension: str, score: float, difficulty: str, recent_tasks: list[str]) -> str:
-    """AI generates a daily task."""
+    """AI generates a daily task title. Returns a short string."""
     recent = "、".join(recent_tasks[-5:]) if recent_tasks else "无"
-    prompt = f"用户{nickname}，{dimension}维度当前评分{score}分。请生成1个今日任务，难度{difficulty}，具体可执行，有明确完成标准。最近做过的任务：{recent}，请避免重复。只返回任务标题，不要其他内容。"
+    diff_cn = {"easy": "简单", "medium": "中等", "hard": "困难"}.get(difficulty, "中等")
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    # Single message, no system message - forces the model to answer directly
+    prompt = (
+        f"请为用户生成1个{dimension}维度的今日任务。\n"
+        f"难度：{diff_cn}，当前评分：{score}分，最近做过的：{recent}（避免重复）。\n"
+        f"要求：具体可执行，有明确完成标准。\n"
+        f"只输出任务标题，不要任何解释，不要加引号，不要加序号。"
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                f"{settings.AI_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
+                json={"model": settings.AI_MODEL, "messages": [{"role": "user", "content": prompt}], "max_tokens": 50},
+            )
+            data = response.json()
+            result = _extract_content(data)
+            result = _clean_task_title(result)
+            if result:
+                return result
+    except Exception:
+        pass
+
+    return TASK_DEFAULTS.get(dimension, "完成一个今日任务")
+
+
+def _clean_task_title(text: str) -> str:
+    """Clean up an AI-generated task title."""
+    if not text:
+        return ""
+    # Remove quotes, bullets, numbering
+    text = text.strip().strip('"\'""「」·•- ')
+    text = re.sub(r'^\d+[.、]\s*', '', text)
+    # Remove common prefixes the model might add
+    for prefix in ["任务：", "任务:", "标题：", "标题:", "今日任务：", "今日任务:"]:
+        if text.startswith(prefix):
+            text = text[len(prefix):].strip()
+    # If still too long or looks like thinking, reject
+    if len(text) > 100 or any(kw in text for kw in ["首先", "用户", "要求", "维度", "生成", "系统"]):
+        return ""
+    return text
+
+
+# --- Appearance analysis ---
+
+async def generate_appearance_analysis(
+    nickname: str, height_cm: float, weight_kg: float, age: int, gender: str,
+    front_photo_url: str | None = None, side_photo_url: str | None = None,
+) -> str:
+    """Generate a detailed appearance analysis message for the user's chat."""
+    bmi = weight_kg / (height_cm / 100) ** 2
+    gender_cn = {"male": "男", "female": "女"}.get(gender, "其他")
+
+    prompt = (
+        '你是"系统"，一个AI成长助手。用户' + nickname + '完成了初始评估，请根据数据和照片给出外貌/体态分析。\n\n'
+        '数据：身高' + str(height_cm) + 'cm，体重' + str(weight_kg) + 'kg，BMI ' + f'{bmi:.1f}' + '，' + str(age) + '岁，' + gender_cn + '\n\n'
+        '请直接用"系统"的口吻写一段分析（严格但关怀），包含：\n'
+        '1. 对当前外貌/体态的评估（看照片判断，不要只看BMI）\n'
+        '2. 3条具体改善建议\n'
+        '3. 一句鼓励\n\n'
+        '不要写思考过程，不要用第三人称描述自己，直接输出给用户看的内容。200字以内。'
+    )
+
+    messages = [{"role": "user", "content": []}]
+    if front_photo_url:
+        messages[0]["content"].append({"type": "image_url", "image_url": {"url": f"http://localhost:8000{front_photo_url}"}})
+    if side_photo_url:
+        messages[0]["content"].append({"type": "image_url", "image_url": {"url": f"http://localhost:8000{side_photo_url}"}})
+    messages[0]["content"].append({"type": "text", "text": prompt})
+
+    async with httpx.AsyncClient(timeout=60) as client:
         response = await client.post(
             f"{settings.AI_BASE_URL}/chat/completions",
             headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
-            json={"model": settings.AI_MODEL, "messages": [{"role": "user", "content": prompt}], "max_tokens": 100},
+            json={"model": settings.AI_MODEL, "messages": messages, "max_tokens": 1000},
         )
         data = response.json()
-        return data["choices"][0]["message"]["content"].strip()
+        result = _extract_content(data)
+        # Validate: should not look like thinking
+        if result and len(result) > 20 and not any(kw in result[:50] for kw in ["好的", "让我", "我需要", "用户要求"]):
+            return result
+        return f"{nickname}，你的初始画像已建立。坚持完成每日任务，分数会稳步提升。"
 
 
-async def evaluate_initial_score(height_cm: float, weight_kg: float, age: int, gender: str) -> dict:
-    """AI evaluates initial scores based on user data."""
-    prompt = f"""基于以下用户数据评估四个维度的得分（0-100）：
-身高：{height_cm}cm，体重：{weight_kg}kg，年龄：{age}岁，性别：{gender}
+async def evaluate_initial_score(
+    height_cm: float, weight_kg: float, age: int, gender: str,
+    front_photo_url: str | None = None, side_photo_url: str | None = None,
+) -> float:
+    """AI evaluates appearance score based on user data and photos. Returns a score 0-100."""
+    bmi = weight_kg / (height_cm / 100) ** 2
+    gender_cn = {"male": "男", "female": "女"}.get(gender, "其他")
 
-请以JSON格式返回，包含四个维度：
-- exercise: 运动/体态评分
-- diet: 饮食/营养评分
-- sleep: 睡眠/作息评分
-- appearance: 外貌/皮肤评分
+    prompt = (
+        f"评估用户外貌/体态评分（0-100分）。\n"
+        f"数据：身高{height_cm}cm，体重{weight_kg}kg，BMI {bmi:.1f}，{age}岁，{gender_cn}\n"
+        f"评分标准：90-100出众，70-89良好，50-69普通，30-49需改善，0-29需较大改善\n"
+        f"只返回JSON：{{\"score\": 数字}}"
+    )
 
-参考中国成年人健康标准，BMI正常范围18.5-24。只返回JSON，不要其他内容。"""
+    messages = [{"role": "user", "content": []}]
+    if front_photo_url:
+        messages[0]["content"].append({"type": "image_url", "image_url": {"url": f"http://localhost:8000{front_photo_url}"}})
+    if side_photo_url:
+        messages[0]["content"].append({"type": "image_url", "image_url": {"url": f"http://localhost:8000{side_photo_url}"}})
+    messages[0]["content"].append({"type": "text", "text": prompt})
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=60) as client:
         response = await client.post(
             f"{settings.AI_BASE_URL}/chat/completions",
             headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
-            json={"model": settings.AI_MODEL, "messages": [{"role": "user", "content": prompt}], "max_tokens": 200},
+            json={"model": settings.AI_MODEL, "messages": messages, "max_tokens": 2000},
         )
         data = response.json()
-        import json
-        return json.loads(data["choices"][0]["message"]["content"])
+        content = _extract_content(data)
+        if "```" in content:
+            content = content.split("```")[1]
+            if content.startswith("json"):
+                content = content[4:]
+        if "{" in content:
+            json_str = content[content.index("{"):content.rindex("}") + 1]
+            parsed = json.loads(json_str)
+            score = parsed.get("score", 50)
+            if isinstance(score, dict):
+                score = score.get("score", 50)
+            return min(100, max(0, float(score)))
+        return 50.0
 
 
 async def analyze_image(image_url: str, analysis_type: str) -> str:
@@ -94,4 +257,4 @@ async def analyze_image(image_url: str, analysis_type: str) -> str:
             },
         )
         data = response.json()
-        return data["choices"][0]["message"]["content"]
+        return _extract_content(data)
