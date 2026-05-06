@@ -301,3 +301,58 @@ async def analyze_image(image_url: str, analysis_type: str) -> str:
         )
         data = response.json()
         return _extract_content(data)
+
+
+# --- Intent detection ---
+
+INTENT_PROMPT = """分析用户消息，判断意图。只返回JSON，不要其他内容。
+
+意图类型：
+- complete_task: 用户报告完成了某个任务（运动/饮食/睡眠/外貌）
+- skip_task: 用户表示不想做或放弃某个任务
+- record_weight: 用户报告体重数据
+- chat: 普通对话、提问、闲聊
+
+返回格式：
+{"intent": "complete_task", "dimension": "exercise"}
+{"intent": "skip_task", "dimension": "diet"}
+{"intent": "record_weight", "weight_kg": 72.5}
+{"intent": "chat"}
+
+dimension 只能是: exercise, diet, sleep, appearance
+
+今日任务：
+{today_tasks}
+
+用户消息：{message}"""
+
+
+async def detect_intent(message: str, today_tasks: list[dict]) -> dict:
+    """Detect user intent from chat message. Returns structured intent dict."""
+    tasks_str = "\n".join(
+        f"- {t['dimension']}: {t['title']} ({t['status']})"
+        for t in today_tasks
+    ) if today_tasks else "无任务"
+
+    prompt = INTENT_PROMPT.format(today_tasks=tasks_str, message=message)
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                f"{settings.AI_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
+                json={"model": settings.chat_model, "messages": [{"role": "user", "content": prompt}], "max_tokens": 100},
+            )
+            data = response.json()
+            content = _extract_content(data)
+            # Parse JSON from response
+            if "{" in content:
+                json_str = content[content.index("{"):content.rindex("}") + 1]
+                result = json.loads(json_str)
+                # Validate intent type
+                if result.get("intent") in ("complete_task", "skip_task", "record_weight", "chat"):
+                    return result
+    except Exception:
+        pass
+
+    return {"intent": "chat"}
