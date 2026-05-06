@@ -4,6 +4,7 @@ from app.core.config import get_settings
 from app.modules.auth.router import router as auth_router
 from app.modules.user.router import router as user_router
 from app.modules.score.router import router as score_router
+from app.modules.task.router import router as task_router
 
 settings = get_settings()
 
@@ -21,6 +22,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(user_router)
 app.include_router(score_router)
+app.include_router(task_router)
 
 
 @app.get("/health")
