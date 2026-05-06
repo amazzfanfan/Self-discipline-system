@@ -4,6 +4,7 @@ import { useAuthStore } from './stores/authStore';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import Dashboard from './pages/Dashboard';
+import Chat from './pages/Chat';
 
 const queryClient = new QueryClient();
 
@@ -20,7 +21,7 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
           <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-          <Route path="/chat" element={<ProtectedRoute><div>Chat</div></ProtectedRoute>} />
+          <Route path="/chat" element={<ProtectedRoute><Chat /></ProtectedRoute>} />
           <Route path="/trends" element={<ProtectedRoute><div>Trends</div></ProtectedRoute>} />
           <Route path="/profile" element={<ProtectedRoute><div>Profile</div></ProtectedRoute>} />
           <Route path="/tasks" element={<ProtectedRoute><div>Tasks</div></ProtectedRoute>} />
