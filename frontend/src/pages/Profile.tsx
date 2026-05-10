@@ -38,11 +38,12 @@ export default function Profile() {
       weight_kg: parseFloat(form.weight_kg),
       age: parseInt(form.age),
       gender: form.gender,
+      questionnaire: profile?.questionnaire || undefined,
     }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['scores'] });
       queryClient.invalidateQueries({ queryKey: ['profile'] });
-      alert('AI评估完成，分数已更新');
+      alert('AI评估完成，四维度分数已更新');
     },
   });
 
@@ -214,7 +215,12 @@ export default function Profile() {
           className="bg-slate-900 rounded-2xl p-5 border border-slate-800">
           <h2 className="text-base font-semibold text-slate-300 mb-2">AI 重新评估</h2>
           <p className="text-slate-500 text-sm mb-4">
-            更新身体数据或更换照片后，可让AI重新评估你的四维度评分。外貌评分将根据最新照片重新分析。
+            更新身体数据或更换照片后，可让AI重新评估你的四维度评分。
+            {profile?.front_photo_url
+              ? '将通过照片分析评估运动、饮食、睡眠、外貌四个维度。'
+              : profile?.questionnaire
+              ? '将根据身体数据和问卷回答评估四维度评分。'
+              : '请先上传照片或填写问卷。'}
           </p>
           <div className="flex items-center gap-3">
             <button onClick={() => evaluateMutation.mutate()} disabled={evaluateMutation.isPending}
@@ -224,13 +230,19 @@ export default function Profile() {
             {profile?.front_photo_url && (
               <span className="text-emerald-500/60 text-xs flex items-center gap-1">
                 <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full" />
-                已上传照片，外貌将被AI评估
+                已上传照片，四维度将被AI评估
               </span>
             )}
-            {!profile?.front_photo_url && (
+            {!profile?.front_photo_url && profile?.questionnaire && (
+              <span className="text-blue-500/60 text-xs flex items-center gap-1">
+                <span className="w-1.5 h-1.5 bg-blue-500 rounded-full" />
+                已填写问卷，四维度将被AI评估
+              </span>
+            )}
+            {!profile?.front_photo_url && !profile?.questionnaire && (
               <span className="text-amber-500/60 text-xs flex items-center gap-1">
                 <span className="w-1.5 h-1.5 bg-amber-500 rounded-full" />
-                未上传照片，外貌默认50分
+                未上传照片/问卷，评分默认50分
               </span>
             )}
           </div>
