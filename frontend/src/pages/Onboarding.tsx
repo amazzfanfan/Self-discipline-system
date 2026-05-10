@@ -23,9 +23,19 @@ export default function Onboarding() {
   const [evaluating, setEvaluating] = useState(false);
   const [evalStep, setEvalStep] = useState(0);
   const [evalError, setEvalError] = useState('');
+  const [questionnaire, setQuestionnaire] = useState<Record<string, string>>({});
+  const [questionStep, setQuestionStep] = useState(0);
+  const [currentAnswer, setCurrentAnswer] = useState('');
   const frontInputRef = useRef<HTMLInputElement>(null);
   const sideInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
+
+  const QUESTIONS = [
+    { key: 'exercise', text: '你每周运动几次，一次运动多长时间？' },
+    { key: 'diet', text: '你的饮食规律如何？' },
+    { key: 'sleep', text: '你通常几点睡觉，每次睡几个小时？' },
+    { key: 'appearance', text: '你平常是否有注意打理自己，你对自己的外在形象满意吗？' },
+  ];
 
   const handlePhotoSelect = (file: File, type: 'front' | 'side') => {
     const url = URL.createObjectURL(file);
@@ -63,6 +73,7 @@ export default function Onboarding() {
         weight_kg: parseFloat(weight),
         age: parseInt(age),
         gender,
+        questionnaire: Object.keys(questionnaire).length > 0 ? questionnaire : undefined,
       });
       setEvalStep(3);
       setTimeout(() => navigate('/'), 1200);
@@ -239,13 +250,87 @@ export default function Onboarding() {
         <div className="flex gap-3">
           <button onClick={() => setStep(1)}
             className="flex-1 py-3 bg-slate-800 hover:bg-slate-700 text-white rounded-lg font-medium transition-colors">返回</button>
-          <button onClick={() => setStep(3)}
+          <button onClick={() => setStep(frontPhoto ? 4 : 3)}
             className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors">下一步</button>
         </div>
       </div>
     </motion.div>,
 
-    // Step 3: Confirm & evaluate
+    // Step 3: Questionnaire (shown when no photo)
+    <motion.div key="questionnaire" initial={{ opacity: 0, x: 50 }} animate={{ opacity: 1, x: 0 }}>
+      <h2 className="text-xl font-bold text-white mb-2">回答几个问题</h2>
+      <p className="text-slate-400 text-sm mb-6">
+        你没有上传照片，系统将通过以下问题来评估你的四维度初始评分。
+      </p>
+
+      {/* Already answered questions */}
+      <div className="space-y-3 mb-4">
+        {QUESTIONS.slice(0, questionStep).map((q, i) => (
+          <div key={q.key} className="bg-slate-800 rounded-lg p-3">
+            <div className="text-blue-400 text-xs mb-1">系统：{q.text}</div>
+            <div className="text-white text-sm">{questionnaire[q.key]}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Current question */}
+      {questionStep < QUESTIONS.length && (
+        <div className="space-y-3">
+          <div className="bg-slate-800 rounded-lg p-3">
+            <div className="text-blue-400 text-xs mb-1">系统：</div>
+            <div className="text-white text-sm">{QUESTIONS[questionStep].text}</div>
+          </div>
+          <div className="flex gap-2">
+            <input
+              value={currentAnswer}
+              onChange={(e) => setCurrentAnswer(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && currentAnswer.trim()) {
+                  const q = QUESTIONS[questionStep];
+                  setQuestionnaire({ ...questionnaire, [q.key]: currentAnswer.trim() });
+                  setCurrentAnswer('');
+                  setQuestionStep(questionStep + 1);
+                }
+              }}
+              placeholder="输入你的回答..."
+              className="flex-1 px-4 py-3 bg-slate-800 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <button
+              onClick={() => {
+                const q = QUESTIONS[questionStep];
+                setQuestionnaire({ ...questionnaire, [q.key]: currentAnswer.trim() });
+                setCurrentAnswer('');
+                setQuestionStep(questionStep + 1);
+              }}
+              disabled={!currentAnswer.trim()}
+              className="px-4 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 text-white rounded-lg text-sm transition-colors"
+            >
+              发送
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* All questions answered */}
+      {questionStep >= QUESTIONS.length && (
+        <div className="text-center">
+          <p className="text-emerald-400 text-sm mb-4">所有问题已回答完毕！</p>
+          <button onClick={() => setStep(4)}
+            className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors">
+            下一步
+          </button>
+        </div>
+      )}
+
+      <div className="flex gap-3 mt-4">
+        <button onClick={() => { setStep(2); setQuestionStep(0); setQuestionnaire({}); }}
+          className="flex-1 py-3 bg-slate-800 hover:bg-slate-700 text-white rounded-lg font-medium transition-colors">
+          返回
+        </button>
+      </div>
+    </motion.div>,
+
+    // Step 4: Confirm & evaluate
     <motion.div key="confirm" initial={{ opacity: 0, x: 50 }} animate={{ opacity: 1, x: 0 }}>
       <h2 className="text-xl font-bold text-white mb-6">确认信息</h2>
       <div className="bg-slate-800 rounded-lg p-4 mb-6 space-y-2">
@@ -279,10 +364,12 @@ export default function Onboarding() {
         </div>
       </div>
       <p className="text-slate-500 text-sm mb-6">
-        运动、饮食、睡眠维度初始默认50分。{frontPhoto ? '外观将由AI根据你的照片评估。' : '未上传照片，外观默认50分，可在个人资料中补传。'}
+        {frontPhoto
+          ? 'AI将通过分析你的照片，独立评估运动、饮食、睡眠、外貌四个维度的初始评分。'
+          : 'AI将根据你的身体数据和问卷回答，评估四维度初始评分。'}
       </p>
       <div className="flex gap-3">
-        <button onClick={() => setStep(2)}
+        <button onClick={() => setStep(frontPhoto ? 2 : 3)}
           className="flex-1 py-3 bg-slate-800 hover:bg-slate-700 text-white rounded-lg font-medium transition-colors">返回修改</button>
         <button onClick={handleSubmit}
           className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors">开始评估</button>
@@ -295,7 +382,7 @@ export default function Onboarding() {
       <div className="bg-slate-900 rounded-2xl p-8 w-full max-w-md border border-slate-800">
         {/* Progress dots */}
         <div className="flex justify-center gap-2 mb-8">
-          {[0, 1, 2, 3].map((i) => (
+          {Array.from({ length: frontPhoto ? 4 : 5 }, (_, i) => (
             <div key={i} className={`w-2 h-2 rounded-full transition-colors ${i <= step ? 'bg-blue-500' : 'bg-slate-700'}`} />
           ))}
         </div>
