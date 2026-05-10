@@ -1,7 +1,9 @@
 import asyncio
+import base64
 import json
 import re
 import httpx
+import os
 from datetime import datetime, timezone, timedelta
 from collections.abc import AsyncGenerator
 from app.core.config import get_settings
@@ -233,9 +235,13 @@ async def generate_appearance_analysis(
 
     messages = [{"role": "user", "content": []}]
     if front_photo_url:
-        messages[0]["content"].append({"type": "image_url", "image_url": {"url": f"http://localhost:8000{front_photo_url}"}})
+        b64_url = _image_path_to_base64(front_photo_url)
+        if b64_url:
+            messages[0]["content"].append({"type": "image_url", "image_url": {"url": b64_url}})
     if side_photo_url:
-        messages[0]["content"].append({"type": "image_url", "image_url": {"url": f"http://localhost:8000{side_photo_url}"}})
+        b64_url = _image_path_to_base64(side_photo_url)
+        if b64_url:
+            messages[0]["content"].append({"type": "image_url", "image_url": {"url": b64_url}})
     messages[0]["content"].append({"type": "text", "text": prompt})
 
     async with httpx.AsyncClient(timeout=60) as client:
@@ -315,7 +321,7 @@ async def _score_dimension_from_photo(
             response = await client.post(
                 f"{settings.AI_BASE_URL}/chat/completions",
                 headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
-                json={"model": settings.analysis_model, "messages": messages, "max_tokens": 200, "response_format": {"type": "json_object"}},
+                json={"model": settings.chat_model, "messages": messages, "max_tokens": 200, "response_format": {"type": "json_object"}},
             )
             data = response.json()
             content = _extract_content(data)
@@ -328,17 +334,52 @@ async def _score_dimension_from_photo(
         return 50.0
 
 
+def _image_path_to_base64(photo_url: str) -> str | None:
+    """Convert a local image path to base64 data URL."""
+    if not photo_url:
+        return None
+    # Remove leading / and get the file path
+    file_path = photo_url.lstrip('/')
+    if not os.path.exists(file_path):
+        print(f"[图片转换] 文件不存在: {file_path}")
+        return None
+    try:
+        with open(file_path, 'rb') as f:
+            image_data = f.read()
+        # Determine MIME type
+        ext = os.path.splitext(file_path)[1].lower()
+        mime_map = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp'}
+        mime_type = mime_map.get(ext, 'image/jpeg')
+        b64 = base64.b64encode(image_data).decode('utf-8')
+        return f"data:{mime_type};base64,{b64}"
+    except Exception as e:
+        print(f"[图片转换] 转换失败: {e}")
+        return None
+
+
 async def _evaluate_with_photos(
     height_cm: float, weight_kg: float, age: int, gender: str,
     front_photo_url: str | None, side_photo_url: str | None,
 ) -> dict[str, float]:
     """Evaluate all 4 dimensions in parallel using photo analysis."""
-    # Build image message parts
+    # Build image message parts using base64
     image_parts = []
     if front_photo_url:
-        image_parts.append({"type": "image_url", "image_url": {"url": f"http://localhost:8000{front_photo_url}"}})
+        b64_url = _image_path_to_base64(front_photo_url)
+        if b64_url:
+            image_parts.append({"type": "image_url", "image_url": {"url": b64_url}})
+            print(f"[四维评分] 正面照片已转为base64")
+        else:
+            print(f"[四维评分] 正面照片转换失败: {front_photo_url}")
     if side_photo_url:
-        image_parts.append({"type": "image_url", "image_url": {"url": f"http://localhost:8000{side_photo_url}"}})
+        b64_url = _image_path_to_base64(side_photo_url)
+        if b64_url:
+            image_parts.append({"type": "image_url", "image_url": {"url": b64_url}})
+            print(f"[四维评分] 侧面照片已转为base64")
+
+    if not image_parts:
+        print("[四维评分] 无有效图片，使用默认分数")
+        return {"exercise": 50, "diet": 50, "sleep": 50, "appearance": 50}
 
     # Run 4 dimension evaluations in parallel
     results = await asyncio.gather(
@@ -461,16 +502,20 @@ async def evaluate_initial_score(
 
     messages = [{"role": "user", "content": []}]
     if front_photo_url:
-        messages[0]["content"].append({"type": "image_url", "image_url": {"url": f"http://localhost:8000{front_photo_url}"}})
+        b64_url = _image_path_to_base64(front_photo_url)
+        if b64_url:
+            messages[0]["content"].append({"type": "image_url", "image_url": {"url": b64_url}})
     if side_photo_url:
-        messages[0]["content"].append({"type": "image_url", "image_url": {"url": f"http://localhost:8000{side_photo_url}"}})
+        b64_url = _image_path_to_base64(side_photo_url)
+        if b64_url:
+            messages[0]["content"].append({"type": "image_url", "image_url": {"url": b64_url}})
     messages[0]["content"].append({"type": "text", "text": prompt})
 
     async with httpx.AsyncClient(timeout=60) as client:
         response = await client.post(
             f"{settings.AI_BASE_URL}/chat/completions",
             headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
-            json={"model": settings.analysis_model, "messages": messages, "max_tokens": 2000},
+            json={"model": settings.chat_model, "messages": messages, "max_tokens": 2000},
         )
         data = response.json()
         content = _extract_content(data)
@@ -496,12 +541,19 @@ async def analyze_image(image_url: str, analysis_type: str) -> str:
     }
     prompt = prompt_map.get(analysis_type, "请分析这张图片。")
 
+    # Convert to base64 if it's a local path
+    if image_url.startswith('/'):
+        b64_url = _image_path_to_base64(image_url)
+        if not b64_url:
+            return "图片加载失败"
+        image_url = b64_url
+
     async with httpx.AsyncClient(timeout=60) as client:
         response = await client.post(
             f"{settings.AI_BASE_URL}/chat/completions",
             headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
             json={
-                "model": settings.analysis_model,
+                "model": settings.chat_model,
                 "messages": [{"role": "user", "content": [
                     {"type": "text", "text": prompt},
                     {"type": "image_url", "image_url": {"url": image_url}},
