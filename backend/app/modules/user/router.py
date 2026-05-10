@@ -130,12 +130,16 @@ async def evaluate(
         profile.questionnaire = req.questionnaire
 
     # AI-evaluate all four dimensions
-    scores = await evaluate_all_scores(
-        float(req.height_cm), float(req.weight_kg), req.age, req.gender,
-        front_photo_url=profile.front_photo_url,
-        side_photo_url=profile.side_photo_url,
-        questionnaire=req.questionnaire,
-    )
+    try:
+        scores = await evaluate_all_scores(
+            float(req.height_cm), float(req.weight_kg), req.age, req.gender,
+            front_photo_url=profile.front_photo_url,
+            side_photo_url=profile.side_photo_url,
+            questionnaire=req.questionnaire,
+        )
+    except Exception as e:
+        print(f"[评估] evaluate_all_scores 异常，使用默认分数: {e}")
+        scores = {"exercise": 50, "diet": 50, "sleep": 50, "appearance": 50}
 
     # Update user_scores (create if not exist)
     result = await db.execute(select(UserScore).where(UserScore.user_id == user_id))
