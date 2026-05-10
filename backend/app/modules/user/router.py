@@ -9,7 +9,7 @@ from app.core.deps import get_current_user
 from app.models.user import User, UserProfile
 from app.models.score import UserScore, DimensionEnum
 from app.schemas.user import UserResponse, ProfileUpdate, ProfileResponse, EvaluateRequest
-from app.services.ai_service import evaluate_initial_score, analyze_image, generate_appearance_analysis, generate_body_analysis
+from app.services.ai_service import evaluate_all_scores, generate_appearance_analysis, generate_body_analysis
 from app.services.scheduler_service import generate_tasks_for_user
 from app.models.conversation import Conversation, RoleEnum
 
@@ -125,20 +125,17 @@ async def evaluate(
         profile.age = req.age
         profile.gender = req.gender
 
-    # Exercise/diet/sleep default to 50 (hard to assess initially)
-    scores = {"exercise": 50, "diet": 50, "sleep": 50, "appearance": 50}
+    # Save questionnaire if provided
+    if req.questionnaire:
+        profile.questionnaire = req.questionnaire
 
-    # Only AI-evaluate appearance if user has uploaded photos
-    if profile.front_photo_url:
-        try:
-            appearance_score = await evaluate_initial_score(
-                req.height_cm, req.weight_kg, req.age, req.gender,
-                front_photo_url=profile.front_photo_url,
-                side_photo_url=profile.side_photo_url,
-            )
-            scores["appearance"] = appearance_score
-        except Exception:
-            pass  # Keep default 50
+    # AI-evaluate all four dimensions
+    scores = await evaluate_all_scores(
+        float(req.height_cm), float(req.weight_kg), req.age, req.gender,
+        front_photo_url=profile.front_photo_url,
+        side_photo_url=profile.side_photo_url,
+        questionnaire=req.questionnaire,
+    )
 
     # Update user_scores (create if not exist)
     result = await db.execute(select(UserScore).where(UserScore.user_id == user_id))
