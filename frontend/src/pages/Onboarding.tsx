@@ -10,6 +10,13 @@ const EVAL_STEPS = [
   { key: 'tasks', label: '生成任务', icon: '📋' },
 ];
 
+const QUESTIONS = [
+  { key: 'exercise', text: '你每周运动几次，一次运动多长时间？' },
+  { key: 'diet', text: '你的饮食规律如何？' },
+  { key: 'sleep', text: '你通常几点睡觉，每次睡几个小时？' },
+  { key: 'appearance', text: '你平常是否有注意打理自己，你对自己的外在形象满意吗？' },
+];
+
 export default function Onboarding() {
   const [step, setStep] = useState(0);
   const [height, setHeight] = useState('');
@@ -30,12 +37,13 @@ export default function Onboarding() {
   const sideInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
 
-  const QUESTIONS = [
-    { key: 'exercise', text: '你每周运动几次，一次运动多长时间？' },
-    { key: 'diet', text: '你的饮食规律如何？' },
-    { key: 'sleep', text: '你通常几点睡觉，每次睡几个小时？' },
-    { key: 'appearance', text: '你平常是否有注意打理自己，你对自己的外在形象满意吗？' },
-  ];
+  const handleAnswerSubmit = () => {
+    if (!currentAnswer.trim()) return;
+    const q = QUESTIONS[questionStep];
+    setQuestionnaire({ ...questionnaire, [q.key]: currentAnswer.trim() });
+    setCurrentAnswer('');
+    setQuestionStep(questionStep + 1);
+  };
 
   const handlePhotoSelect = (file: File, type: 'front' | 'side') => {
     const url = URL.createObjectURL(file);
@@ -284,24 +292,13 @@ export default function Onboarding() {
             <input
               value={currentAnswer}
               onChange={(e) => setCurrentAnswer(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && currentAnswer.trim()) {
-                  const q = QUESTIONS[questionStep];
-                  setQuestionnaire({ ...questionnaire, [q.key]: currentAnswer.trim() });
-                  setCurrentAnswer('');
-                  setQuestionStep(questionStep + 1);
-                }
-              }}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleAnswerSubmit(); }}
               placeholder="输入你的回答..."
+              aria-label="回答当前问题"
               className="flex-1 px-4 py-3 bg-slate-800 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
             <button
-              onClick={() => {
-                const q = QUESTIONS[questionStep];
-                setQuestionnaire({ ...questionnaire, [q.key]: currentAnswer.trim() });
-                setCurrentAnswer('');
-                setQuestionStep(questionStep + 1);
-              }}
+              onClick={handleAnswerSubmit}
               disabled={!currentAnswer.trim()}
               className="px-4 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 text-white rounded-lg text-sm transition-colors"
             >
@@ -323,7 +320,7 @@ export default function Onboarding() {
       )}
 
       <div className="flex gap-3 mt-4">
-        <button onClick={() => { setStep(2); setQuestionStep(0); setQuestionnaire({}); }}
+        <button onClick={() => { setStep(2); setQuestionStep(0); setQuestionnaire({}); setCurrentAnswer(''); }}
           className="flex-1 py-3 bg-slate-800 hover:bg-slate-700 text-white rounded-lg font-medium transition-colors">
           返回
         </button>
