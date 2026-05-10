@@ -26,6 +26,7 @@ class ProfileResponse(BaseModel):
     gender: str | None
     front_photo_url: str | None
     side_photo_url: str | None
+    questionnaire: dict[str, str] | None
 
     class Config:
         from_attributes = True
@@ -36,3 +37,4 @@ class EvaluateRequest(BaseModel):
     weight_kg: float
     age: int
     gender: str
+    questionnaire: dict[str, str] | None = None
