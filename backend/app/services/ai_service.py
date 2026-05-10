@@ -1,8 +1,12 @@
+import asyncio
 import json
 import re
 import httpx
+from datetime import datetime, timezone, timedelta
 from collections.abc import AsyncGenerator
 from app.core.config import get_settings
+
+BJT = timezone(timedelta(hours=8))
 
 settings = get_settings()
 
@@ -17,6 +21,17 @@ SYSTEM_PROMPT = """你是一个名为"系统"的AI助手，灵感来源于小说
 - 主动关怀，检测到异常时主动询问
 - 保持人设，始终以"系统"身份对话
 - 绝对不要输出你的思考过程、推理步骤或内心独白，只输出面向用户的回复内容"""
+
+
+def _build_system_prompt(user_context: str = "") -> str:
+    """Build system prompt with current Beijing time injected."""
+    now = datetime.now(BJT)
+    weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+    time_str = now.strftime(f"%Y年%m月%d日 %H:%M {weekdays[now.weekday()]}")
+    system_msg = SYSTEM_PROMPT + f"\n\n当前时间（北京时间）：{time_str}"
+    if user_context:
+        system_msg += f"\n\n用户上下文：{user_context}"
+    return system_msg
 
 
 def _extract_content(data: dict) -> str:
@@ -45,10 +60,7 @@ def _extract_content(data: dict) -> str:
 
 async def chat_completion(messages: list[dict], user_context: str = "") -> str:
     """Call AI model for chat completion."""
-    system_msg = SYSTEM_PROMPT
-    if user_context:
-        system_msg += f"\n\n用户上下文：{user_context}"
-
+    system_msg = _build_system_prompt(user_context)
     full_messages = [{"role": "system", "content": system_msg}] + messages
 
     async with httpx.AsyncClient(timeout=60) as client:
@@ -63,10 +75,7 @@ async def chat_completion(messages: list[dict], user_context: str = "") -> str:
 
 async def chat_completion_stream(messages: list[dict], user_context: str = "") -> AsyncGenerator[str, None]:
     """Stream AI model chat completion, yielding content chunks."""
-    system_msg = SYSTEM_PROMPT
-    if user_context:
-        system_msg += f"\n\n用户上下文：{user_context}"
-
+    system_msg = _build_system_prompt(user_context)
     full_messages = [{"role": "system", "content": system_msg}] + messages
 
     async with httpx.AsyncClient(timeout=120) as client:
@@ -90,6 +99,40 @@ async def chat_completion_stream(messages: list[dict], user_context: str = "") -
                         yield content
                 except (json.JSONDecodeError, KeyError, IndexError):
                     continue
+
+
+# --- Dimension scoring prompts (for photo-based evaluation) ---
+
+DIMENSION_PROMPTS = {
+    "exercise": (
+        "评估用户的运动能力和体能水平（0-100分）。\n"
+        "分析照片中的：体型、肌肉线条、体态、是否有运动痕迹。\n"
+        "结合身体数据：身高{height}cm，体重{weight}kg，BMI {bmi:.1f}，{age}岁，{gender_cn}。\n"
+        "评分标准：90-100运动员体格，70-89经常运动，50-69普通，30-49缺乏运动，0-29体能极差。\n"
+        '只返回JSON：{{"score": 数字}}'
+    ),
+    "diet": (
+        "评估用户的饮食健康程度（0-100分）。\n"
+        "分析照片中的：体脂率、皮肤光泽、面色、是否有营养不良或过剩迹象。\n"
+        "结合身体数据：身高{height}cm，体重{weight}kg，BMI {bmi:.1f}，{age}岁，{gender_cn}。\n"
+        "评分标准：90-100非常健康，70-89良好，50-69普通，30-49不健康，0-29严重问题。\n"
+        '只返回JSON：{{"score": 数字}}'
+    ),
+    "sleep": (
+        "评估用户的睡眠质量（0-100分）。\n"
+        "分析照片中的：黑眼圈、眼袋、肤质、精神状态、面色。\n"
+        "结合身体数据：身高{height}cm，体重{weight}kg，BMI {bmi:.1f}，{age}岁，{gender_cn}。\n"
+        "评分标准：90-100精神饱满，70-89状态良好，50-69一般，30-49明显疲惫，0-29严重睡眠不足。\n"
+        '只返回JSON：{{"score": 数字}}'
+    ),
+    "appearance": (
+        "评估用户的外在形象（0-100分）。\n"
+        "分析照片中的：整体形象、穿着打扮、气质、面部状态。\n"
+        "结合身体数据：身高{height}cm，体重{weight}kg，BMI {bmi:.1f}，{age}岁，{gender_cn}。\n"
+        "评分标准：90-100形象出众，70-89良好，50-69普通，30-49需要打理，0-29需大幅改善。\n"
+        '只返回JSON：{{"score": 数字}}'
+    ),
+}
 
 
 # --- Task generation ---
@@ -250,6 +293,155 @@ async def generate_body_analysis(
         pass
 
     return f"{nickname}，你的初始画像已建立。当前BMI为{bmi:.1f}（{bmi_label}），坚持完成每日任务，身体状况会逐步改善。"
+
+
+async def _score_dimension_from_photo(
+    dimension: str,
+    image_messages: list[dict],
+    height_cm: float, weight_kg: float, age: int, gender: str,
+) -> float:
+    """Score a single dimension from photo analysis. Returns 0-100."""
+    bmi = weight_kg / (height_cm / 100) ** 2
+    gender_cn = {"male": "男", "female": "女"}.get(gender, "其他")
+
+    prompt = DIMENSION_PROMPTS[dimension].format(
+        height=height_cm, weight=weight_kg, bmi=bmi, age=age, gender_cn=gender_cn
+    )
+
+    messages = [{"role": "user", "content": image_messages + [{"type": "text", "text": prompt}]}]
+
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(
+                f"{settings.AI_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
+                json={"model": settings.analysis_model, "messages": messages, "max_tokens": 200, "response_format": {"type": "json_object"}},
+            )
+            data = response.json()
+            content = _extract_content(data)
+            parsed = json.loads(content)
+            score = float(parsed.get("score", 50))
+            print(f"[四维评分] {dimension} 照片评分: {score}")
+            return min(100, max(0, score))
+    except Exception as e:
+        print(f"[四维评分] {dimension} 照片评分失败: {e}")
+        return 50.0
+
+
+async def _evaluate_with_photos(
+    height_cm: float, weight_kg: float, age: int, gender: str,
+    front_photo_url: str | None, side_photo_url: str | None,
+) -> dict[str, float]:
+    """Evaluate all 4 dimensions in parallel using photo analysis."""
+    # Build image message parts
+    image_parts = []
+    if front_photo_url:
+        image_parts.append({"type": "image_url", "image_url": {"url": f"http://localhost:8000{front_photo_url}"}})
+    if side_photo_url:
+        image_parts.append({"type": "image_url", "image_url": {"url": f"http://localhost:8000{side_photo_url}"}})
+
+    # Run 4 dimension evaluations in parallel
+    results = await asyncio.gather(
+        _score_dimension_from_photo("exercise", image_parts, height_cm, weight_kg, age, gender),
+        _score_dimension_from_photo("diet", image_parts, height_cm, weight_kg, age, gender),
+        _score_dimension_from_photo("sleep", image_parts, height_cm, weight_kg, age, gender),
+        _score_dimension_from_photo("appearance", image_parts, height_cm, weight_kg, age, gender),
+    )
+
+    return {
+        "exercise": results[0],
+        "diet": results[1],
+        "sleep": results[2],
+        "appearance": results[3],
+    }
+
+
+QUESTIONNAIRE_PROMPT = """评估用户四个维度的初始评分（0-100分）。
+
+身体数据：
+- 身高：{height}cm
+- 体重：{weight}kg
+- BMI：{bmi:.1f}
+- 年龄：{age}岁
+- 性别：{gender_cn}
+
+用户自述：
+- 运动：{exercise_answer}
+- 饮食：{diet_answer}
+- 睡眠：{sleep_answer}
+- 外貌：{appearance_answer}
+
+评分标准：90-100优秀，70-89良好，50-69普通，30-49需改善，0-29需大幅改善。
+请根据用户自述内容合理评估，不要全部给50分。回答越详细、习惯越好，分数越高。
+
+只返回JSON：{{"exercise": 数字, "diet": 数字, "sleep": 数字, "appearance": 数字}}"""
+
+
+async def _evaluate_with_questionnaire(
+    height_cm: float, weight_kg: float, age: int, gender: str,
+    questionnaire: dict[str, str],
+) -> dict[str, float]:
+    """Evaluate all 4 dimensions using questionnaire + body data."""
+    bmi = weight_kg / (height_cm / 100) ** 2
+    gender_cn = {"male": "男", "female": "女"}.get(gender, "其他")
+
+    prompt = QUESTIONNAIRE_PROMPT.format(
+        height=height_cm, weight=weight_kg, bmi=bmi, age=age, gender_cn=gender_cn,
+        exercise_answer=questionnaire.get("exercise", "未回答"),
+        diet_answer=questionnaire.get("diet", "未回答"),
+        sleep_answer=questionnaire.get("sleep", "未回答"),
+        appearance_answer=questionnaire.get("appearance", "未回答"),
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(
+                f"{settings.AI_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": settings.chat_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 200,
+                    "response_format": {"type": "json_object"},
+                },
+            )
+            data = response.json()
+            content = _extract_content(data)
+            parsed = json.loads(content)
+            result = {
+                "exercise": min(100, max(0, float(parsed.get("exercise", 50)))),
+                "diet": min(100, max(0, float(parsed.get("diet", 50)))),
+                "sleep": min(100, max(0, float(parsed.get("sleep", 50)))),
+                "appearance": min(100, max(0, float(parsed.get("appearance", 50)))),
+            }
+            print(f"[四维评分] 问卷评分成功: {result}")
+            return result
+    except Exception as e:
+        print(f"[四维评分] 问卷评分失败: {e}")
+        return {"exercise": 50, "diet": 50, "sleep": 50, "appearance": 50}
+
+
+async def evaluate_all_scores(
+    height_cm: float, weight_kg: float, age: int, gender: str,
+    front_photo_url: str | None = None, side_photo_url: str | None = None,
+    questionnaire: dict[str, str] | None = None,
+) -> dict[str, float]:
+    """Main entry: evaluate all 4 dimension scores.
+
+    - With photos: 4 parallel AI calls, each analyzing the photo for its dimension.
+    - Without photos: single AI call with questionnaire + body data.
+    - Fallback: returns 50 for all dimensions.
+    """
+    if front_photo_url:
+        print("[四维评分] 使用照片模式（4次并行调用）")
+        return await _evaluate_with_photos(height_cm, weight_kg, age, gender, front_photo_url, side_photo_url)
+
+    if questionnaire:
+        print("[四维评分] 使用问卷模式（单次调用）")
+        return await _evaluate_with_questionnaire(height_cm, weight_kg, age, gender, questionnaire)
+
+    print("[四维评分] 无照片无问卷，使用默认分数")
+    return {"exercise": 50, "diet": 50, "sleep": 50, "appearance": 50}
 
 
 async def evaluate_initial_score(
