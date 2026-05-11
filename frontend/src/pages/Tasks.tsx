@@ -51,8 +51,8 @@ export default function Tasks() {
             <motion.div key={t.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
               transition={{ delay: i * 0.05 }}
               className="bg-slate-900 rounded-xl p-4 border border-slate-800">
-              <div className="flex justify-between items-start">
-                <div>
+              <div className="flex justify-between items-start gap-3">
+                <div className="flex-1 min-w-0">
                   <div className="text-white font-medium">{t.title}</div>
                   <div className="text-slate-500 text-sm mt-1">
                     {dimensionLabels[t.dimension]} · {t.difficulty}
@@ -61,7 +61,7 @@ export default function Tasks() {
                     <div className="text-slate-600 text-xs mt-1">{t.scheduled_date}</div>
                   )}
                 </div>
-                <span className={`text-xs px-2 py-1 rounded ${statusLabels[t.status]?.color}`}>
+                <span className={`text-xs px-2 py-1 rounded whitespace-nowrap flex-shrink-0 ${statusLabels[t.status]?.color}`}>
                   {statusLabels[t.status]?.text}
                 </span>
               </div>

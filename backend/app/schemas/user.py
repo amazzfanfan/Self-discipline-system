@@ -27,6 +27,7 @@ class ProfileResponse(BaseModel):
     front_photo_url: str | None
     side_photo_url: str | None
     questionnaire: dict[str, str] | None
+    skin_analysis: dict | None  # face++ 肤质分析结果
 
     class Config:
         from_attributes = True

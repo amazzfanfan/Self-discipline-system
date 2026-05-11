@@ -128,15 +128,15 @@ export default function Dashboard() {
             )}
             <div className="space-y-2">
               {tasks?.map((t: any) => (
-                <div key={t.id} className="bg-slate-800/60 rounded-lg p-3 flex items-center gap-3">
-                  <div className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                <div key={t.id} className="bg-slate-800/60 rounded-lg p-3 flex items-start gap-3">
+                  <div className={`w-2 h-2 rounded-full flex-shrink-0 mt-1.5 ${
                     t.status === 'completed' ? 'bg-emerald-400' : 'bg-slate-600'
                   }`} />
                   <div className="min-w-0 flex-1">
-                    <div className="text-white text-sm truncate">{t.title}</div>
-                    <div className="text-slate-500 text-xs">{t.difficulty}</div>
+                    <div className="text-white text-sm">{t.title}</div>
+                    <div className="text-slate-500 text-xs mt-0.5">{t.difficulty}</div>
                   </div>
-                  <span className={`text-xs px-2 py-0.5 rounded flex-shrink-0 ${
+                  <span className={`text-xs px-2 py-0.5 rounded whitespace-nowrap flex-shrink-0 mt-0.5 ${
                     t.status === 'completed' ? 'bg-emerald-900/60 text-emerald-400' : 'bg-slate-700/60 text-slate-400'
                   }`}>
                     {t.status === 'completed' ? '已完成' : '待完成'}

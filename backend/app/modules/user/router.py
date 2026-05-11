@@ -10,6 +10,7 @@ from app.models.user import User, UserProfile
 from app.models.score import UserScore, DimensionEnum
 from app.schemas.user import UserResponse, ProfileUpdate, ProfileResponse, EvaluateRequest
 from app.services.ai_service import evaluate_all_scores, generate_appearance_analysis, generate_body_analysis
+from app.services.faceplus_service import analyze_skin, generate_skin_task
 from app.services.scheduler_service import generate_tasks_for_user
 from app.models.conversation import Conversation, RoleEnum
 
@@ -105,6 +106,72 @@ async def upload_onboarding_photos(
     return {"front_photo_url": front_url, "side_photo_url": side_url}
 
 
+@router.post("/me/skin-analyze")
+async def skin_analyze(
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """聊天界面上传图片进行肤质分析"""
+    os.makedirs("uploads", exist_ok=True)
+    
+    # 保存图片
+    ext = os.path.splitext(file.filename or "photo.jpg")[1]
+    filename = f"{user.id}_skin_{uuid.uuid4().hex[:8]}{ext}"
+    path = f"uploads/{filename}"
+    with open(path, "wb") as f:
+        f.write(await file.read())
+    
+    # 分析肤质（带降级策略）
+    skin_result = await analyze_skin(path)
+    
+    # 存储分析结果到用户档案
+    result = await db.execute(select(UserProfile).where(UserProfile.user_id == user.id))
+    profile = result.scalar_one_or_none()
+    if profile:
+        profile.skin_analysis = {
+            "source": skin_result.source,
+            "skin_type": skin_result.skin_type,
+            "skin_type_name": skin_result.skin_type_name,
+            "skin_score": skin_result.skin_score,
+            "issues": skin_result.issues,
+            "suggestions": skin_result.suggestions,
+        }
+        await db.flush()
+    
+    # 生成分析报告消息
+    from app.services.faceplus_service import get_source_display
+    source_text = get_source_display(skin_result.source)
+    
+    report = f"【肤质分析报告】\n"
+    report += f"分析方式: {source_text}\n"
+    report += f"皮肤类型: {skin_result.skin_type_name}\n"
+    report += f"肤质评分: {skin_result.skin_score:.0f}/100\n"
+    
+    if skin_result.issues:
+        report += f"存在问题: {', '.join(skin_result.issues)}\n"
+        report += f"\n【护理建议】\n"
+        for i, suggestion in enumerate(skin_result.suggestions[:3], 1):
+            report += f"{i}. {suggestion}\n"
+    else:
+        report += "皮肤状态良好，继续保持！\n"
+    
+    # 保存到对话记录
+    db.add(Conversation(user_id=user.id, role=RoleEnum.system, content=report))
+    await db.flush()
+    
+    return {
+        "source": skin_result.source,
+        "source_display": source_text,
+        "skin_type": skin_result.skin_type_name,
+        "skin_score": skin_result.skin_score,
+        "issues": skin_result.issues,
+        "suggestions": skin_result.suggestions,
+        "report": report,
+        "photo_url": f"/uploads/{filename}",
+    }
+
+
 @router.post("/me/evaluate")
 async def evaluate(
     req: EvaluateRequest,
@@ -141,6 +208,39 @@ async def evaluate(
         print(f"[评估] evaluate_all_scores 异常，使用默认分数: {e}")
         scores = {"exercise": 50, "diet": 50, "sleep": 50, "appearance": 50}
 
+    # 肤质分析 (如果有正面照片) - 带降级策略
+    skin_result = None
+    skin_source = "none"
+    if profile.front_photo_url:
+        try:
+            skin_result = await analyze_skin(profile.front_photo_url.lstrip('/'))
+            skin_source = skin_result.source
+            
+            # 存储肤质分析结果
+            profile.skin_analysis = {
+                "source": skin_result.source,
+                "skin_type": skin_result.skin_type,
+                "skin_type_name": skin_result.skin_type_name,
+                "skin_score": skin_result.skin_score,
+                "issues": skin_result.issues,
+                "suggestions": skin_result.suggestions,
+                "dark_circle": skin_result.dark_circle,
+                "eye_pouch": skin_result.eye_pouch,
+                "acne": skin_result.acne,
+                "blackhead": skin_result.blackhead,
+                "skin_spot": skin_result.skin_spot,
+            }
+            
+            from app.services.faceplus_service import get_source_display
+            print(f"[评估] 肤质分析成功 ({get_source_display(skin_result.source)}): {skin_result.skin_type_name}, 评分: {skin_result.skin_score}")
+            
+            # 肤质分析结果影响外貌评分 (权重 20%)
+            appearance_boost = (skin_result.skin_score - 50) * 0.2
+            scores["appearance"] = max(0, min(100, scores["appearance"] + appearance_boost))
+            print(f"[评估] 肤质调整后外貌评分: {scores['appearance']}")
+        except Exception as e:
+            print(f"[评估] 肤质分析异常: {e}")
+
     # Update user_scores (create if not exist)
     result = await db.execute(select(UserScore).where(UserScore.user_id == user_id))
     db_scores = {s.dimension: s for s in result.scalars().all()}
@@ -160,6 +260,11 @@ async def evaluate(
                 front_photo_url=profile.front_photo_url,
                 side_photo_url=profile.side_photo_url,
             )
+            # 如果有肤质分析结果，追加肤质信息
+            if skin_result and skin_result.issues:
+                skin_msg = f"\n\n【肤质分析】\n皮肤类型: {skin_result.skin_type_name}\n肤质评分: {skin_result.skin_score:.0f}/100\n存在问题: {', '.join(skin_result.issues[:3])}"
+                analysis += skin_msg
+            
             db.add(Conversation(user_id=user_id, role=RoleEnum.system, content=analysis))
             await db.flush()
         except Exception:
@@ -178,4 +283,9 @@ async def evaluate(
     await generate_tasks_for_user(user_id, user.nickname, db)
     await db.flush()
 
-    return {"message": "evaluation complete", "scores": scores}
+    return {
+        "message": "evaluation complete",
+        "scores": scores,
+        "skin_analysis": profile.skin_analysis,
+        "skin_source": skin_source,
+    }

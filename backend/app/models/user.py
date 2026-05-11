@@ -43,6 +43,7 @@ class UserProfile(Base):
     side_photo_url = Column(String(500))
     ai_profile_score = Column(JSON)
     questionnaire = Column(JSON, nullable=True)
+    skin_analysis = Column(JSON, nullable=True)  # face++ 肤质分析结果
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     user = relationship("User", back_populates="profile")
