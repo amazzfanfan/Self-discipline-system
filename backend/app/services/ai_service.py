@@ -287,11 +287,11 @@ async def generate_body_analysis(
     prompt = (
         f'你是"系统"，一个AI成长助手。用户{nickname}完成了初始评估（未上传照片），请根据身体数据给出综合评价。\n\n'
         f'数据：身高{height_cm}cm，体重{weight_kg}kg，BMI {bmi:.1f}（{bmi_label}），{age}岁，{gender_cn}\n\n'
-        f'请直接用"系统"的口吻写一段评价（严格但关怀），使用 markdown 格式，包含：\n'
-        f'1. **评估**：对当前身体状况的评估（结合BMI和年龄）\n'
-        f'2. **改善建议**：3条具体改善建议（运动、饮食、作息各一条），用编号列表\n'
-        f'3. **鼓励**：一句鼓励\n\n'
-        f'不要写思考过程，不要用第三人称描述自己，直接输出给用户看的内容。200字以内。'
+        f'请直接用"系统"的口吻写一段详细评价（严格但关怀），使用 markdown 格式，包含：\n'
+        f'1. **评估**：对当前身体状况的详细评估（结合BMI和年龄，分析可能的健康风险）\n'
+        f'2. **改善建议**：3条具体改善建议（运动、饮食、作息各一条），每条建议要详细说明具体怎么做\n'
+        f'3. **鼓励**：一句鼓励的话\n\n'
+        f'不要写思考过程，不要用第三人称描述自己，直接输出给用户看的内容。300-400字。'
     )
 
     try:
@@ -299,14 +299,14 @@ async def generate_body_analysis(
             response = await client.post(
                 f"{settings.AI_BASE_URL}/chat/completions",
                 headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
-                json={"model": settings.chat_model, "messages": [{"role": "user", "content": prompt}], "max_tokens": 500},
+                json={"model": settings.chat_model, "messages": [{"role": "user", "content": prompt}], "max_tokens": 1000},
             )
             data = response.json()
             result = _extract_content(data)
-            if result and len(result) > 20:
+            if result and len(result) > 50:
                 return result
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[评估报告] 生成失败: {e}")
 
     return f"{nickname}，你的初始画像已建立。当前BMI为{bmi:.1f}（{bmi_label}），坚持完成每日任务，身体状况会逐步改善。"
 

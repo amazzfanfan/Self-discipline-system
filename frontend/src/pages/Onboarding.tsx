@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import api from '../services/api';
+import { useNotification } from '../components/Notification';
 
 const EVAL_STEPS = [
   { key: 'upload', label: '上传照片', icon: '📸' },
@@ -58,6 +59,7 @@ function PhotoSlot({ label, desc, preview, onUpload, onRemove, inputRef }: Photo
 }
 
 export default function Onboarding() {
+  const { addNotification } = useNotification();
   const [step, setStep] = useState(0);
   const [height, setHeight] = useState('');
   const [weight, setWeight] = useState('');
@@ -193,6 +195,25 @@ export default function Onboarding() {
       });
       
       setEvalMode(response.data.eval_mode);
+      
+      // 检查降级情况
+      const { skin_source, eval_mode } = response.data;
+      if (skin_source === 'ai') {
+        addNotification({
+          type: 'warning',
+          title: '肤质分析降级',
+          message: '外部API不可用，已使用系统AI进行肤质分析',
+          duration: 8000,
+        });
+      } else if (skin_source === 'fallback') {
+        addNotification({
+          type: 'warning',
+          title: '肤质分析降级',
+          message: '肤质分析服务不可用，已使用默认评估',
+          duration: 8000,
+        });
+      }
+      
       setEvalStep(4); // 跳到生成任务步骤
       setTimeout(() => navigate('/'), 1200);
     } catch {
@@ -215,6 +236,18 @@ export default function Onboarding() {
       });
       
       setEvalMode(response.data.eval_mode);
+      
+      // 检查降级情况
+      const { eval_mode } = response.data;
+      if (eval_mode === 'default') {
+        addNotification({
+          type: 'warning',
+          title: '评估降级',
+          message: 'AI评估服务不可用，已使用默认评分',
+          duration: 8000,
+        });
+      }
+      
       setEvalStep(4);
       setTimeout(() => navigate('/'), 1200);
     } catch {

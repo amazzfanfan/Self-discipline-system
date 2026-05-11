@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { LineChart, Line, ResponsiveContainer } from 'recharts';
@@ -5,6 +6,7 @@ import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import ScoreRing from '../components/ScoreRing';
 import DimensionBar from '../components/DimensionBar';
+import { useNotification } from '../components/Notification';
 
 const DIM_COLORS: Record<string, string> = {
   exercise: '#3b82f6',
@@ -22,6 +24,8 @@ const DIM_LABELS: Record<string, string> = {
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const { addNotification } = useNotification();
+  const prevTaskCountRef = useRef<number>(0);
 
   const { data: scores } = useQuery({
     queryKey: ['scores'],
@@ -37,6 +41,20 @@ export default function Dashboard() {
     queryKey: ['score-history'],
     queryFn: () => api.get('/scores/history?limit=100').then((r) => r.data),
   });
+
+  // 检测任务发布
+  useEffect(() => {
+    if (tasks && tasks.length > 0 && prevTaskCountRef.current === 0) {
+      // 任务从0变为有值，说明刚发布
+      addNotification({
+        type: 'success',
+        title: '任务已发布',
+        message: `今日已发布 ${tasks.length} 个任务，快去完成吧！`,
+        duration: 6000,
+      });
+    }
+    prevTaskCountRef.current = tasks?.length || 0;
+  }, [tasks, addNotification]);
 
   const avgScore = scores ? scores.reduce((a: number, s: any) => a + s.score, 0) / scores.length : 0;
   const completedCount = tasks?.filter((t: any) => t.status === 'completed').length || 0;
