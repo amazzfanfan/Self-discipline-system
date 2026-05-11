@@ -1,4 +1,4 @@
-import { useState, useEffect, createContext, useContext, ReactNode } from 'react';
+import { useState, useEffect, createContext, useContext, ReactNode, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 interface Notification {
@@ -28,7 +28,11 @@ export function useNotification() {
 export function NotificationProvider({ children }: { children: ReactNode }) {
   const [notifications, setNotifications] = useState<Notification[]>([]);
 
-  const addNotification = (notification: Omit<Notification, 'id'>) => {
+  const removeNotification = useCallback((id: string) => {
+    setNotifications(prev => prev.filter(n => n.id !== id));
+  }, []);
+
+  const addNotification = useCallback((notification: Omit<Notification, 'id'>) => {
     const id = Date.now().toString() + Math.random().toString(36).substr(2, 9);
     const newNotification = { ...notification, id };
     setNotifications(prev => [...prev, newNotification]);
@@ -38,11 +42,7 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
     setTimeout(() => {
       removeNotification(id);
     }, duration);
-  };
-
-  const removeNotification = (id: string) => {
-    setNotifications(prev => prev.filter(n => n.id !== id));
-  };
+  }, [removeNotification]);
 
   return (
     <NotificationContext.Provider value={{ notifications, addNotification, removeNotification }}>
