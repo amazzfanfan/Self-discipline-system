@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { LineChart, Line, ResponsiveContainer } from 'recharts';
@@ -25,6 +25,7 @@ const DIM_LABELS: Record<string, string> = {
 export default function Dashboard() {
   const navigate = useNavigate();
   const { addNotification } = useNotification();
+  const hasNotifiedRef = useRef(false);
 
   const { data: scores } = useQuery({
     queryKey: ['scores'],
@@ -43,12 +44,13 @@ export default function Dashboard() {
 
   // 检测任务发布（只在当天首次加载时通知）
   useEffect(() => {
-    if (tasks && tasks.length > 0) {
+    if (tasks && tasks.length > 0 && !hasNotifiedRef.current) {
       const today = new Date().toISOString().split('T')[0];
       const lastNotified = localStorage.getItem('lastTaskNotified');
       
       // 如果今天还没有通知过，就显示通知
       if (lastNotified !== today) {
+        hasNotifiedRef.current = true;
         addNotification({
           type: 'success',
           title: '任务已发布',
