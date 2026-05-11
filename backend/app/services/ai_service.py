@@ -146,16 +146,26 @@ TASK_DEFAULTS = {
     "appearance": "认真护肤一次",
 }
 
+# 每个维度的任务范围说明
+DIMENSION_TASK_GUIDE = {
+    "exercise": "运动类任务：体育锻炼、健身、跑步、跳绳、俯卧撑、深蹲、瑜伽、拉伸、散步、骑车、游泳等身体活动。不要包含学习、写作、阅读等非身体活动。",
+    "diet": "饮食类任务：健康饮食、喝水、记录饮食、少吃零食、多吃蔬菜、控制热量、少油少盐等饮食相关。",
+    "sleep": "睡眠类任务：早睡、放下手机、冥想、深呼吸、睡前放松、避免熬夜等睡眠相关。",
+    "appearance": "外貌类任务：护肤、防晒、清洁面部、使用眼霜、敷面膜、整理仪容等外貌护理相关。",
+}
+
 
 async def generate_task(nickname: str, dimension: str, score: float, difficulty: str, recent_tasks: list[str]) -> str:
     """AI generates a daily task title. Returns a short string."""
     recent = "、".join(recent_tasks[-5:]) if recent_tasks else "无"
     diff_cn = {"easy": "简单", "medium": "中等", "hard": "困难"}.get(difficulty, "中等")
+    dim_guide = DIMENSION_TASK_GUIDE.get(dimension, "")
 
     prompt = (
         f"请为用户生成1个{dimension}维度的今日任务。\n"
         f"难度：{diff_cn}，当前评分：{score}分，最近做过的：{recent}（避免重复）。\n"
         f"要求：具体可执行，有明确完成标准。\n\n"
+        f"重要：{dim_guide}\n\n"
         f'返回JSON格式：{{"task": "任务标题"}}'
     )
 

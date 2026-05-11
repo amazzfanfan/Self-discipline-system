@@ -18,6 +18,45 @@ const QUESTIONS = [
   { key: 'appearance', text: '你平常是否有注意打理自己，你对自己的外在形象满意吗？' },
 ];
 
+interface PhotoSlotProps {
+  label: string;
+  desc: string;
+  preview: string;
+  onUpload: (file: File) => void;
+  onRemove: () => void;
+  inputRef: React.RefObject<HTMLInputElement | null>;
+}
+
+function PhotoSlot({ label, desc, preview, onUpload, onRemove, inputRef }: PhotoSlotProps) {
+  return (
+    <div className="relative">
+      <input ref={inputRef} type="file" accept="image/*" className="hidden"
+        onChange={(e) => e.target.files?.[0] && onUpload(e.target.files[0])} />
+      {preview ? (
+        <div className="relative aspect-square rounded-xl overflow-hidden border border-slate-700">
+          <img src={preview} alt={label} className="w-full h-full object-cover" />
+          <button onClick={onRemove}
+            className="absolute top-1.5 right-1.5 w-6 h-6 bg-slate-900/80 rounded-full flex items-center justify-center text-white hover:bg-red-600 transition-colors text-xs">
+            ✕
+          </button>
+          <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent p-2">
+            <p className="text-white text-xs font-medium">{label}</p>
+          </div>
+        </div>
+      ) : (
+        <button onClick={() => inputRef.current?.click()}
+          className="w-full aspect-square border-2 border-dashed border-slate-700 rounded-xl flex flex-col items-center justify-center gap-1.5 text-slate-400 hover:border-blue-500 hover:text-blue-400 transition-colors">
+          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 16v-8m0 0l-3 3m3-3l3 3M3 16l3-3a2 2 0 012.828 0L12 16.172l3.172-3.172a2 2 0 012.828 0L21 16" />
+          </svg>
+          <span className="text-xs font-medium">{label}</span>
+          <span className="text-[10px] text-slate-500">{desc}</span>
+        </button>
+      )}
+    </div>
+  );
+}
+
 export default function Onboarding() {
   const [step, setStep] = useState(0);
   const [height, setHeight] = useState('');
@@ -78,6 +117,27 @@ export default function Onboarding() {
       case 'side':
         setSidePhoto(file);
         setSidePreview(url);
+        break;
+    }
+  };
+
+  const handlePhotoRemove = (type: 'avatar' | 'portrait' | 'front' | 'side') => {
+    switch (type) {
+      case 'avatar':
+        setAvatar(null);
+        setAvatarPreview('');
+        break;
+      case 'portrait':
+        setPortraitPhoto(null);
+        setPortraitPreview('');
+        break;
+      case 'front':
+        setFrontPhoto(null);
+        setFrontPreview('');
+        break;
+      case 'side':
+        setSidePhoto(null);
+        setSidePreview('');
         break;
     }
   };
@@ -282,112 +342,57 @@ export default function Onboarding() {
       </div>
     </motion.div>,
 
-    // Step 2: Photo upload
+    // Step 2: Photo upload (2x2 grid)
     <motion.div key="photos" initial={{ opacity: 0, x: 50 }} animate={{ opacity: 1, x: 0 }}>
       <h2 className="text-xl font-bold text-white mb-2">上传照片</h2>
-      <p className="text-slate-400 text-sm mb-6">
+      <p className="text-slate-400 text-sm mb-5">
         上传照片可以帮助系统更准确地评估你的状态。所有照片都是可选的。
       </p>
       
-      <div className="space-y-4">
-        {/* 头像 */}
-        <div>
-          <label className="text-slate-300 text-sm mb-2 block">头像（仅用于显示）</label>
-          <input ref={avatarInputRef} type="file" accept="image/*" className="hidden"
-            onChange={(e) => e.target.files?.[0] && handlePhotoSelect(e.target.files[0], 'avatar')} />
-          {avatarPreview ? (
-            <div className="relative rounded-lg overflow-hidden border border-slate-700">
-              <img src={avatarPreview} alt="头像" className="w-full h-32 object-cover" />
-              <button onClick={() => { setAvatar(null); setAvatarPreview(''); }}
-                className="absolute top-2 right-2 w-8 h-8 bg-slate-900/80 rounded-full flex items-center justify-center text-white hover:bg-red-600 transition-colors">✕</button>
-            </div>
-          ) : (
-            <button onClick={() => avatarInputRef.current?.click()}
-              className="w-full h-24 border-2 border-dashed border-slate-700 rounded-lg flex items-center justify-center gap-2 text-slate-400 hover:border-blue-500 hover:text-blue-400 transition-colors">
-              <span className="text-sm">点击上传头像</span>
-            </button>
-          )}
-        </div>
-        
-        {/* 正面肖像图 */}
-        <div>
-          <label className="text-slate-300 text-sm mb-2 block">正面肖像图（用于肤质分析）</label>
-          <p className="text-slate-500 text-xs mb-2">请上传清晰的面部特写照片</p>
-          <input ref={portraitInputRef} type="file" accept="image/*" className="hidden"
-            onChange={(e) => e.target.files?.[0] && handlePhotoSelect(e.target.files[0], 'portrait')} />
-          {portraitPreview ? (
-            <div className="relative rounded-lg overflow-hidden border border-slate-700">
-              <img src={portraitPreview} alt="肖像" className="w-full h-48 object-cover" />
-              <button onClick={() => { setPortraitPhoto(null); setPortraitPreview(''); }}
-                className="absolute top-2 right-2 w-8 h-8 bg-slate-900/80 rounded-full flex items-center justify-center text-white hover:bg-red-600 transition-colors">✕</button>
-            </div>
-          ) : (
-            <button onClick={() => portraitInputRef.current?.click()}
-              className="w-full h-36 border-2 border-dashed border-slate-700 rounded-lg flex flex-col items-center justify-center gap-2 text-slate-400 hover:border-blue-500 hover:text-blue-400 transition-colors">
-              <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
-              </svg>
-              <span className="text-sm">点击上传正面肖像图</span>
-            </button>
-          )}
-        </div>
-        
-        {/* 正面图 */}
-        <div>
-          <label className="text-slate-300 text-sm mb-2 block">正面图（用于体态分析）</label>
-          <p className="text-slate-500 text-xs mb-2">请上传全身或半身正面照片</p>
-          <input ref={frontInputRef} type="file" accept="image/*" className="hidden"
-            onChange={(e) => e.target.files?.[0] && handlePhotoSelect(e.target.files[0], 'front')} />
-          {frontPreview ? (
-            <div className="relative rounded-lg overflow-hidden border border-slate-700">
-              <img src={frontPreview} alt="正面" className="w-full h-48 object-cover" />
-              <button onClick={() => { setFrontPhoto(null); setFrontPreview(''); }}
-                className="absolute top-2 right-2 w-8 h-8 bg-slate-900/80 rounded-full flex items-center justify-center text-white hover:bg-red-600 transition-colors">✕</button>
-            </div>
-          ) : (
-            <button onClick={() => frontInputRef.current?.click()}
-              className="w-full h-36 border-2 border-dashed border-slate-700 rounded-lg flex flex-col items-center justify-center gap-2 text-slate-400 hover:border-blue-500 hover:text-blue-400 transition-colors">
-              <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 16v-8m0 0l-3 3m3-3l3 3M3 16l3-3a2 2 0 012.828 0L12 16.172l3.172-3.172a2 2 0 012.828 0L21 16" />
-              </svg>
-              <span className="text-sm">点击上传正面图</span>
-            </button>
-          )}
-        </div>
-        
-        {/* 侧面图 */}
-        <div>
-          <label className="text-slate-300 text-sm mb-2 block">侧面图（用于体态分析）</label>
-          <p className="text-slate-500 text-xs mb-2">请上传全身侧面照片</p>
-          <input ref={sideInputRef} type="file" accept="image/*" className="hidden"
-            onChange={(e) => e.target.files?.[0] && handlePhotoSelect(e.target.files[0], 'side')} />
-          {sidePreview ? (
-            <div className="relative rounded-lg overflow-hidden border border-slate-700">
-              <img src={sidePreview} alt="侧面" className="w-full h-48 object-cover" />
-              <button onClick={() => { setSidePhoto(null); setSidePreview(''); }}
-                className="absolute top-2 right-2 w-8 h-8 bg-slate-900/80 rounded-full flex items-center justify-center text-white hover:bg-red-600 transition-colors">✕</button>
-            </div>
-          ) : (
-            <button onClick={() => sideInputRef.current?.click()}
-              className="w-full h-36 border-2 border-dashed border-slate-700 rounded-lg flex flex-col items-center justify-center gap-2 text-slate-400 hover:border-blue-500 hover:text-blue-400 transition-colors">
-              <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 16v-8m0 0l-3 3m3-3l3 3M3 16l3-3a2 2 0 012.828 0L12 16.172l3.172-3.172a2 2 0 012.828 0L21 16" />
-              </svg>
-              <span className="text-sm">点击上传侧面图</span>
-            </button>
-          )}
-        </div>
-        
-        <p className="text-slate-500 text-xs">
-          如果不上传评估照片（肖像图/正面图/侧面图），系统将以问卷形式进行评估。
-        </p>
-        
-        <div className="flex gap-3">
-          <button onClick={() => setStep(1)}
-            className="flex-1 py-3 bg-slate-800 hover:bg-slate-700 text-white rounded-lg font-medium transition-colors">返回</button>
-          <button onClick={() => setStep(hasEvalPhoto ? 3 : 5)}
-            className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors">下一步</button>
-        </div>
+      <div className="grid grid-cols-2 gap-3 mb-4">
+        <PhotoSlot
+          label="头像"
+          desc="仅显示"
+          preview={avatarPreview}
+          onUpload={(file) => handlePhotoSelect(file, 'avatar')}
+          onRemove={() => handlePhotoRemove('avatar')}
+          inputRef={avatarInputRef}
+        />
+        <PhotoSlot
+          label="正面肖像"
+          desc="肤质分析"
+          preview={portraitPreview}
+          onUpload={(file) => handlePhotoSelect(file, 'portrait')}
+          onRemove={() => handlePhotoRemove('portrait')}
+          inputRef={portraitInputRef}
+        />
+        <PhotoSlot
+          label="正面图"
+          desc="体态分析"
+          preview={frontPreview}
+          onUpload={(file) => handlePhotoSelect(file, 'front')}
+          onRemove={() => handlePhotoRemove('front')}
+          inputRef={frontInputRef}
+        />
+        <PhotoSlot
+          label="侧面图"
+          desc="体态分析"
+          preview={sidePreview}
+          onUpload={(file) => handlePhotoSelect(file, 'side')}
+          onRemove={() => handlePhotoRemove('side')}
+          inputRef={sideInputRef}
+        />
+      </div>
+      
+      <p className="text-slate-500 text-xs mb-4">
+        如果不上传评估照片（肖像/正面/侧面），系统将以问卷形式进行评估。
+      </p>
+      
+      <div className="flex gap-3">
+        <button onClick={() => setStep(1)}
+          className="flex-1 py-3 bg-slate-800 hover:bg-slate-700 text-white rounded-lg font-medium transition-colors">返回</button>
+        <button onClick={() => setStep(hasEvalPhoto ? 3 : 4)}
+          className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors">下一步</button>
       </div>
     </motion.div>,
 
