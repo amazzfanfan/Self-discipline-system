@@ -192,5 +192,6 @@ async def daily_task_generation():
 
 
 def start_scheduler():
-    scheduler.add_job(daily_task_generation, "cron", hour=8, minute=0, id="daily_tasks")
+    # 使用北京时间早上8:00发布任务（UTC 0:00）
+    scheduler.add_job(daily_task_generation, "cron", hour=0, minute=0, id="daily_tasks")
     scheduler.start()

@@ -397,25 +397,49 @@ async def _evaluate_with_photos(
     }
 
 
-QUESTIONNAIRE_PROMPT = """评估用户四个维度的初始评分（0-100分）。
+QUESTIONNAIRE_PROMPT = """你是一个专业的健康评估AI。请根据以下信息，为用户评估四个维度的初始分数（0-100分）。
 
-身体数据：
+【身体数据】
 - 身高：{height}cm
 - 体重：{weight}kg
-- BMI：{bmi:.1f}
+- BMI：{bmi:.1f}（{bmi_label}）
 - 年龄：{age}岁
 - 性别：{gender_cn}
 
-用户自述：
+【用户自述】
 - 运动：{exercise_answer}
 - 饮食：{diet_answer}
 - 睡眠：{sleep_answer}
 - 外貌：{appearance_answer}
 
-评分标准：90-100优秀，70-89良好，50-69普通，30-49需改善，0-29需大幅改善。
-请根据用户自述内容合理评估，不要全部给50分。回答越详细、习惯越好，分数越高。
+【评分标准】
+- 根据用户自述内容合理评估，回答越详细、习惯越好，分数越高
+- BMI>25属于超重，运动/饮食评分应适当偏低
 
-只返回JSON：{{"exercise": 数字, "diet": 数字, "sleep": 数字, "appearance": 数字}}"""
+请返回JSON：
+{{"exercise": 分数, "diet": 分数, "sleep": 分数, "appearance": 分数}}"""
+
+
+# 综合评分模式 prompt
+COMPREHENSIVE_PROMPT = """你是一个专业的健康评估AI。请根据以下信息，为用户评估四个维度的初始分数（0-100分）。
+
+【身体数据】
+- 身高：{height}cm
+- 体重：{weight}kg
+- BMI：{bmi:.1f}（{bmi_label}）
+- 年龄：{age}岁
+- 性别：{gender_cn}
+
+{skin_info}
+
+【评分标准】
+- 运动维度：BMI>25属于超重，运动评分应偏低；体态显示缺乏运动则更低
+- 饮食维度：BMI>25说明饮食可能不健康，评分应偏低
+- 睡眠维度：有黑眼圈、眼袋、疲惫迹象说明睡眠不足，评分应偏低
+- 外貌维度：肤质差、形象不整洁则评分偏低
+
+请根据图片和数据综合判断，返回JSON：
+{{"exercise": 分数, "diet": 分数, "sleep": 分数, "appearance": 分数}}"""
 
 
 async def _evaluate_with_questionnaire(
@@ -425,9 +449,12 @@ async def _evaluate_with_questionnaire(
     """Evaluate all 4 dimensions using questionnaire + body data."""
     bmi = weight_kg / (height_cm / 100) ** 2
     gender_cn = {"male": "男", "female": "女"}.get(gender, "其他")
+    
+    bmi_label = "偏瘦" if bmi < 18.5 else "正常" if bmi < 24 else "偏胖" if bmi < 28 else "肥胖"
 
     prompt = QUESTIONNAIRE_PROMPT.format(
-        height=height_cm, weight=weight_kg, bmi=bmi, age=age, gender_cn=gender_cn,
+        height=height_cm, weight=weight_kg, bmi=bmi, bmi_label=bmi_label,
+        age=age, gender_cn=gender_cn,
         exercise_answer=questionnaire.get("exercise", "未回答"),
         diet_answer=questionnaire.get("diet", "未回答"),
         sleep_answer=questionnaire.get("sleep", "未回答"),
@@ -462,27 +489,123 @@ async def _evaluate_with_questionnaire(
         return {"exercise": 50, "diet": 50, "sleep": 50, "appearance": 50}
 
 
+async def _evaluate_comprehensive(
+    height_cm: float, weight_kg: float, age: int, gender: str,
+    portrait_photo_url: str | None = None,
+    front_photo_url: str | None = None,
+    side_photo_url: str | None = None,
+    skin_analysis: dict | None = None,
+) -> dict[str, float]:
+    """综合评分模式：图片 + 旷视结果 + 身体数据"""
+    bmi = weight_kg / (height_cm / 100) ** 2
+    gender_cn = {"male": "男", "female": "女"}.get(gender, "其他")
+    bmi_label = "偏瘦" if bmi < 18.5 else "正常" if bmi < 24 else "偏胖" if bmi < 28 else "肥胖"
+    
+    # 构建肤质信息
+    skin_info = ""
+    if skin_analysis:
+        skin_info = f"""【肤质分析结果】
+- 皮肤类型：{skin_analysis.get('skin_type_name', '未知')}
+- 肤质评分：{skin_analysis.get('skin_score', 0)}/100
+- 存在问题：{', '.join(skin_analysis.get('issues', ['无']))}"""
+    
+    prompt = COMPREHENSIVE_PROMPT.format(
+        height=height_cm, weight=weight_kg, bmi=bmi,
+        bmi_label=bmi_label,
+        age=age, gender_cn=gender_cn, skin_info=skin_info
+    )
+    
+    # 构建图片消息
+    messages = [{"role": "user", "content": []}]
+    
+    # 添加肖像图（用于肤质参考）
+    if portrait_photo_url:
+        b64_url = _image_path_to_base64(portrait_photo_url)
+        if b64_url:
+            messages[0]["content"].append({"type": "image_url", "image_url": {"url": b64_url}})
+            print("[四维评分] 肖像图已转为base64")
+    
+    # 添加正面图（用于体态分析）
+    if front_photo_url:
+        b64_url = _image_path_to_base64(front_photo_url)
+        if b64_url:
+            messages[0]["content"].append({"type": "image_url", "image_url": {"url": b64_url}})
+            print("[四维评分] 正面图已转为base64")
+    
+    # 添加侧面图（用于体态分析）
+    if side_photo_url:
+        b64_url = _image_path_to_base64(side_photo_url)
+        if b64_url:
+            messages[0]["content"].append({"type": "image_url", "image_url": {"url": b64_url}})
+            print("[四维评分] 侧面图已转为base64")
+    
+    messages[0]["content"].append({"type": "text", "text": prompt})
+    
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(
+                f"{settings.AI_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": settings.chat_model,
+                    "messages": messages,
+                    "max_tokens": 200,
+                    "response_format": {"type": "json_object"},
+                },
+            )
+            data = response.json()
+            content = _extract_content(data)
+            parsed = json.loads(content)
+            result = {
+                "exercise": min(100, max(0, float(parsed.get("exercise", 50)))),
+                "diet": min(100, max(0, float(parsed.get("diet", 50)))),
+                "sleep": min(100, max(0, float(parsed.get("sleep", 50)))),
+                "appearance": min(100, max(0, float(parsed.get("appearance", 50)))),
+            }
+            print(f"[四维评分] 综合评分成功: {result}")
+            return result
+    except Exception as e:
+        print(f"[四维评分] 综合评分失败: {e}")
+        raise
+
+
 async def evaluate_all_scores(
     height_cm: float, weight_kg: float, age: int, gender: str,
-    front_photo_url: str | None = None, side_photo_url: str | None = None,
+    portrait_photo_url: str | None = None,
+    front_photo_url: str | None = None,
+    side_photo_url: str | None = None,
+    skin_analysis: dict | None = None,
     questionnaire: dict[str, str] | None = None,
-) -> dict[str, float]:
+) -> tuple[dict[str, float], str]:
     """Main entry: evaluate all 4 dimension scores.
-
-    - With photos: 4 parallel AI calls, each analyzing the photo for its dimension.
-    - Without photos: single AI call with questionnaire + body data.
-    - Fallback: returns 50 for all dimensions.
+    
+    Returns: (scores_dict, eval_mode)
+    - eval_mode: "photo" or "questionnaire" or "default"
     """
-    if front_photo_url:
-        print("[四维评分] 使用照片模式（4次并行调用）")
-        return await _evaluate_with_photos(height_cm, weight_kg, age, gender, front_photo_url, side_photo_url)
-
+    # 有评估图片（肖像图/正面图/侧面图）时使用综合评分模式
+    has_eval_photo = portrait_photo_url or front_photo_url or side_photo_url
+    
+    if has_eval_photo:
+        print("[四维评分] 使用综合评分模式（图片+旷视+身体数据）")
+        try:
+            scores = await _evaluate_comprehensive(
+                height_cm, weight_kg, age, gender,
+                portrait_photo_url, front_photo_url, side_photo_url,
+                skin_analysis
+            )
+            return scores, "photo"
+        except Exception as e:
+            print(f"[四维评分] 综合评分失败，尝试问卷模式: {e}")
+    
+    # 无图片或综合评分失败时使用问卷模式
     if questionnaire:
-        print("[四维评分] 使用问卷模式（单次调用）")
-        return await _evaluate_with_questionnaire(height_cm, weight_kg, age, gender, questionnaire)
-
-    print("[四维评分] 无照片无问卷，使用默认分数")
-    return {"exercise": 50, "diet": 50, "sleep": 50, "appearance": 50}
+        print("[四维评分] 使用问卷模式")
+        scores = await _evaluate_with_questionnaire(height_cm, weight_kg, age, gender, questionnaire)
+        return scores, "questionnaire"
+    
+    # 都没有时使用默认分数
+    print("[四维评分] 无图片无问卷，使用默认分数")
+    return {"exercise": 50, "diet": 50, "sleep": 50, "appearance": 50}, "default"
 
 
 async def evaluate_initial_score(

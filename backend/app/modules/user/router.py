@@ -67,8 +67,10 @@ async def upload_photo(
 
 
 @router.post("/me/photos/upload")
-async def upload_onboarding_photos(
-    front_photo: UploadFile = File(...),
+async def upload_photos(
+    avatar: UploadFile | None = File(None),
+    portrait_photo: UploadFile | None = File(None),
+    front_photo: UploadFile | None = File(None),
     side_photo: UploadFile | None = File(None),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -76,34 +78,53 @@ async def upload_onboarding_photos(
     """Upload photos during onboarding. Returns saved URLs."""
     os.makedirs("uploads", exist_ok=True)
     user_id = user.id
-
-    # Save front photo
-    ext = os.path.splitext(front_photo.filename or "photo.jpg")[1]
-    front_name = f"{user_id}_front_{uuid.uuid4().hex[:8]}{ext}"
-    with open(f"uploads/{front_name}", "wb") as f:
-        f.write(await front_photo.read())
-    front_url = f"/uploads/{front_name}"
-
-    side_url = None
-    if side_photo:
-        ext = os.path.splitext(side_photo.filename or "photo.jpg")[1]
-        side_name = f"{user_id}_side_{uuid.uuid4().hex[:8]}{ext}"
-        with open(f"uploads/{side_name}", "wb") as f:
-            f.write(await side_photo.read())
-        side_url = f"/uploads/{side_name}"
-
-    # Update profile with photo URLs
+    
     result = await db.execute(select(UserProfile).where(UserProfile.user_id == user_id))
     profile = result.scalar_one_or_none()
     if not profile:
-        profile = UserProfile(user_id=user_id, front_photo_url=front_url, side_photo_url=side_url)
+        profile = UserProfile(user_id=user_id)
         db.add(profile)
-    else:
-        profile.front_photo_url = front_url
-        profile.side_photo_url = side_url
+    
+    uploaded = {}
+    
+    # 保存头像
+    if avatar:
+        ext = os.path.splitext(avatar.filename or "photo.jpg")[1]
+        filename = f"{user_id}_avatar_{uuid.uuid4().hex[:8]}{ext}"
+        with open(f"uploads/{filename}", "wb") as f:
+            f.write(await avatar.read())
+        profile.avatar_url = f"/uploads/{filename}"
+        uploaded["avatar_url"] = profile.avatar_url
+    
+    # 保存正面肖像图
+    if portrait_photo:
+        ext = os.path.splitext(portrait_photo.filename or "photo.jpg")[1]
+        filename = f"{user_id}_portrait_{uuid.uuid4().hex[:8]}{ext}"
+        with open(f"uploads/{filename}", "wb") as f:
+            f.write(await portrait_photo.read())
+        profile.portrait_photo_url = f"/uploads/{filename}"
+        uploaded["portrait_photo_url"] = profile.portrait_photo_url
+    
+    # 保存正面图
+    if front_photo:
+        ext = os.path.splitext(front_photo.filename or "photo.jpg")[1]
+        filename = f"{user_id}_front_{uuid.uuid4().hex[:8]}{ext}"
+        with open(f"uploads/{filename}", "wb") as f:
+            f.write(await front_photo.read())
+        profile.front_photo_url = f"/uploads/{filename}"
+        uploaded["front_photo_url"] = profile.front_photo_url
+    
+    # 保存侧面图
+    if side_photo:
+        ext = os.path.splitext(side_photo.filename or "photo.jpg")[1]
+        filename = f"{user_id}_side_{uuid.uuid4().hex[:8]}{ext}"
+        with open(f"uploads/{filename}", "wb") as f:
+            f.write(await side_photo.read())
+        profile.side_photo_url = f"/uploads/{filename}"
+        uploaded["side_photo_url"] = profile.side_photo_url
+    
     await db.flush()
-
-    return {"front_photo_url": front_url, "side_photo_url": side_url}
+    return uploaded
 
 
 @router.post("/me/skin-analyze")
@@ -180,7 +201,7 @@ async def evaluate(
 ):
     user_id = user.id
 
-    # Update profile (query separately to avoid lazy load in async)
+    # Update profile
     result = await db.execute(select(UserProfile).where(UserProfile.user_id == user_id))
     profile = result.scalar_one_or_none()
     if not profile:
@@ -196,24 +217,17 @@ async def evaluate(
     if req.questionnaire:
         profile.questionnaire = req.questionnaire
 
-    # AI-evaluate all four dimensions
-    try:
-        scores = await evaluate_all_scores(
-            float(req.height_cm), float(req.weight_kg), req.age, req.gender,
-            front_photo_url=profile.front_photo_url,
-            side_photo_url=profile.side_photo_url,
-            questionnaire=req.questionnaire,
-        )
-    except Exception as e:
-        print(f"[评估] evaluate_all_scores 异常，使用默认分数: {e}")
-        scores = {"exercise": 50, "diet": 50, "sleep": 50, "appearance": 50}
-
-    # 肤质分析 (如果有正面照片) - 带降级策略
+    # 判断是否有评估图片
+    has_eval_photo = profile.portrait_photo_url or profile.front_photo_url or profile.side_photo_url
+    
+    # 肤质分析（如果有肖像图或正面图）
     skin_result = None
     skin_source = "none"
-    if profile.front_photo_url:
+    photo_for_skin = profile.portrait_photo_url or profile.front_photo_url
+    
+    if photo_for_skin:
         try:
-            skin_result = await analyze_skin(profile.front_photo_url.lstrip('/'))
+            skin_result = await analyze_skin(photo_for_skin.lstrip('/'))
             skin_source = skin_result.source
             
             # 存储肤质分析结果
@@ -224,24 +238,29 @@ async def evaluate(
                 "skin_score": skin_result.skin_score,
                 "issues": skin_result.issues,
                 "suggestions": skin_result.suggestions,
-                "dark_circle": skin_result.dark_circle,
-                "eye_pouch": skin_result.eye_pouch,
-                "acne": skin_result.acne,
-                "blackhead": skin_result.blackhead,
-                "skin_spot": skin_result.skin_spot,
             }
             
             from app.services.faceplus_service import get_source_display
             print(f"[评估] 肤质分析成功 ({get_source_display(skin_result.source)}): {skin_result.skin_type_name}, 评分: {skin_result.skin_score}")
-            
-            # 肤质分析结果影响外貌评分 (权重 20%)
-            appearance_boost = (skin_result.skin_score - 50) * 0.2
-            scores["appearance"] = max(0, min(100, scores["appearance"] + appearance_boost))
-            print(f"[评估] 肤质调整后外貌评分: {scores['appearance']}")
         except Exception as e:
             print(f"[评估] 肤质分析异常: {e}")
 
-    # Update user_scores (create if not exist)
+    # AI 综合评分
+    try:
+        scores, eval_mode = await evaluate_all_scores(
+            float(req.height_cm), float(req.weight_kg), req.age, req.gender,
+            portrait_photo_url=profile.portrait_photo_url,
+            front_photo_url=profile.front_photo_url,
+            side_photo_url=profile.side_photo_url,
+            skin_analysis=profile.skin_analysis,
+            questionnaire=req.questionnaire,
+        )
+    except Exception as e:
+        print(f"[评估] evaluate_all_scores 异常，使用默认分数: {e}")
+        scores = {"exercise": 50, "diet": 50, "sleep": 50, "appearance": 50}
+        eval_mode = "default"
+
+    # Update user_scores
     result = await db.execute(select(UserScore).where(UserScore.user_id == user_id))
     db_scores = {s.dimension: s for s in result.scalars().all()}
     for dim in DimensionEnum:
@@ -253,7 +272,7 @@ async def evaluate(
     await db.flush()
 
     # Generate first-login analysis message
-    if profile.front_photo_url:
+    if has_eval_photo:
         try:
             analysis = await generate_appearance_analysis(
                 user.nickname, float(req.height_cm), float(req.weight_kg), req.age, req.gender,
@@ -288,4 +307,5 @@ async def evaluate(
         "scores": scores,
         "skin_analysis": profile.skin_analysis,
         "skin_source": skin_source,
+        "eval_mode": eval_mode,
     }

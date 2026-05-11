@@ -24,6 +24,8 @@ class ProfileResponse(BaseModel):
     weight_kg: float | None
     age: int | None
     gender: str | None
+    avatar_url: str | None
+    portrait_photo_url: str | None
     front_photo_url: str | None
     side_photo_url: str | None
     questionnaire: dict[str, str] | None

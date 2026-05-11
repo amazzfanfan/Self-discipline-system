@@ -39,8 +39,10 @@ class UserProfile(Base):
     age = Column(Integer)
     gender = Column(SAEnum(GenderEnum))
     body_fat_pct = Column(Numeric(4, 1))
-    front_photo_url = Column(String(500))
-    side_photo_url = Column(String(500))
+    avatar_url = Column(String(500))           # 头像（仅显示）
+    portrait_photo_url = Column(String(500))   # 正面肖像图（旷视分析）
+    front_photo_url = Column(String(500))      # 正面图（AI分析体态）
+    side_photo_url = Column(String(500))       # 侧面图（AI分析体态）
     ai_profile_score = Column(JSON)
     questionnaire = Column(JSON, nullable=True)
     skin_analysis = Column(JSON, nullable=True)  # face++ 肤质分析结果
