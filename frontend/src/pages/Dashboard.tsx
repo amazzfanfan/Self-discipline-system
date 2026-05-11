@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { LineChart, Line, ResponsiveContainer } from 'recharts';
@@ -25,7 +25,6 @@ const DIM_LABELS: Record<string, string> = {
 export default function Dashboard() {
   const navigate = useNavigate();
   const { addNotification } = useNotification();
-  const prevTaskCountRef = useRef<number>(0);
 
   const { data: scores } = useQuery({
     queryKey: ['scores'],
@@ -42,18 +41,23 @@ export default function Dashboard() {
     queryFn: () => api.get('/scores/history?limit=100').then((r) => r.data),
   });
 
-  // 检测任务发布
+  // 检测任务发布（只在当天首次加载时通知）
   useEffect(() => {
-    if (tasks && tasks.length > 0 && prevTaskCountRef.current === 0) {
-      // 任务从0变为有值，说明刚发布
-      addNotification({
-        type: 'success',
-        title: '任务已发布',
-        message: `今日已发布 ${tasks.length} 个任务，快去完成吧！`,
-        duration: 6000,
-      });
+    if (tasks && tasks.length > 0) {
+      const today = new Date().toISOString().split('T')[0];
+      const lastNotified = localStorage.getItem('lastTaskNotified');
+      
+      // 如果今天还没有通知过，就显示通知
+      if (lastNotified !== today) {
+        addNotification({
+          type: 'success',
+          title: '任务已发布',
+          message: `今日已发布 ${tasks.length} 个任务，快去完成吧！`,
+          duration: 6000,
+        });
+        localStorage.setItem('lastTaskNotified', today);
+      }
     }
-    prevTaskCountRef.current = tasks?.length || 0;
   }, [tasks, addNotification]);
 
   const avgScore = scores ? scores.reduce((a: number, s: any) => a + s.score, 0) / scores.length : 0;
