@@ -48,6 +48,8 @@ export default function Dashboard() {
       const today = new Date().toISOString().split('T')[0];
       const lastNotified = localStorage.getItem('lastTaskNotified');
       
+      console.log('[通知调试]', { today, lastNotified, shouldNotify: lastNotified !== today });
+      
       // 如果今天还没有通知过，就显示通知
       if (lastNotified !== today) {
         hasNotifiedRef.current = true;
@@ -58,6 +60,7 @@ export default function Dashboard() {
           duration: 6000,
         });
         localStorage.setItem('lastTaskNotified', today);
+        console.log('[通知调试] 已保存:', today);
       }
     }
   }, [tasks, addNotification]);
