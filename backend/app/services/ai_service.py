@@ -462,13 +462,17 @@ async def _evaluate_with_questionnaire(
     
     bmi_label = "偏瘦" if bmi < 18.5 else "正常" if bmi < 24 else "偏胖" if bmi < 28 else "肥胖"
 
+    # 清理用户输入中的特殊字符
+    def clean_answer(text: str) -> str:
+        return text.replace('"', '').replace("'", "").replace('\\', '/')
+
     prompt = QUESTIONNAIRE_PROMPT.format(
         height=height_cm, weight=weight_kg, bmi=bmi, bmi_label=bmi_label,
         age=age, gender_cn=gender_cn,
-        exercise_answer=questionnaire.get("exercise", "未回答"),
-        diet_answer=questionnaire.get("diet", "未回答"),
-        sleep_answer=questionnaire.get("sleep", "未回答"),
-        appearance_answer=questionnaire.get("appearance", "未回答"),
+        exercise_answer=clean_answer(questionnaire.get("exercise", "未回答")),
+        diet_answer=clean_answer(questionnaire.get("diet", "未回答")),
+        sleep_answer=clean_answer(questionnaire.get("sleep", "未回答")),
+        appearance_answer=clean_answer(questionnaire.get("appearance", "未回答")),
     )
 
     try:
@@ -479,12 +483,25 @@ async def _evaluate_with_questionnaire(
                 json={
                     "model": settings.chat_model,
                     "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 200,
+                    "max_tokens": 500,
                     "response_format": {"type": "json_object"},
                 },
             )
             data = response.json()
             content = _extract_content(data)
+            
+            # 尝试清理和修复 JSON
+            content = content.strip()
+            # 如果 JSON 不完整，尝试修复
+            if content and not content.endswith('}'):
+                # 找到最后一个完整的键值对
+                last_brace = content.rfind('}')
+                if last_brace > 0:
+                    content = content[:last_brace + 1]
+                else:
+                    # 尝试添加缺失的括号
+                    content = content + '}'
+            
             parsed = json.loads(content)
             result = {
                 "exercise": min(100, max(0, float(parsed.get("exercise", 50)))),
@@ -496,6 +513,7 @@ async def _evaluate_with_questionnaire(
             return result
     except Exception as e:
         print(f"[四维评分] 问卷评分失败: {e}")
+        print(f"[四维评分] 返回内容: {content[:200] if 'content' in locals() else 'N/A'}")
         return {"exercise": 50, "diet": 50, "sleep": 50, "appearance": 50}
 
 
