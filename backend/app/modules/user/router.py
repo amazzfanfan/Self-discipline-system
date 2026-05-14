@@ -10,7 +10,7 @@ from app.models.user import User, UserProfile
 from app.models.score import UserScore, DimensionEnum
 from app.schemas.user import UserResponse, ProfileUpdate, ProfileResponse, EvaluateRequest
 from app.services.ai_service import evaluate_all_scores, generate_appearance_analysis, generate_body_analysis
-from app.services.faceplus_service import analyze_skin, generate_skin_task
+from app.services.faceplus_service import analyze_skin, generate_skin_task_ai, generate_ai_suggestions
 from app.services.scheduler_service import generate_tasks_for_user
 from app.models.conversation import Conversation, RoleEnum
 
@@ -146,6 +146,10 @@ async def skin_analyze(
     # 分析肤质（带降级策略）
     skin_result = await analyze_skin(path)
     
+    # 使用AI生成个性化建议（不再使用写死的建议）
+    ai_suggestions = await generate_ai_suggestions(skin_result.issues, skin_result.skin_type_name)
+    skin_result.suggestions = ai_suggestions
+    
     # 存储分析结果到用户档案
     result = await db.execute(select(UserProfile).where(UserProfile.user_id == user.id))
     profile = result.scalar_one_or_none()
@@ -156,7 +160,7 @@ async def skin_analyze(
             "skin_type_name": skin_result.skin_type_name,
             "skin_score": skin_result.skin_score,
             "issues": skin_result.issues,
-            "suggestions": skin_result.suggestions,
+            "suggestions": ai_suggestions,
         }
         await db.flush()
     
@@ -172,7 +176,7 @@ async def skin_analyze(
     if skin_result.issues:
         report += f"存在问题: {', '.join(skin_result.issues)}\n"
         report += f"\n【护理建议】\n"
-        for i, suggestion in enumerate(skin_result.suggestions[:3], 1):
+        for i, suggestion in enumerate(ai_suggestions[:3], 1):
             report += f"{i}. {suggestion}\n"
     else:
         report += "皮肤状态良好，继续保持！\n"
@@ -187,7 +191,7 @@ async def skin_analyze(
         "skin_type": skin_result.skin_type_name,
         "skin_score": skin_result.skin_score,
         "issues": skin_result.issues,
-        "suggestions": skin_result.suggestions,
+        "suggestions": ai_suggestions,
         "report": report,
         "photo_url": f"/uploads/{filename}",
     }
@@ -230,6 +234,10 @@ async def evaluate(
             skin_result = await analyze_skin(photo_for_skin.lstrip('/'))
             skin_source = skin_result.source
             
+            # 使用AI生成个性化建议
+            ai_suggestions = await generate_ai_suggestions(skin_result.issues, skin_result.skin_type_name)
+            skin_result.suggestions = ai_suggestions
+            
             # 存储肤质分析结果
             profile.skin_analysis = {
                 "source": skin_result.source,
@@ -237,7 +245,7 @@ async def evaluate(
                 "skin_type_name": skin_result.skin_type_name,
                 "skin_score": skin_result.skin_score,
                 "issues": skin_result.issues,
-                "suggestions": skin_result.suggestions,
+                "suggestions": ai_suggestions,
             }
             
             from app.services.faceplus_service import get_source_display
@@ -279,9 +287,14 @@ async def evaluate(
                 front_photo_url=profile.front_photo_url,
                 side_photo_url=profile.side_photo_url,
             )
-            # 如果有肤质分析结果，追加肤质信息
+            # 如果有肤质分析结果，追加肤质信息和AI建议
             if skin_result and skin_result.issues:
-                skin_msg = f"\n\n【肤质分析】\n皮肤类型: {skin_result.skin_type_name}\n肤质评分: {skin_result.skin_score:.0f}/100\n存在问题: {', '.join(skin_result.issues[:3])}"
+                skin_msg = f"\n\n---\n\n【肤质分析】\n皮肤类型: {skin_result.skin_type_name}\n肤质评分: {skin_result.skin_score:.0f}/100\n存在问题: {', '.join(skin_result.issues[:3])}"
+                # 添加AI生成的建议
+                if ai_suggestions:
+                    skin_msg += "\n\n【改善建议】\n"
+                    for i, suggestion in enumerate(ai_suggestions[:3], 1):
+                        skin_msg += f"{i}. {suggestion}\n"
                 analysis += skin_msg
             
             db.add(Conversation(user_id=user_id, role=RoleEnum.system, content=analysis))

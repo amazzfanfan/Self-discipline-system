@@ -93,30 +93,16 @@ ISSUE_MAP = {
     "pores_jaw": "下巴毛孔粗大",
 }
 
-# 护理建议映射
-SUGGESTION_MAP = {
-    "dark_circle": "保证充足睡眠，使用眼霜，冷敷眼部",
-    "eye_pouch": "减少盐分摄入，使用紧致眼霜，睡前少喝水",
-    "forehead_wrinkle": "注意防晒，使用抗皱精华，保持面部表情放松",
-    "nasolabial_fold": "使用抗皱精华，做面部按摩，注意防晒",
-    "crows_feet": "使用眼霜，做眼部按摩，避免过度眯眼",
-    "glabella_wrinkle": "放松眉头，使用抗皱产品，减少皱眉习惯",
-    "eye_finelines": "使用眼霜，保持眼部湿润，避免过度用眼",
-    "acne": "注意清洁，少吃油腻食物，使用祛痘产品",
-    "blackhead": "定期深层清洁，使用收敛水，不要用手挤",
-    "skin_spot": "注意防晒，使用美白精华，定期去角质",
-    "pores_forehead": "定期深层清洁，使用收敛水，控油",
-    "pores_left_cheek": "定期深层清洁，使用收敛水，注意补水",
-    "pores_right_cheek": "定期深层清洁，使用收敛水，注意补水",
-    "pores_jaw": "定期深层清洁，使用收敛水，注意清洁",
-}
+# 注意：护理建议不再写死，改用AI根据具体问题动态生成个性化建议
 
 
-def _calculate_skin_score(result: dict) -> tuple[float, list[str], list[str]]:
-    """计算肤质综合评分，返回 (评分, 问题列表, 建议列表)"""
+def _calculate_skin_score(result: dict) -> tuple[float, list[str]]:
+    """计算肤质综合评分，返回 (评分, 问题列表)
+    
+    注意：建议由AI动态生成，不再在此处生成
+    """
     score = 100.0
     issues = []
-    suggestions = []
     
     # 皱纹类问题扣分
     wrinkle_fields = [
@@ -127,34 +113,28 @@ def _calculate_skin_score(result: dict) -> tuple[float, list[str], list[str]]:
         if result.get(field, {}).get("value", 0) == 1:
             score -= 5
             issues.append(ISSUE_MAP.get(field, field))
-            suggestions.append(SUGGESTION_MAP.get(field, ""))
     
     # 黑眼圈/眼袋扣分
     if result.get("dark_circle", {}).get("value", 0) == 1:
         score -= 8
         issues.append("黑眼圈")
-        suggestions.append(SUGGESTION_MAP["dark_circle"])
     
     if result.get("eye_pouch", {}).get("value", 0) == 1:
         score -= 5
         issues.append("眼袋")
-        suggestions.append(SUGGESTION_MAP["eye_pouch"])
     
     # 皮肤问题扣分
     if result.get("acne", {}).get("value", 0) == 1:
         score -= 10
         issues.append("痘痘")
-        suggestions.append(SUGGESTION_MAP["acne"])
     
     if result.get("blackhead", {}).get("value", 0) == 1:
         score -= 5
         issues.append("黑头")
-        suggestions.append(SUGGESTION_MAP["blackhead"])
     
     if result.get("skin_spot", {}).get("value", 0) == 1:
         score -= 5
         issues.append("皮肤斑点")
-        suggestions.append(SUGGESTION_MAP["skin_spot"])
     
     # 毛孔问题扣分
     pore_fields = ["pores_forehead", "pores_left_cheek", "pores_right_cheek", "pores_jaw"]
@@ -162,15 +142,11 @@ def _calculate_skin_score(result: dict) -> tuple[float, list[str], list[str]]:
         if result.get(field, {}).get("value", 0) == 1:
             score -= 3
             issues.append(ISSUE_MAP.get(field, field))
-            suggestions.append(SUGGESTION_MAP.get(field, ""))
     
     # 确保分数在 0-100 之间
     score = max(0, min(100, score))
     
-    # 去重建议
-    suggestions = list(dict.fromkeys(suggestions))
-    
-    return score, issues, suggestions
+    return score, issues
 
 
 async def _call_faceplus_api(image_path: str) -> Optional[SkinAnalysisResult]:
@@ -203,8 +179,8 @@ async def _call_faceplus_api(image_path: str) -> Optional[SkinAnalysisResult]:
                 print("[face++] 返回数据为空")
                 return None
             
-            # 计算综合评分
-            skin_score, issues, suggestions = _calculate_skin_score(result)
+            # 计算综合评分（建议由AI后续动态生成）
+            skin_score, issues = _calculate_skin_score(result)
             
             # 提取皮肤类型
             skin_type = result.get("skin_type", {}).get("skin_type", 2)
@@ -232,7 +208,7 @@ async def _call_faceplus_api(image_path: str) -> Optional[SkinAnalysisResult]:
                 right_eyelids=result.get("right_eyelids", {}).get("value", 0),
                 skin_score=skin_score,
                 issues=issues,
-                suggestions=suggestions,
+                suggestions=[],  # 建议由AI后续动态生成
             )
     except Exception as e:
         print(f"[face++] 调用异常: {e}")
@@ -287,7 +263,6 @@ async def _call_ai_analysis(image_path: str) -> Optional[SkinAnalysisResult]:
             
             # 构建问题列表
             issues = []
-            suggestions = []
             issue_fields = {
                 "dark_circle": "黑眼圈",
                 "eye_pouch": "眼袋",
@@ -302,7 +277,6 @@ async def _call_ai_analysis(image_path: str) -> Optional[SkinAnalysisResult]:
             for field, name in issue_fields.items():
                 if result.get(field, 0) == 1:
                     issues.append(name)
-                    suggestions.append(SUGGESTION_MAP.get(field, ""))
             
             skin_type = result.get("skin_type", 2)
             
@@ -329,7 +303,7 @@ async def _call_ai_analysis(image_path: str) -> Optional[SkinAnalysisResult]:
                 right_eyelids=result.get("right_eyelids", 0),
                 skin_score=result.get("skin_score", 70),
                 issues=issues,
-                suggestions=suggestions,
+                suggestions=[],  # 建议由AI后续动态生成
             )
     except Exception as e:
         print(f"[AI肤质分析] 分析异常: {e}")
@@ -452,3 +426,112 @@ def get_source_display(source: str) -> str:
         "fallback": "保底规则",
     }
     return source_map.get(source, source)
+
+
+async def generate_ai_suggestions(issues: list[str], skin_type_name: str) -> list[str]:
+    """根据肤质问题列表，调用AI生成个性化护理建议
+    
+    Args:
+        issues: 检测到的皮肤问题列表，如 ["黑眼圈", "痘痘", "额头毛孔粗大"]
+        skin_type_name: 皮肤类型名称，如 "油性"、"干性"
+    
+    Returns:
+        AI生成的护理建议列表
+    """
+    if not issues:
+        return [f"皮肤状态良好，继续保持{skin_type_name}皮肤的日常护理"]
+    
+    issues_str = "、".join(issues)
+    prompt = (
+        f"用户肤质分析结果：皮肤类型为{skin_type_name}，检测到以下问题：{issues_str}。\n\n"
+        f"请针对每个问题给出具体、可操作的护理建议，返回JSON格式：\n"
+        f'{{"suggestions": ["建议1", "建议2", "建议3"]}}\n\n'
+        f"要求：\n"
+        f"1. 每条建议要具体，包含具体的产品类型或操作方法\n"
+        f"2. 建议要结合用户的皮肤类型\n"
+        f"3. 最多返回3条最重要的建议\n"
+        f"4. 只返回JSON，不要其他内容"
+    )
+    
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                f"{settings.AI_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": settings.chat_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 300,
+                    "response_format": {"type": "json_object"},
+                },
+            )
+            data = response.json()
+            content = data["choices"][0]["message"]["content"]
+            parsed = json.loads(content)
+            suggestions = parsed.get("suggestions", [])
+            
+            # 验证返回的是列表且非空
+            if isinstance(suggestions, list) and suggestions:
+                print(f"[AI建议] 成功生成{suggestions}")
+                return suggestions[:3]  # 最多返回3条
+    except Exception as e:
+        print(f"[AI建议] 生成失败: {e}")
+    
+    # 降级：返回通用建议
+    return [f"针对{issues_str}问题，建议咨询专业皮肤科医生"]
+
+
+async def generate_skin_task_ai(issues: list[str], skin_type_name: str) -> str:
+    """根据肤质分析结果，调用AI生成个性化护肤任务
+    
+    Args:
+        issues: 检测到的皮肤问题列表
+        skin_type_name: 皮肤类型名称
+    
+    Returns:
+        AI生成的护肤任务描述
+    """
+    if not issues:
+        # 没有明显问题，根据皮肤类型生成通用任务
+        type_tasks = {
+            "油性": "使用控油洁面乳清洁面部，配合清爽型保湿",
+            "干性": "使用温和洁面乳，配合滋润型保湿霜",
+            "混合性": "T区控油清洁，两颊重点保湿",
+        }
+        return type_tasks.get(skin_type_name, "认真护肤一次，保持良好状态")
+    
+    issues_str = "、".join(issues[:2])  # 取前两个主要问题
+    prompt = (
+        f"用户肤质问题：{issues_str}，皮肤类型：{skin_type_name}。\n\n"
+        f"请生成1个今日护肤任务，要求：\n"
+        f"1. 具体可执行，有明确的完成标准\n"
+        f"2. 针对用户的具体问题\n"
+        f"3. 20字以内\n\n"
+        f'返回JSON格式：{{"task": "任务描述"}}'
+    )
+    
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                f"{settings.AI_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": settings.chat_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 100,
+                    "response_format": {"type": "json_object"},
+                },
+            )
+            data = response.json()
+            content = data["choices"][0]["message"]["content"]
+            parsed = json.loads(content)
+            task = parsed.get("task", "")
+            
+            if task and len(task) < 100:
+                print(f"[AI护肤任务] 生成成功: {task}")
+                return task
+    except Exception as e:
+        print(f"[AI护肤任务] 生成失败: {e}")
+    
+    # 降级：返回通用任务
+    return f"针对{issues_str}进行基础护肤"
