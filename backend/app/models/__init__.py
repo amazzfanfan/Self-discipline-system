@@ -3,6 +3,8 @@ from app.models.score import UserScore, ScoreHistory, DimensionEnum
 from app.models.task import Task, TaskStatusEnum, DifficultyEnum
 from app.models.conversation import Conversation, RoleEnum
 from app.models.weight import WeightRecord
+from app.models.memory import Memory
+from app.models.goal import Goal, GoalType, GoalStatus, GoalSource
 
 __all__ = [
     "User", "UserProfile", "GenderEnum",
@@ -10,4 +12,6 @@ __all__ = [
     "Task", "TaskStatusEnum", "DifficultyEnum",
     "Conversation", "RoleEnum",
     "WeightRecord",
+    "Memory",
+    "Goal", "GoalType", "GoalStatus", "GoalSource",
 ]
