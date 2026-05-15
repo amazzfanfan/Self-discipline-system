@@ -25,6 +25,18 @@ class Settings(BaseSettings):
     AI_CHAT_MODEL: str = ""        # Non-reasoning model for chat/tasks (e.g. qwen-plus)
     AI_ANALYSIS_MODEL: str = ""    # Reasoning model for scoring/image analysis (e.g. mimo-v2.5-pro)
 
+    # LLM Configuration
+    LLM_MAX_RETRIES: int = 3
+    LLM_TIMEOUT: int = 30
+    LLM_FALLBACK_MODEL: str = "gpt-3.5-turbo"
+    LLM_TEMPERATURE: float = 0.7
+    LLM_MAX_TOKENS: int = 1500
+
+    # Embedding Configuration
+    EMBEDDING_API_KEY: str = ""
+    EMBEDDING_MODEL: str = "text-embedding-v2"
+    EMBEDDING_DIMENSION: int = 1536
+
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:5173"]
 
