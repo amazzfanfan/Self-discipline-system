@@ -110,3 +110,78 @@ class RuleBasedFilter:
 
         # 规则未命中 → 返回 None，交给 LLM 进一步判断
         return None
+
+
+class LLMBasedJudge:
+    """基于 LLM 的语义记忆判断器
+
+    当规则过滤器无法判定时，使用 LLM 进行更精确的语义分析。
+    """
+
+    JUDGE_PROMPT = """你是一个记忆判断助手。请分析以下对话内容，判断是否值得长期记忆。
+
+判断标准：
+1. 包含用户个人信息（姓名、生日、职业、地址等）→ 值得记住
+2. 包含用户偏好或喜好（喜欢什么、讨厌什么）→ 值得记住
+3. 包含用户目标或计划（想做什么、计划做什么）→ 值得记住
+4. 包含重要事实（健康数据、重要事件）→ 值得记住
+5. 包含情感表达（心情、感受）→ 适度记住
+6. 一般性问题、寒暄、请求帮助、闲聊 → 不需要记住
+
+请以 JSON 格式返回分析结果：
+{
+    "should_remember": true/false,
+    "importance": 0.0-1.0 之间的浮点数,
+    "memory_type": "fact/goal/preference/emotion/health/conversation" 中的一个,
+    "reason": "简短的判断理由"
+}
+
+待判断内容：
+{text}
+
+请只返回 JSON，不要有其他内容。"""
+
+    def __init__(self, llm_client):
+        """初始化 LLM 记忆判断器
+
+        Args:
+            llm_client: LLM 客户端实例，需要有 chat 方法
+        """
+        self.llm_client = llm_client
+
+    async def judge(self, content: str) -> tuple[bool, float, str]:
+        """使用 LLM 判断内容是否值得记忆
+
+        Args:
+            content: 待判断的文本内容
+
+        Returns:
+            (should_remember, importance, memory_type) 元组
+        """
+        import json
+
+        try:
+            prompt = self.JUDGE_PROMPT.format(text=content)
+            response = await self.llm_client.chat(
+                messages=[{"role": "user", "content": prompt}]
+            )
+
+            # 解析 JSON 响应
+            result = json.loads(response)
+            should_remember = result.get("should_remember", False)
+            importance = float(result.get("importance", 0.5))
+            memory_type = result.get("memory_type", "conversation")
+
+            # 确保 importance 在有效范围内
+            importance = max(0.0, min(1.0, importance))
+
+            # 确保 memory_type 是有效类型
+            valid_types = {"fact", "goal", "preference", "emotion", "health", "conversation"}
+            if memory_type not in valid_types:
+                memory_type = "conversation"
+
+            return (should_remember, importance, memory_type)
+
+        except (json.JSONDecodeError, KeyError, ValueError) as e:
+            # 解析失败时返回默认值
+            return (False, 0.5, "conversation")
