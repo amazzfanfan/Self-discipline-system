@@ -12,8 +12,8 @@ from typing import Optional
 import logging
 import re
 import traceback
-from pgvector.sqlalchemy import cosine_distance
 from app.services.embedding_service import embedding_service
+from app.services.memory_judge import HybridMemoryJudge
 
 logger = logging.getLogger(__name__)
 
@@ -21,8 +21,9 @@ logger = logging.getLogger(__name__)
 class MemoryService:
     """记忆管理服务 - 支持向量语义搜索"""
     
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession, llm_client=None):
         self.db = db
+        self.judge = HybridMemoryJudge(llm_client=llm_client)
     
     async def store_memory(
         self,
@@ -109,10 +110,11 @@ class MemoryService:
                 stmt = (
                     select(
                         Memory,
-                        cosine_distance(Memory.embedding, query_embedding).label("distance")
+                        text("1 - (memory.embedding <=> :embedding)").label("similarity")
                     )
                     .where(Memory.user_id == user_id)
                     .where(Memory.embedding.isnot(None))
+                    .params(embedding=query_embedding)
                 )
 
                 if memory_type:
@@ -122,8 +124,8 @@ class MemoryService:
                     stmt = stmt.where(Memory.importance_score >= min_importance)
 
                 stmt = stmt.order_by(
-                    cosine_distance(Memory.embedding, query_embedding)
-                ).limit(top_k)
+                    text("memory.embedding <=> :embedding")
+                ).params(embedding=query_embedding).limit(top_k)
 
                 result = await self.db.execute(stmt)
                 rows = result.all()
@@ -316,29 +318,19 @@ class MemoryService:
             for m in memories
         ]
     
-    async def should_remember(self, content: str) -> bool:
+    async def should_remember(self, content: str, role: str = "user") -> bool:
         """
         判断内容是否值得记住
         
         Args:
             content: 对话内容
+            role: 角色（user/system）
         
         Returns:
             是否值得记住
         """
-        keywords = [
-            # 目标/计划
-            "目标", "计划", "打算", "准备", "想要",
-            # 偏好
-            "喜欢", "讨厌", "习惯", "偏好", "最爱",
-            # 健康数据
-            "体重", "睡眠", "运动", "饮食", "健康",
-            # 情感
-            "难过", "开心", "焦虑", "压力", "心情",
-            # 个人信息
-            "生日", "年龄", "工作", "学校", "家庭",
-        ]
-        return any(kw in content for kw in keywords)
+        result = await self.judge.judge(content, role=role)
+        return result["should_remember"]
     
     async def auto_store_conversation(
         self,
@@ -356,14 +348,15 @@ class MemoryService:
             role: 角色（user/system）
             source_id: 来源 ID（可选）
         """
-        if await self.should_remember(content):
-            importance = 0.8 if role == "user" else 0.6
+        judgment = await self.judge.judge(content, role=role)
+
+        if judgment["should_remember"]:
             await self.store_memory(
                 user_id=user_id,
                 content=content,
                 role=role,
-                memory_type="conversation",
-                importance_score=importance,
+                memory_type=judgment["memory_type"],
+                importance_score=judgment["importance"],
                 source_id=source_id
             )
     
