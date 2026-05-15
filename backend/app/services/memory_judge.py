@@ -1,6 +1,8 @@
 """
-Memory Judge - 基于规则的快速记忆判断
-第一层快速过滤器，在调用 LLM 之前进行低成本判断
+Memory Judge - 记忆判断模块
+
+第一层: RuleBasedFilter - 基于规则的快速过滤器（低延迟）
+第二层: LLMBasedJudge - 基于 LLM 的语义判断器（高精度）
 """
 
 import re
