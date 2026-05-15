@@ -11,6 +11,7 @@ from app.modules.score.router import router as score_router
 from app.modules.task.router import router as task_router
 from app.modules.chat.router import router as chat_router
 from app.modules.weight.router import router as weight_router
+from app.modules.goals.router import router as goals_router
 
 settings = get_settings()
 
@@ -35,6 +36,7 @@ app.include_router(score_router)
 app.include_router(task_router)
 app.include_router(chat_router)
 app.include_router(weight_router)
+app.include_router(goals_router)
 
 import os
 os.makedirs("uploads", exist_ok=True)
