@@ -3,10 +3,15 @@ Memory Judge - 记忆判断模块
 
 第一层: RuleBasedFilter - 基于规则的快速过滤器（低延迟）
 第二层: LLMBasedJudge - 基于 LLM 的语义判断器（高精度）
+第三层: HybridMemoryJudge - 混合记忆判断器（整合规则、LLM、评分、衰减）
 """
 
+import logging
 import re
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class RuleBasedFilter:
@@ -187,3 +192,223 @@ class LLMBasedJudge:
         except (json.JSONDecodeError, KeyError, ValueError) as e:
             # 解析失败时返回默认值
             return (False, 0.5, "conversation")
+
+
+class HybridMemoryJudge:
+    """混合记忆判断器
+
+    整合以下组件，提供统一的记忆判断接口：
+    - RuleBasedFilter: 基于规则的快速过滤（第一层）
+    - LLMBasedJudge: 基于 LLM 的语义判断（第二层，仅在规则层不确定时调用）
+    - MemoryImportanceScorer: 综合重要性评分
+    - MemoryDecay: 记忆重要性时间衰减
+
+    典型用法:
+        from app.services.memory_judge import HybridMemoryJudge
+        from app.services.memory_scorer import MemoryImportanceScorer
+        from app.services.memory_decay import MemoryDecay
+
+        judge = HybridMemoryJudge(
+            llm_client=my_llm_client,          # 可选，不传则跳过 LLM 层
+            importance_scorer=MemoryImportanceScorer(),
+            memory_decay=MemoryDecay(),
+        )
+        result = await judge.judge("我的目标是学会弹钢琴")
+    """
+
+    # 权重：规则分 vs LLM 分 vs 评分器分 的融合比例
+    RULE_WEIGHT = 0.4
+    LLM_WEIGHT = 0.35
+    SCORER_WEIGHT = 0.25
+
+    def __init__(
+        self,
+        llm_client: Any = None,
+        importance_scorer: Any = None,
+        memory_decay: Any = None,
+    ):
+        """初始化混合记忆判断器
+
+        Args:
+            llm_client: LLM 客户端实例（可选），需有 async chat 方法
+            importance_scorer: MemoryImportanceScorer 实例（可选）
+            memory_decay: MemoryDecay 实例（可选）
+        """
+        self.rule_filter = RuleBasedFilter()
+        self.llm_judge = LLMBasedJudge(llm_client) if llm_client else None
+        self.importance_scorer = importance_scorer
+        self.memory_decay = memory_decay
+
+    async def judge(
+        self,
+        text: str,
+        role: str = "user",
+        context: Optional[dict] = None,
+    ) -> dict[str, Any]:
+        """判断文本是否值得记忆
+
+        三层判断流程：
+        1. RuleBasedFilter 快速过滤（确定性结果直接返回）
+        2. LLMBasedJudge 语义判断（规则不确定时调用）
+        3. MemoryImportanceScorer 综合评分 + 融合各层分数
+
+        Args:
+            text: 待判断的文本内容
+            role: 消息来源角色 ("user" | "system")
+            context: 上下文信息，传递给 ImportanceScorer
+
+        Returns:
+            dict: {
+                "should_remember": bool,     # 是否值得记忆
+                "importance": float,         # 最终重要性分数 (0-1)
+                "memory_type": str,          # 记忆类型
+                "source": str,               # 判断来源 ("rule" | "llm" | "hybrid")
+                "rule_result": tuple | None, # 规则层原始结果
+                "llm_result": tuple | None,  # LLM 层原始结果
+                "scorer_score": float,       # 评分器分数
+            }
+        """
+        result: dict[str, Any] = {
+            "should_remember": False,
+            "importance": 0.0,
+            "memory_type": "conversation",
+            "source": "rule",
+            "rule_result": None,
+            "llm_result": None,
+            "scorer_score": 0.0,
+        }
+
+        if not text or not text.strip():
+            return result
+
+        # ── 第一层: 规则过滤 ──────────────────────────────────────
+        rule_result = self.rule_filter.filter(text, role)
+        result["rule_result"] = rule_result
+
+        if rule_result is not None:
+            should_remember, importance, memory_type = rule_result
+            result["should_remember"] = should_remember
+            result["importance"] = importance
+            result["memory_type"] = memory_type
+            result["source"] = "rule"
+
+            # 如果规则层有明确结论且不需要 LLM 参与，仍然计算评分器分数用于融合
+            if self.importance_scorer:
+                scorer_score = self.importance_scorer.score(text, context)
+                result["scorer_score"] = scorer_score
+                # 融合：规则分权重更高
+                final_importance = (
+                    self.RULE_WEIGHT * importance
+                    + self.SCORER_WEIGHT * scorer_score
+                )
+                # 规则层判定不需要记忆时，LLM 权重为 0
+                result["importance"] = max(0.0, min(1.0, final_importance))
+                # 重新判断 should_remember：融合后分数 >= 0.5 才记住
+                if should_remember and result["importance"] < 0.5:
+                    result["should_remember"] = False
+
+            return result
+
+        # ── 第二层: LLM 判断（规则不确定时） ─────────────────────
+        llm_result: Optional[tuple[bool, float, str]] = None
+        if self.llm_judge:
+            try:
+                llm_result = await self.llm_judge.judge(text)
+                result["llm_result"] = llm_result
+            except Exception as e:
+                logger.warning("LLM judge failed: %s", e)
+                llm_result = None
+
+        # ── 第三层: 综合评分 ─────────────────────────────────────
+        scorer_score = 0.5  # 默认中性分
+        if self.importance_scorer:
+            scorer_score = self.importance_scorer.score(text, context)
+        result["scorer_score"] = scorer_score
+
+        if llm_result is not None:
+            llm_should, llm_importance, llm_type = llm_result
+            result["memory_type"] = llm_type
+
+            # 融合三层分数
+            final_importance = (
+                self.LLM_WEIGHT * llm_importance
+                + self.SCORER_WEIGHT * scorer_score
+            )
+            result["importance"] = max(0.0, min(1.0, final_importance))
+            result["should_remember"] = llm_should and result["importance"] >= 0.5
+            result["source"] = "llm"
+        else:
+            # LLM 不可用时，仅依赖评分器
+            result["importance"] = scorer_score
+            result["should_remember"] = scorer_score >= 0.5
+            result["source"] = "hybrid"
+
+        return result
+
+    def apply_decay(
+        self,
+        original_importance: float,
+        created_at: datetime,
+        last_accessed: Optional[datetime] = None,
+        access_count: int = 0,
+    ) -> float:
+        """对记忆重要性施加时间衰减
+
+        如果未配置 MemoryDecay，则直接返回原始分数。
+
+        Args:
+            original_importance: 原始重要性分数 (0-1)
+            created_at: 记忆创建时间
+            last_accessed: 最后访问时间（None 表示从未访问）
+            access_count: 累计访问次数
+
+        Returns:
+            float: 衰减后的重要性分数
+        """
+        if not self.memory_decay:
+            return original_importance
+
+        return self.memory_decay.calculate_importance(
+            original_importance=original_importance,
+            created_at=created_at,
+            last_accessed=last_accessed,
+            access_count=access_count,
+        )
+
+    async def judge_with_decay(
+        self,
+        text: str,
+        role: str = "user",
+        context: Optional[dict] = None,
+        created_at: Optional[datetime] = None,
+        last_accessed: Optional[datetime] = None,
+        access_count: int = 0,
+    ) -> dict[str, Any]:
+        """判断 + 衰减的完整流程
+
+        等价于先调用 judge() 再调用 apply_decay()，方便一步到位。
+
+        Args:
+            text: 待判断的文本内容
+            role: 消息来源角色
+            context: 上下文信息
+            created_at: 记忆创建时间（用于衰减计算，默认为当前时间）
+            last_accessed: 最后访问时间
+            access_count: 累计访问次数
+
+        Returns:
+            dict: 与 judge() 返回格式相同，importance 为衰减后的值
+        """
+        result = await self.judge(text, role, context)
+
+        if self.memory_decay and result["should_remember"]:
+            if created_at is None:
+                created_at = datetime.now(timezone.utc)
+            result["importance"] = self.apply_decay(
+                original_importance=result["importance"],
+                created_at=created_at,
+                last_accessed=last_accessed,
+                access_count=access_count,
+            )
+
+        return result
