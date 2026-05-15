@@ -1,3 +1,8 @@
+"""
+Chat Router - 聊天路由（完整版）
+集成上下文构建器、记忆服务和用户画像服务
+"""
+
 import json
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -7,13 +12,22 @@ from app.core.database import get_db, async_session
 from app.core.deps import get_current_user
 from app.models.user import User
 from app.models.conversation import Conversation, RoleEnum
-from app.services.ai_service import chat_completion, chat_completion_stream
+from app.services.ai_service import chat_completion as ai_chat_completion, chat_completion_stream as ai_chat_completion_stream
+from app.services.context_builder import ContextBuilder
+from app.services.memory_service import MemoryService
+from app.services.profile_service import ProfileService
+from app.services.goal_service import goal_service
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 
 @router.post("/send")
-async def send_message(content: str, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def send_message(
+    content: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """发送消息并获取 AI 回复"""
     from app.services.ai_service import detect_intent
     from app.services.task_service import complete_task_by_dimension, skip_task_by_dimension, get_today_tasks_dict
     from app.services.weight_service import record_weight as record_weight_service
@@ -21,6 +35,7 @@ async def send_message(content: str, user: User = Depends(get_current_user), db:
     # Save user message
     user_msg = Conversation(user_id=user.id, role=RoleEnum.user, content=content)
     db.add(user_msg)
+    await db.flush()
 
     # Detect intent
     today_tasks = await get_today_tasks_dict(db, str(user.id))
@@ -69,33 +84,59 @@ async def send_message(content: str, user: User = Depends(get_current_user), db:
     if action_context:
         await db.commit()
 
-    # Get recent history for context (last 10 messages)
-    result = await db.execute(
-        select(Conversation).where(Conversation.user_id == user.id)
-        .order_by(Conversation.created_at.desc()).limit(10)
+    # 使用上下文构建器构建消息
+    context_builder = ContextBuilder(db, user)
+    messages = await context_builder.build_context_with_action(
+        user_message=content,
+        action_context=action_context,
+        include_recent=True,
+        include_relevant=True
     )
-    history = list(reversed(result.scalars().all()))
-    messages = [{"role": h.role.value, "content": h.content} for h in history]
-    messages.append({"role": "user", "content": content})
-
-    # Build user context with action result
-    user_context = f"用户昵称：{user.nickname}"
-    if action_context:
-        user_context += f"\n{action_context}"
 
     # AI reply
-    ai_reply = await chat_completion(messages, user_context)
+    ai_reply = await ai_chat_completion(messages)
 
     # Save AI reply
     sys_msg = Conversation(user_id=user.id, role=RoleEnum.system, content=ai_reply)
     db.add(sys_msg)
+    await db.commit()
+
+    # 自动存储记忆
+    memory_service = MemoryService(db)
+    await memory_service.auto_store_conversation(
+        user_id=str(user.id),
+        content=content,
+        role="user",
+        source_id=str(user_msg.id)
+    )
+    await memory_service.auto_store_conversation(
+        user_id=str(user.id),
+        content=ai_reply,
+        role="system",
+        source_id=str(sys_msg.id)
+    )
+
+    # 更新用户画像
+    profile_service = ProfileService(db)
+    await profile_service.extract_and_update_profile(str(user.id), content)
+
+    # 自动提取目标
+    try:
+        await goal_service.extract_goal_from_message(db, str(user.id), content)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"[目标提取] 失败: {e}")
 
     return {"reply": ai_reply}
 
 
 @router.post("/stream")
-async def stream_message(content: str, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    """Stream AI reply via Server-Sent Events."""
+async def stream_message(
+    content: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """流式获取 AI 回复"""
     from app.services.ai_service import detect_intent
     from app.services.task_service import complete_task_by_dimension, skip_task_by_dimension, get_today_tasks_dict
     from app.services.weight_service import record_weight as record_weight_service
@@ -158,29 +199,56 @@ async def stream_message(content: str, user: User = Depends(get_current_user), d
     if action_context:
         await db.commit()
 
-    # Get recent history
-    result = await db.execute(
-        select(Conversation).where(Conversation.user_id == user.id)
-        .order_by(Conversation.created_at.desc()).limit(10)
+    # 使用上下文构建器构建消息
+    context_builder = ContextBuilder(db, user)
+    messages = await context_builder.build_context_with_action(
+        user_message=content,
+        action_context=action_context,
+        include_recent=True,
+        include_relevant=True
     )
-    history = list(reversed(result.scalars().all()))
-    messages = [{"role": h.role.value, "content": h.content} for h in history]
-    messages.append({"role": "user", "content": content})
-
-    user_context = f"用户昵称：{nickname}"
-    if action_context:
-        user_context += f"\n{action_context}"
 
     async def event_generator():
         full_reply = []
-        async for chunk in chat_completion_stream(messages, user_context):
+        async for chunk in ai_chat_completion_stream(messages):
             full_reply.append(chunk)
             yield f"data: {json.dumps({'content': chunk}, ensure_ascii=False)}\n\n"
 
         # Save the complete AI reply in a fresh session
-        async with async_session() as session:
-            session.add(Conversation(user_id=user_id, role=RoleEnum.system, content="".join(full_reply)))
-            await session.commit()
+        try:
+            async with async_session() as session:
+                # 保存 AI 回复
+                sys_msg = Conversation(user_id=user_id, role=RoleEnum.system, content="".join(full_reply))
+                session.add(sys_msg)
+                await session.commit()
+                
+                # 存储记忆
+                memory_service = MemoryService(session)
+                await memory_service.auto_store_conversation(
+                    user_id=user_id,
+                    content=content,
+                    role="user",
+                    source_id=str(user_msg.id)
+                )
+                await memory_service.auto_store_conversation(
+                    user_id=user_id,
+                    content="".join(full_reply),
+                    role="system",
+                    source_id=str(sys_msg.id)
+                )
+                
+                # 更新用户画像
+                profile_service = ProfileService(session)
+                await profile_service.extract_and_update_profile(user_id, content)
+
+                # 自动提取目标
+                try:
+                    await goal_service.extract_goal_from_message(session, user_id, content)
+                except Exception as e:
+                    print(f"[目标提取] 失败: {e}")
+        except Exception as e:
+            # 记录错误但不影响响应
+            print(f"[聊天] 后处理错误: {e}")
 
         yield "data: [DONE]\n\n"
 
@@ -188,13 +256,79 @@ async def stream_message(content: str, user: User = Depends(get_current_user), d
 
 
 @router.get("/history")
-async def get_history(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db), limit: int = 50):
+async def get_history(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    limit: int = 50
+):
+    """获取聊天历史"""
     result = await db.execute(
         select(Conversation).where(Conversation.user_id == user.id)
         .order_by(Conversation.created_at.desc()).limit(limit)
     )
     messages = list(reversed(result.scalars().all()))
     return [
-        {"id": str(m.id), "role": m.role.value, "content": m.content, "created_at": m.created_at.isoformat()}
+        {
+            "id": str(m.id),
+            "role": m.role.value,
+            "content": m.content,
+            "created_at": m.created_at.isoformat()
+        }
         for m in messages
     ]
+
+
+@router.get("/memories")
+async def get_memories(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    limit: int = 20,
+    memory_type: str = None
+):
+    """获取用户记忆"""
+    memory_service = MemoryService(db)
+    memories = await memory_service.get_recent_memories(
+        user_id=str(user.id),
+        limit=limit,
+        memory_type=memory_type
+    )
+    return memories
+
+
+@router.get("/memories/search")
+async def search_memories(
+    query: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    top_k: int = 5
+):
+    """搜索相关记忆"""
+    memory_service = MemoryService(db)
+    memories = await memory_service.search_similar_memories(
+        user_id=str(user.id),
+        query=query,
+        top_k=top_k
+    )
+    return memories
+
+
+@router.get("/memories/stats")
+async def get_memory_stats(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取记忆统计信息"""
+    memory_service = MemoryService(db)
+    stats = await memory_service.get_memory_stats(str(user.id))
+    return stats
+
+
+@router.get("/profile")
+async def get_profile(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取用户画像"""
+    profile_service = ProfileService(db)
+    summary = await profile_service.get_user_summary(str(user.id))
+    return {"summary": summary}
