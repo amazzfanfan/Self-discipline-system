@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.conversation import Conversation
 from app.models.user import User
 from app.services.memory_service import MemoryService
+from app.services.memory_judge import HybridMemoryJudge
 import logging
 
 try:
@@ -24,10 +25,10 @@ BJT = timezone(timedelta(hours=8))
 class ContextBuilder:
     """智能上下文构建器"""
     
-    def __init__(self, db: AsyncSession, user: User):
+    def __init__(self, db: AsyncSession, user: User, llm_client=None):
         self.db = db
         self.user = user
-        self.memory_service = MemoryService(db)
+        self.memory_service = MemoryService(db, llm_client=llm_client)
     
     async def build_system_prompt(self) -> str:
         """
@@ -199,6 +200,7 @@ class ContextBuilder:
         if goal_service is not None:
             try:
                 relevant_goals = await goal_service.search_goals(
+                    db=self.db,
                     user_id=str(self.user.id),
                     query=user_message,
                     top_k=3
@@ -206,7 +208,7 @@ class ContextBuilder:
                 if relevant_goals:
                     goals_text = "相关目标：\n"
                     for goal in relevant_goals:
-                        goals_text += f"- {goal}\n"
+                        goals_text += f"- {goal.get('content', goal)}\n"
                     context.append({"role": "system", "content": goals_text})
                     logger.info(f"Relevant goals: {len(relevant_goals)} items")
             except Exception as e:
