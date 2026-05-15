@@ -1,7 +1,45 @@
 import { useState, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import api from '../services/api';
+
+const goalTypeIcons: Record<string, string> = {
+  exercise: '🏃',
+  diet: '🥗',
+  sleep: '😴',
+  appearance: '✨',
+  weight: '⚖️',
+  habit: '🔄',
+  other: '🎯',
+};
+
+const goalTypeLabels: Record<string, string> = {
+  exercise: '运动',
+  diet: '饮食',
+  sleep: '睡眠',
+  appearance: '外貌',
+  weight: '体重',
+  habit: '习惯',
+  other: '其他',
+};
+
+interface GoalForm {
+  title: string;
+  description: string;
+  goal_type: string;
+  target_value: string;
+  target_unit: string;
+  deadline: string;
+}
+
+const emptyGoalForm: GoalForm = {
+  title: '',
+  description: '',
+  goal_type: 'other',
+  target_value: '',
+  target_unit: '',
+  deadline: '',
+};
 
 export default function Profile() {
   const queryClient = useQueryClient();
@@ -9,6 +47,12 @@ export default function Profile() {
   const [form, setForm] = useState({ height_cm: '', weight_kg: '', age: '', gender: 'male' });
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Goal management state
+  const [showGoalForm, setShowGoalForm] = useState(false);
+  const [goalForm, setGoalForm] = useState<GoalForm>(emptyGoalForm);
+  const [editingGoalId, setEditingGoalId] = useState<number | null>(null);
+  const [deletingGoalId, setDeletingGoalId] = useState<number | null>(null);
 
   const { data: profile } = useQuery({
     queryKey: ['profile'],
@@ -22,6 +66,12 @@ export default function Profile() {
       });
       return p;
     }),
+  });
+
+  // Goals query
+  const { data: goals, isLoading: goalsLoading } = useQuery({
+    queryKey: ['goals'],
+    queryFn: () => api.get('/goals').then((r) => r.data),
   });
 
   const updateMutation = useMutation({
@@ -65,6 +115,34 @@ export default function Profile() {
     },
   });
 
+  // Goal mutations
+  const createGoalMutation = useMutation({
+    mutationFn: (data: any) => api.post('/goals', data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['goals'] });
+      setShowGoalForm(false);
+      setGoalForm(emptyGoalForm);
+    },
+  });
+
+  const updateGoalMutation = useMutation({
+    mutationFn: ({ id, data }: { id: number; data: any }) => api.put(`/goals/${id}`, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['goals'] });
+      setEditingGoalId(null);
+      setShowGoalForm(false);
+      setGoalForm(emptyGoalForm);
+    },
+  });
+
+  const deleteGoalMutation = useMutation({
+    mutationFn: (id: number) => api.delete(`/goals/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['goals'] });
+      setDeletingGoalId(null);
+    },
+  });
+
   const handlePhotoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -79,6 +157,48 @@ export default function Profile() {
       age: parseInt(form.age),
       gender: form.gender,
     });
+  };
+
+  const handleGoalSubmit = () => {
+    const payload: any = {
+      title: goalForm.title,
+      description: goalForm.description || undefined,
+      goal_type: goalForm.goal_type,
+      target_value: goalForm.target_value ? parseFloat(goalForm.target_value) : undefined,
+      target_unit: goalForm.target_unit || undefined,
+      deadline: goalForm.deadline || undefined,
+    };
+
+    if (editingGoalId !== null) {
+      updateGoalMutation.mutate({ id: editingGoalId, data: payload });
+    } else {
+      createGoalMutation.mutate(payload);
+    }
+  };
+
+  const handleEditGoal = (goal: any) => {
+    setEditingGoalId(goal.id);
+    setGoalForm({
+      title: goal.title || '',
+      description: goal.description || '',
+      goal_type: goal.goal_type || 'other',
+      target_value: goal.target_value?.toString() || '',
+      target_unit: goal.target_unit || '',
+      deadline: goal.deadline || '',
+    });
+    setShowGoalForm(true);
+  };
+
+  const handleCancelGoalForm = () => {
+    setShowGoalForm(false);
+    setEditingGoalId(null);
+    setGoalForm(emptyGoalForm);
+  };
+
+  const handleDeleteGoal = (id: number) => {
+    if (confirm('确定要删除这个目标吗？')) {
+      deleteGoalMutation.mutate(id);
+    }
   };
 
   const genderLabel: Record<string, string> = { male: '男', female: '女', other: '其他' };
@@ -209,6 +329,196 @@ export default function Profile() {
             )}
           </motion.div>
         </div>
+
+        {/* Goals Management */}
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
+          className="bg-slate-900 rounded-2xl p-5 border border-slate-800 mb-4">
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-base font-semibold text-slate-300">🎯 我的目标</h2>
+            {!showGoalForm && (
+              <button onClick={() => { setShowGoalForm(true); setEditingGoalId(null); setGoalForm(emptyGoalForm); }}
+                className="text-sm text-blue-400 hover:text-blue-300 transition-colors flex items-center gap-1">
+                <span className="text-lg leading-none">+</span> 新增目标
+              </button>
+            )}
+          </div>
+
+          {/* Goal Form */}
+          <AnimatePresence>
+            {showGoalForm && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                className="overflow-hidden mb-4"
+              >
+                <div className="bg-slate-800/60 rounded-xl p-4 space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-slate-400 text-sm mb-1 block">目标名称 *</label>
+                      <input
+                        type="text"
+                        value={goalForm.title}
+                        onChange={(e) => setGoalForm({ ...goalForm, title: e.target.value })}
+                        placeholder="如：减重5公斤"
+                        className="w-full px-4 py-2.5 bg-slate-800 rounded-lg text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-slate-400 text-sm mb-1 block">目标类型</label>
+                      <select
+                        value={goalForm.goal_type}
+                        onChange={(e) => setGoalForm({ ...goalForm, goal_type: e.target.value })}
+                        className="w-full px-4 py-2.5 bg-slate-800 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                      >
+                        {Object.entries(goalTypeLabels).map(([key, label]) => (
+                          <option key={key} value={key}>{goalTypeIcons[key]} {label}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-slate-400 text-sm mb-1 block">描述</label>
+                    <input
+                      type="text"
+                      value={goalForm.description}
+                      onChange={(e) => setGoalForm({ ...goalForm, description: e.target.value })}
+                      placeholder="目标详情（可选）"
+                      className="w-full px-4 py-2.5 bg-slate-800 rounded-lg text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label className="text-slate-400 text-sm mb-1 block">目标值</label>
+                      <input
+                        type="number"
+                        value={goalForm.target_value}
+                        onChange={(e) => setGoalForm({ ...goalForm, target_value: e.target.value })}
+                        placeholder="如 70"
+                        className="w-full px-4 py-2.5 bg-slate-800 rounded-lg text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-slate-400 text-sm mb-1 block">单位</label>
+                      <input
+                        type="text"
+                        value={goalForm.target_unit}
+                        onChange={(e) => setGoalForm({ ...goalForm, target_unit: e.target.value })}
+                        placeholder="如 kg、次"
+                        className="w-full px-4 py-2.5 bg-slate-800 rounded-lg text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-slate-400 text-sm mb-1 block">截止日期</label>
+                      <input
+                        type="date"
+                        value={goalForm.deadline}
+                        onChange={(e) => setGoalForm({ ...goalForm, deadline: e.target.value })}
+                        className="w-full px-4 py-2.5 bg-slate-800 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex gap-3 pt-1">
+                    <button onClick={handleCancelGoalForm}
+                      className="flex-1 py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm transition-colors">
+                      取消
+                    </button>
+                    <button
+                      onClick={handleGoalSubmit}
+                      disabled={!goalForm.title || createGoalMutation.isPending || updateGoalMutation.isPending}
+                      className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 disabled:text-slate-500 text-white rounded-lg text-sm transition-colors"
+                    >
+                      {createGoalMutation.isPending || updateGoalMutation.isPending
+                        ? '保存中...'
+                        : editingGoalId !== null ? '更新目标' : '创建目标'}
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Goals List */}
+          {goalsLoading ? (
+            <div className="text-center py-6 text-slate-500 text-sm">加载中...</div>
+          ) : goals?.length === 0 ? (
+            <div className="text-center py-8">
+              <div className="text-3xl mb-2">🎯</div>
+              <p className="text-slate-500 text-sm">暂无目标，点击上方按钮添加第一个目标</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {goals?.map((goal: any, i: number) => (
+                <motion.div
+                  key={goal.id}
+                  initial={{ opacity: 0, x: -10 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: i * 0.05 }}
+                  className="bg-slate-800/60 rounded-xl p-4 flex items-center gap-3 group"
+                >
+                  <div className="text-2xl flex-shrink-0">
+                    {goalTypeIcons[goal.goal_type] || '🎯'}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-white font-medium text-sm truncate">{goal.title}</span>
+                      <span className="text-xs px-2 py-0.5 rounded bg-slate-700 text-slate-400 flex-shrink-0">
+                        {goalTypeLabels[goal.goal_type] || '其他'}
+                      </span>
+                    </div>
+                    {goal.description && (
+                      <p className="text-slate-500 text-xs mt-0.5 truncate">{goal.description}</p>
+                    )}
+                    <div className="flex items-center gap-3 mt-1">
+                      {goal.target_value && (
+                        <span className="text-slate-600 text-xs">
+                          目标: {goal.target_value} {goal.target_unit || ''}
+                        </span>
+                      )}
+                      {goal.deadline && (
+                        <span className="text-slate-600 text-xs">
+                          截止: {goal.deadline}
+                        </span>
+                      )}
+                      {goal.current_value !== undefined && goal.target_value && (
+                        <span className="text-emerald-500/60 text-xs">
+                          进度: {goal.current_value}/{goal.target_value} {goal.target_unit || ''}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                    <button
+                      onClick={() => handleEditGoal(goal)}
+                      className="p-2 text-slate-400 hover:text-blue-400 hover:bg-slate-700 rounded-lg transition-colors"
+                      title="编辑"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                          d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                      </svg>
+                    </button>
+                    <button
+                      onClick={() => handleDeleteGoal(goal.id)}
+                      disabled={deletingGoalId === goal.id}
+                      className="p-2 text-slate-400 hover:text-red-400 hover:bg-slate-700 rounded-lg transition-colors"
+                      title="删除"
+                    >
+                      {deletingGoalId === goal.id ? (
+                        <span className="text-xs">...</span>
+                      ) : (
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                      )}
+                    </button>
+                  </div>
+                </motion.div>
+              ))}
+            </div>
+          )}
+        </motion.div>
 
         {/* Re-evaluate */}
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }}
