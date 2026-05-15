@@ -155,17 +155,32 @@ DIMENSION_TASK_GUIDE = {
 }
 
 
-async def generate_task(nickname: str, dimension: str, score: float, difficulty: str, recent_tasks: list[str]) -> str:
-    """AI generates a daily task title. Returns a short string."""
+async def generate_task(nickname: str, dimension: str, score: float, difficulty: str, recent_tasks: list[str], goal_content: str = None) -> str:
+    """AI generates a daily task title. Returns a short string.
+    
+    Args:
+        nickname: User nickname
+        dimension: Task dimension (exercise/diet/sleep/appearance)
+        score: Current score for this dimension
+        difficulty: Task difficulty level
+        recent_tasks: List of recent task titles
+        goal_content: Optional user goal content to base task on
+    """
     recent = "、".join(recent_tasks[-5:]) if recent_tasks else "无"
     diff_cn = {"easy": "简单", "medium": "中等", "hard": "困难"}.get(difficulty, "中等")
     dim_guide = DIMENSION_TASK_GUIDE.get(dimension, "")
+
+    # Build goal context if available
+    goal_context = ""
+    if goal_content:
+        goal_context = f"\n用户目标：{goal_content}\n请生成与该目标相关的任务，帮助用户逐步实现目标。\n"
 
     prompt = (
         f"请为用户生成1个{dimension}维度的今日任务。\n"
         f"难度：{diff_cn}，当前评分：{score}分，最近做过的：{recent}（避免重复）。\n"
         f"要求：具体可执行，有明确完成标准。\n\n"
-        f"重要：{dim_guide}\n\n"
+        f"重要：{dim_guide}\n"
+        f"{goal_context}\n"
         f'返回JSON格式：{{"task": "任务标题"}}'
     )
 

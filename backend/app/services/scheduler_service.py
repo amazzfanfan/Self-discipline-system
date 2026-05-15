@@ -6,8 +6,10 @@ from app.models.user import User, UserProfile
 from app.models.score import UserScore, DimensionEnum
 from app.models.task import Task, DifficultyEnum
 from app.models.conversation import Conversation, RoleEnum
+from app.models.goal import GoalStatus
 from app.services.ai_service import generate_task
 from app.services.faceplus_service import generate_skin_task_ai
+from app.services.goal_service import goal_service
 
 scheduler = AsyncIOScheduler()
 
@@ -37,6 +39,23 @@ async def generate_tasks_for_user(user_id, nickname: str, db=None):
         profile = profile_result.scalar_one_or_none()
         skin_analysis = profile.skin_analysis if profile else None
 
+        # 获取用户目标并按类型分组
+        goals_by_type = {}
+        try:
+            user_goals = await goal_service.get_user_goals(
+                db=session,
+                user_id=user_id,
+                status=GoalStatus.active.value
+            )
+            # 按目标类型分组，每个类型取最新的一个目标
+            for goal in user_goals:
+                goal_type = goal.get("goal_type")
+                if goal_type and goal_type not in goals_by_type:
+                    goals_by_type[goal_type] = goal.get("content", "")
+            print(f"[任务生成] 用户 {user_id} 有 {len(user_goals)} 个活跃目标，覆盖类型: {list(goals_by_type.keys())}")
+        except Exception as e:
+            print(f"[任务生成] 获取用户目标失败: {e}")
+
         generated_tasks = []
         default_titles = {
             DimensionEnum.exercise: "运动30分钟",
@@ -62,6 +81,11 @@ async def generate_tasks_for_user(user_id, nickname: str, db=None):
             if dim == DimensionEnum.appearance and skin_analysis:
                 task_title = await _generate_skin_based_task(skin_analysis)
             else:
+                # 检查用户是否有该维度的目标
+                goal_content = goals_by_type.get(dim.value)
+                if goal_content:
+                    print(f"[任务生成] 用户 {user_id} 在 {dim.value} 维度有目标: {goal_content[:50]}...")
+
                 try:
                     task_title = await generate_task(
                         nickname=nickname,
@@ -69,6 +93,7 @@ async def generate_tasks_for_user(user_id, nickname: str, db=None):
                         score=score_val,
                         difficulty=difficulty.value,
                         recent_tasks=[],
+                        goal_content=goal_content,
                     )
                 except Exception:
                     task_title = default_titles[dim]
