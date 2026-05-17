@@ -72,7 +72,9 @@ class RuleBasedFilter:
 
         # 一般性问答
         (r"(?:什么是|什么叫|怎么|如何|为什么|请问)",       0.15, "conversation"),
-        (r"(?:吗|呢|吧)\?{0,1}$",                         0.1,  "conversation"),
+        (r"(?:什么|哪个|哪款|哪些).+(?:好|推荐|比较好)",    0.1,  "conversation"),
+        (r"(?:推荐|建议)(?:一下|一个|个)?",                 0.15, "conversation"),
+        (r"(?:吗|呢|吧|呀|啊|哦|嘛)\?{0,1}$",             0.1,  "conversation"),
 
         # 寒暄
         (r"^(?:你好|嗨|hi|hello|hey|谢谢|感谢|拜拜|再见)", 0.05, "conversation"),
