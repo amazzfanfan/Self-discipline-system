@@ -2,7 +2,6 @@ import asyncio
 import base64
 import json
 import re
-import httpx
 import os
 import logging
 from datetime import datetime, timezone, timedelta
@@ -15,41 +14,6 @@ logger = logging.getLogger(__name__)
 BJT = timezone(timedelta(hours=8))
 
 settings = get_settings()
-
-
-def _extract_content(data: dict) -> str:
-    """Extract content from AI response.
-
-    Non-reasoning models: content is in choices[0].message.content.
-    Reasoning models (fallback): content may be in reasoning_content.
-    """
-    # 检查是否有错误响应
-    if "error" in data:
-        error = data["error"]
-        logger.error(f"[AI错误] {error.get('code', 'unknown')}: {error.get('message', 'unknown error')}")
-        return ""
-    
-    # 检查是否有 choices 字段
-    if "choices" not in data or not data["choices"]:
-        logger.error(f"[AI错误] 响应中没有 choices 字段: {data}")
-        return ""
-    
-    msg = data["choices"][0].get("message", {})
-    content = (msg.get("content") or "").strip()
-
-    if content:
-        return content
-
-    # Fallback for reasoning models: take last 300 chars of reasoning_content
-    reasoning = (msg.get("reasoning_content") or "").strip()
-    if reasoning:
-        # Take the last chunk — reasoning models typically end with the answer
-        tail = reasoning[-300:]
-        # Skip partial first line (may be cut mid-sentence)
-        tail = tail.split('\n', 1)[-1] if '\n' in tail else tail
-        return tail.strip()
-
-    return ""
 
 
 async def chat_completion(messages: list[dict], user_context: str = "") -> str:
@@ -216,18 +180,14 @@ async def generate_appearance_analysis(
             messages[0]["content"].append({"type": "image_url", "image_url": {"url": b64_url}})
     messages[0]["content"].append({"type": "text", "text": prompt})
 
-    async with httpx.AsyncClient(timeout=60) as client:
-        response = await client.post(
-            f"{settings.AI_BASE_URL}/chat/completions",
-            headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
-            json={"model": settings.chat_model, "messages": messages, "max_tokens": 1000},
-        )
-        data = response.json()
-        result = _extract_content(data)
+    try:
+        result = await llm_chat(messages=messages, max_tokens=1000)
         # Validate: should not look like thinking
         if result and len(result) > 20 and not any(kw in result[:50] for kw in ["好的", "让我", "我需要", "用户要求"]):
             return result
-        return f"{nickname}，你的初始画像已建立。坚持完成每日任务，分数会稳步提升。"
+    except Exception as e:
+        logger.error(f"[外貌分析] 生成失败: {e}")
+    return f"{nickname}，你的初始画像已建立。坚持完成每日任务，分数会稳步提升。"
 
 
 async def generate_body_analysis(
@@ -257,16 +217,12 @@ async def generate_body_analysis(
     )
 
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(
-                f"{settings.AI_BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
-                json={"model": settings.chat_model, "messages": [{"role": "user", "content": prompt}], "max_tokens": 1000},
-            )
-            data = response.json()
-            result = _extract_content(data)
-            if result and len(result) > 50:
-                return result
+        result = await llm_chat(
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1000
+        )
+        if result and len(result) > 50:
+            return result
     except Exception as e:
         logger.error(f"[评估报告] 生成失败: {e}")
 
@@ -289,18 +245,15 @@ async def _score_dimension_from_photo(
     messages = [{"role": "user", "content": image_messages + [{"type": "text", "text": prompt}]}]
 
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(
-                f"{settings.AI_BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
-                json={"model": settings.chat_model, "messages": messages, "max_tokens": 200, "response_format": {"type": "json_object"}},
-            )
-            data = response.json()
-            content = _extract_content(data)
-            parsed = json.loads(content)
-            score = float(parsed.get("score", 50))
-            logger.info(f"[四维评分] {dimension} 照片评分: {score}")
-            return min(100, max(0, score))
+        content = await llm_chat(
+            messages=messages,
+            max_tokens=200,
+            response_format={"type": "json_object"}
+        )
+        parsed = json.loads(content)
+        score = float(parsed.get("score", 50))
+        logger.info(f"[四维评分] {dimension} 照片评分: {score}")
+        return min(100, max(0, score))
     except Exception as e:
         logger.error(f"[四维评分] {dimension} 照片评分失败: {e}")
         return 50.0
@@ -653,14 +606,8 @@ async def evaluate_initial_score(
             messages[0]["content"].append({"type": "image_url", "image_url": {"url": b64_url}})
     messages[0]["content"].append({"type": "text", "text": prompt})
 
-    async with httpx.AsyncClient(timeout=60) as client:
-        response = await client.post(
-            f"{settings.AI_BASE_URL}/chat/completions",
-            headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
-            json={"model": settings.chat_model, "messages": messages, "max_tokens": 2000},
-        )
-        data = response.json()
-        content = _extract_content(data)
+    try:
+        content = await llm_chat(messages=messages, max_tokens=2000)
         if "```" in content:
             content = content.split("```")[1]
             if content.startswith("json"):
@@ -672,7 +619,9 @@ async def evaluate_initial_score(
             if isinstance(score, dict):
                 score = score.get("score", 50)
             return min(100, max(0, float(score)))
-        return 50.0
+    except Exception as e:
+        logger.error(f"[初始评分] 失败: {e}")
+    return 50.0
 
 
 async def analyze_image(image_url: str, analysis_type: str) -> str:
@@ -690,21 +639,18 @@ async def analyze_image(image_url: str, analysis_type: str) -> str:
             return "图片加载失败"
         image_url = b64_url
 
-    async with httpx.AsyncClient(timeout=60) as client:
-        response = await client.post(
-            f"{settings.AI_BASE_URL}/chat/completions",
-            headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
-            json={
-                "model": settings.chat_model,
-                "messages": [{"role": "user", "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": image_url}},
-                ]}],
-                "max_tokens": 300,
-            },
+    try:
+        result = await llm_chat(
+            messages=[{"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": image_url}},
+            ]}],
+            max_tokens=300
         )
-        data = response.json()
-        return _extract_content(data)
+        return result
+    except Exception as e:
+        logger.error(f"[图片分析] 失败: {e}")
+        return "图片分析失败"
 
 
 # --- Intent detection ---
