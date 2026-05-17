@@ -92,40 +92,54 @@ async def chat_completion_stream(
     messages: list[dict],
     model: str = None,
     temperature: float = None,
-    max_tokens: int = None
+    max_tokens: int = None,
+    api_key: str = None,
+    base_url: str = None
 ) -> AsyncGenerator[str, None]:
     """
     流式 LLM 调用
-    
+
     Args:
         messages: 消息列表
         model: 模型名称（可选）
         temperature: 温度参数（可选）
         max_tokens: 最大 token 数（可选）
-    
+        api_key: API Key（可选）
+        base_url: Base URL（可选）
+
     Yields:
         AI 回复的内容块
     """
     model = model or settings.chat_model
     temperature = temperature or settings.LLM_TEMPERATURE
     max_tokens = max_tokens or settings.LLM_MAX_TOKENS
-    
+    api_key = api_key or settings.AI_API_KEY
+    base_url = base_url or settings.AI_BASE_URL
+
+    # 构建 litellm 模型名称
+    if base_url and "openai" not in model.lower():
+        litellm_model = f"openai/{model}"
+    else:
+        litellm_model = model
+
     try:
         logger.info(f"Calling LLM (stream): model={model}")
-        
+
         response = await acompletion(
-            model=model,
+            model=litellm_model,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
             stream=True,
+            api_key=api_key,
+            api_base=base_url,
         )
-        
+
         async for chunk in response:
             content = chunk.choices[0].delta.content
             if content:
                 yield content
-                
+
     except Exception as e:
         logger.error(f"Stream LLM call failed: {e}")
         raise
