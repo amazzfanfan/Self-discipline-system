@@ -12,7 +12,7 @@ from app.core.database import get_db, async_session
 from app.core.deps import get_current_user
 from app.models.user import User
 from app.models.conversation import Conversation, RoleEnum
-from app.services.ai_service import chat_completion as ai_chat_completion, chat_completion_stream as ai_chat_completion_stream
+from app.services.llm_service import chat_completion_with_fallback as ai_chat_completion, chat_completion_stream as ai_chat_completion_stream  # noqa: E501
 from app.services.context_builder import ContextBuilder
 from app.services.memory_service import MemoryService
 from app.services.profile_service import ProfileService

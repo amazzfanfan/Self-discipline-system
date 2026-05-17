@@ -25,7 +25,9 @@ async def chat_completion(
     model: str = None,
     temperature: float = None,
     max_tokens: int = None,
-    response_format: dict = None
+    response_format: dict = None,
+    api_key: str = None,
+    base_url: str = None
 ) -> str:
     """
     统一的 LLM 调用接口
@@ -36,6 +38,8 @@ async def chat_completion(
         temperature: 温度参数（可选）
         max_tokens: 最大 token 数（可选）
         response_format: 响应格式（可选，如 JSON）
+        api_key: API Key（可选，默认使用主模型的 API Key）
+        base_url: Base URL（可选，默认使用主模型的 Base URL）
     
     Returns:
         AI 回复内容
@@ -43,18 +47,29 @@ async def chat_completion(
     model = model or settings.chat_model
     temperature = temperature or settings.LLM_TEMPERATURE
     max_tokens = max_tokens or settings.LLM_MAX_TOKENS
+    api_key = api_key or settings.AI_API_KEY
+    base_url = base_url or settings.AI_BASE_URL
     
     try:
+        # 构建 litellm 模型名称
+        # 如果是自定义 API，使用 openai/ 前缀
+        if base_url and "openai" not in model.lower():
+            litellm_model = f"openai/{model}"
+        else:
+            litellm_model = model
+        
         kwargs = {
-            "model": model,
+            "model": litellm_model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
+            "api_key": api_key,
+            "api_base": base_url,
         }
         if response_format:
             kwargs["response_format"] = response_format
         
-        logger.info(f"Calling LLM: model={model}, messages={len(messages)}")
+        logger.info(f"Calling LLM: model={model}, base_url={base_url}, messages={len(messages)}")
         response = await acompletion(**kwargs)
         
         content = response.choices[0].message.content
@@ -179,12 +194,24 @@ async def chat_completion_with_fallback(
     
     try:
         # 尝试主模型
-        return await chat_completion(messages, model=primary_model, **kwargs)
+        return await chat_completion(
+            messages, 
+            model=primary_model,
+            api_key=settings.AI_API_KEY,
+            base_url=settings.AI_BASE_URL,
+            **kwargs
+        )
     except Exception as e:
         logger.warning(f"Primary model failed: {e}, trying fallback")
         try:
             # 降级到备用模型
-            return await chat_completion(messages, model=fallback_model, **kwargs)
+            return await chat_completion(
+                messages, 
+                model=fallback_model,
+                api_key=settings.LLM_FALLBACK_API_KEY,
+                base_url=settings.LLM_FALLBACK_BASE_URL,
+                **kwargs
+            )
         except Exception as e2:
             logger.error(f"Fallback model also failed: {e2}")
             # 返回预设回复

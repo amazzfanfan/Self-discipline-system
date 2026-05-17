@@ -4,36 +4,17 @@ import json
 import re
 import httpx
 import os
+import logging
 from datetime import datetime, timezone, timedelta
 from collections.abc import AsyncGenerator
 from app.core.config import get_settings
+from app.services.llm_service import chat_completion as llm_chat, chat_completion_stream as llm_chat_stream, chat_completion_with_fallback  # noqa: E501
+from app.services.prompt_service import prompt_service
 
+logger = logging.getLogger(__name__)
 BJT = timezone(timedelta(hours=8))
 
 settings = get_settings()
-
-SYSTEM_PROMPT = """你是一个名为"系统"的AI助手，灵感来源于小说中的成长系统。你的职责是帮助用户提升自己。
-你不是朋友，不是医生，而是一个严格但关怀的引导者。你用数据说话，用鼓励驱动，偶尔带一点幽默。
-你相信持续的小进步会带来大变化。
-
-对话原则：
-- 不批评，不说教，用数据和事实引导
-- 承认人性，偶尔放松是正常的
-- 关注趋势，单次失败不代表失败
-- 主动关怀，检测到异常时主动询问
-- 保持人设，始终以"系统"身份对话
-- 绝对不要输出你的思考过程、推理步骤或内心独白，只输出面向用户的回复内容"""
-
-
-def _build_system_prompt(user_context: str = "") -> str:
-    """Build system prompt with current Beijing time injected."""
-    now = datetime.now(BJT)
-    weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
-    time_str = now.strftime(f"%Y年%m月%d日 %H:%M {weekdays[now.weekday()]}")
-    system_msg = SYSTEM_PROMPT + f"\n\n当前时间（北京时间）：{time_str}"
-    if user_context:
-        system_msg += f"\n\n用户上下文：{user_context}"
-    return system_msg
 
 
 def _extract_content(data: dict) -> str:
@@ -45,12 +26,12 @@ def _extract_content(data: dict) -> str:
     # 检查是否有错误响应
     if "error" in data:
         error = data["error"]
-        print(f"[AI错误] {error.get('code', 'unknown')}: {error.get('message', 'unknown error')}")
+        logger.error(f"[AI错误] {error.get('code', 'unknown')}: {error.get('message', 'unknown error')}")
         return ""
     
     # 检查是否有 choices 字段
     if "choices" not in data or not data["choices"]:
-        print(f"[AI错误] 响应中没有 choices 字段: {data}")
+        logger.error(f"[AI错误] 响应中没有 choices 字段: {data}")
         return ""
     
     msg = data["choices"][0].get("message", {})
@@ -72,46 +53,26 @@ def _extract_content(data: dict) -> str:
 
 
 async def chat_completion(messages: list[dict], user_context: str = "") -> str:
-    """Call AI model for chat completion."""
-    system_msg = _build_system_prompt(user_context)
-    full_messages = [{"role": "system", "content": system_msg}] + messages
+    """Call AI model for chat completion.
 
-    async with httpx.AsyncClient(timeout=60) as client:
-        response = await client.post(
-            f"{settings.AI_BASE_URL}/chat/completions",
-            headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
-            json={"model": settings.chat_model, "messages": full_messages, "max_tokens": 1500},
-        )
-        data = response.json()
-        return _extract_content(data)
+    Delegates to llm_service for unified LLM access with retry/fallback.
+    System prompt is injected by ContextBuilder, not here.
+    """
+    try:
+        return await chat_completion_with_fallback(messages)
+    except Exception as e:
+        logger.error(f"chat_completion failed: {e}")
+        return ""
 
 
 async def chat_completion_stream(messages: list[dict], user_context: str = "") -> AsyncGenerator[str, None]:
-    """Stream AI model chat completion, yielding content chunks."""
-    system_msg = _build_system_prompt(user_context)
-    full_messages = [{"role": "system", "content": system_msg}] + messages
+    """Stream AI model chat completion, yielding content chunks.
 
-    async with httpx.AsyncClient(timeout=120) as client:
-        async with client.stream(
-            "POST",
-            f"{settings.AI_BASE_URL}/chat/completions",
-            headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
-            json={"model": settings.chat_model, "messages": full_messages, "max_tokens": 1500, "stream": True},
-        ) as response:
-            async for line in response.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                data_str = line[6:]
-                if data_str.strip() == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data_str)
-                    delta = chunk["choices"][0].get("delta", {})
-                    content = delta.get("content") or ""
-                    if content:
-                        yield content
-                except (json.JSONDecodeError, KeyError, IndexError):
-                    continue
+    Delegates to llm_service for unified LLM access.
+    System prompt is injected by ContextBuilder, not here.
+    """
+    async for chunk in llm_chat_stream(messages):
+        yield chunk
 
 
 # --- Dimension scoring prompts (for photo-based evaluation) ---
@@ -168,62 +129,37 @@ DIMENSION_TASK_GUIDE = {
 
 async def generate_task(nickname: str, dimension: str, score: float, difficulty: str, recent_tasks: list[str], goal_content: str = None) -> str:
     """AI generates a daily task title. Returns a short string.
-    
-    Args:
-        nickname: User nickname
-        dimension: Task dimension (exercise/diet/sleep/appearance)
-        score: Current score for this dimension
-        difficulty: Task difficulty level
-        recent_tasks: List of recent task titles
-        goal_content: Optional user goal content to base task on
+
+    Uses llm_service for unified LLM access with retry/fallback.
     """
-    recent = "、".join(recent_tasks[-5:]) if recent_tasks else "无"
-    diff_cn = {"easy": "简单", "medium": "中等", "hard": "困难"}.get(difficulty, "中等")
-    dim_guide = DIMENSION_TASK_GUIDE.get(dimension, "")
-
-    # Build goal context if available
-    goal_context = ""
-    if goal_content:
-        goal_context = f"\n用户目标：{goal_content}\n请生成与该目标相关的任务，帮助用户逐步实现目标。\n"
-
-    prompt = (
-        f"请为用户生成1个{dimension}维度的今日任务。\n"
-        f"难度：{diff_cn}，当前评分：{score}分，最近做过的：{recent}（避免重复）。\n"
-        f"要求：具体可执行，有明确完成标准。\n\n"
-        f"重要：{dim_guide}\n"
-        f"{goal_context}\n"
-        f'返回JSON格式：{{"task": "任务标题"}}'
+    prompt = prompt_service.build_task_prompt(
+        dimension=dimension,
+        score=score,
+        difficulty=difficulty,
+        recent_tasks=recent_tasks,
+        goal_content=goal_content
     )
 
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(
-                f"{settings.AI_BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
-                json={
-                    "model": settings.chat_model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 500,
-                    "response_format": {"type": "json_object"},
-                },
-            )
-            data = response.json()
-            content = (data.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
-            if content:
-                parsed = json.loads(content)
-                task_title = parsed.get("task", "")
-                task_title = _clean_task_title(task_title)
-                if task_title:
-                    print(f"[任务生成] AI成功: {dimension} -> {task_title}")
-                    return task_title
-                else:
-                    print(f"[任务生成] AI返回无效标题: {parsed}")
+        content = await llm_chat(
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}
+        )
+        if content:
+            parsed = json.loads(content)
+            task_title = parsed.get("task", "")
+            task_title = _clean_task_title(task_title)
+            if task_title:
+                logger.info(f"[任务生成] AI成功: {dimension} -> {task_title}")
+                return task_title
             else:
-                print("[任务生成] AI返回空内容")
+                logger.warning(f"[任务生成] AI返回无效标题: {parsed}")
+        else:
+            logger.warning("[任务生成] AI返回空内容")
     except Exception as e:
-        print(f"[任务生成] AI异常: {e}")
+        logger.error(f"[任务生成] AI异常: {e}")
 
-    print(f"[任务生成] 使用默认标题: {dimension} -> {TASK_DEFAULTS.get(dimension, '完成一个今日任务')}")
+    logger.info(f"[任务生成] 使用默认标题: {dimension} -> {TASK_DEFAULTS.get(dimension, '完成一个今日任务')}")
     return TASK_DEFAULTS.get(dimension, "完成一个今日任务")
 
 
@@ -332,7 +268,7 @@ async def generate_body_analysis(
             if result and len(result) > 50:
                 return result
     except Exception as e:
-        print(f"[评估报告] 生成失败: {e}")
+        logger.error(f"[评估报告] 生成失败: {e}")
 
     return f"{nickname}，你的初始画像已建立。当前BMI为{bmi:.1f}（{bmi_label}），坚持完成每日任务，身体状况会逐步改善。"
 
@@ -363,10 +299,10 @@ async def _score_dimension_from_photo(
             content = _extract_content(data)
             parsed = json.loads(content)
             score = float(parsed.get("score", 50))
-            print(f"[四维评分] {dimension} 照片评分: {score}")
+            logger.info(f"[四维评分] {dimension} 照片评分: {score}")
             return min(100, max(0, score))
     except Exception as e:
-        print(f"[四维评分] {dimension} 照片评分失败: {e}")
+        logger.error(f"[四维评分] {dimension} 照片评分失败: {e}")
         return 50.0
 
 
@@ -377,7 +313,7 @@ def _image_path_to_base64(photo_url: str) -> str | None:
     # Remove leading / and get the file path
     file_path = photo_url.lstrip('/')
     if not os.path.exists(file_path):
-        print(f"[图片转换] 文件不存在: {file_path}")
+        logger.warning(f"[图片转换] 文件不存在: {file_path}")
         return None
     try:
         with open(file_path, 'rb') as f:
@@ -389,7 +325,7 @@ def _image_path_to_base64(photo_url: str) -> str | None:
         b64 = base64.b64encode(image_data).decode('utf-8')
         return f"data:{mime_type};base64,{b64}"
     except Exception as e:
-        print(f"[图片转换] 转换失败: {e}")
+        logger.error(f"[图片转换] 转换失败: {e}")
         return None
 
 
@@ -404,17 +340,17 @@ async def _evaluate_with_photos(
         b64_url = _image_path_to_base64(front_photo_url)
         if b64_url:
             image_parts.append({"type": "image_url", "image_url": {"url": b64_url}})
-            print(f"[四维评分] 正面照片已转为base64")
+            logger.info("[四维评分] 正面照片已转为base64")
         else:
-            print(f"[四维评分] 正面照片转换失败: {front_photo_url}")
+            logger.warning(f"[四维评分] 正面照片转换失败: {front_photo_url}")
     if side_photo_url:
         b64_url = _image_path_to_base64(side_photo_url)
         if b64_url:
             image_parts.append({"type": "image_url", "image_url": {"url": b64_url}})
-            print(f"[四维评分] 侧面照片已转为base64")
+            logger.info("[四维评分] 侧面照片已转为base64")
 
     if not image_parts:
-        print("[四维评分] 无有效图片，使用默认分数")
+        logger.warning("[四维评分] 无有效图片，使用默认分数")
         return {"exercise": 50, "diet": 50, "sleep": 50, "appearance": 50}
 
     # Run 4 dimension evaluations in parallel
@@ -501,65 +437,53 @@ async def _evaluate_with_questionnaire(
         appearance_answer=clean_answer(questionnaire.get("appearance", "未回答")),
     )
 
-    # 重试机制：最多重试 3 次
+    # 重试机制：最多重试 3 次（JSON 解析层面，LLM 层面重试由 llm_service 处理）
     max_retries = 3
     last_error = None
-    
+
     for attempt in range(max_retries):
         try:
             if attempt > 0:
-                import asyncio
-                wait_time = 5 * attempt  # 递增等待时间
-                print(f"[四维评分] 问卷评分第 {attempt + 1} 次尝试，等待 {wait_time} 秒...")
+                wait_time = 5 * attempt
+                logger.info(f"[四维评分] 问卷评分第 {attempt + 1} 次尝试，等待 {wait_time} 秒...")
                 await asyncio.sleep(wait_time)
-            
-            async with httpx.AsyncClient(timeout=60) as client:
-                response = await client.post(
-                    f"{settings.AI_BASE_URL}/chat/completions",
-                    headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
-                    json={
-                        "model": settings.chat_model,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "max_tokens": 500,
-                        "response_format": {"type": "json_object"},
-                    },
-                )
-                data = response.json()
-                content = _extract_content(data)
-                
-                # 如果内容为空，抛出异常
-                if not content:
-                    raise Exception("AI 返回空内容")
-                
-                # 尝试清理和修复 JSON
-                content = content.strip()
-                # 如果 JSON 不完整，尝试修复
-                if content and not content.endswith('}'):
-                    # 找到最后一个完整的键值对
-                    last_brace = content.rfind('}')
-                    if last_brace > 0:
-                        content = content[:last_brace + 1]
-                    else:
-                        # 尝试添加缺失的括号
-                        content = content + '}'
-                
-                parsed = json.loads(content)
-                result = {
-                    "exercise": min(100, max(0, float(parsed.get("exercise", 50)))),
-                    "diet": min(100, max(0, float(parsed.get("diet", 50)))),
-                    "sleep": min(100, max(0, float(parsed.get("sleep", 50)))),
-                    "appearance": min(100, max(0, float(parsed.get("appearance", 50)))),
-                }
-                print(f"[四维评分] 问卷评分成功 (第 {attempt + 1} 次尝试): {result}")
-                return result
+
+            content = await llm_chat(
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"}
+            )
+
+            # 如果内容为空，抛出异常
+            if not content:
+                raise Exception("AI 返回空内容")
+
+            # 尝试清理和修复 JSON
+            content = content.strip()
+            # 如果 JSON 不完整，尝试修复
+            if content and not content.endswith('}'):
+                last_brace = content.rfind('}')
+                if last_brace > 0:
+                    content = content[:last_brace + 1]
+                else:
+                    content = content + '}'
+
+            parsed = json.loads(content)
+            result = {
+                "exercise": min(100, max(0, float(parsed.get("exercise", 50)))),
+                "diet": min(100, max(0, float(parsed.get("diet", 50)))),
+                "sleep": min(100, max(0, float(parsed.get("sleep", 50)))),
+                "appearance": min(100, max(0, float(parsed.get("appearance", 50)))),
+            }
+            logger.info(f"[四维评分] 问卷评分成功 (第 {attempt + 1} 次尝试): {result}")
+            return result
         except Exception as e:
             last_error = e
-            print(f"[四维评分] 问卷评分第 {attempt + 1} 次尝试失败: {e}")
+            logger.error(f"[四维评分] 问卷评分第 {attempt + 1} 次尝试失败: {e}")
             if attempt < max_retries - 1:
-                print(f"[四维评分] 返回内容: {content[:200] if 'content' in locals() else 'N/A'}")
-    
+                logger.info(f"[四维评分] 返回内容: {content[:200] if 'content' in locals() else 'N/A'}")
+
     # 所有重试都失败
-    print(f"[四维评分] 问卷评分失败 (已重试 {max_retries} 次): {last_error}")
+    logger.error(f"[四维评分] 问卷评分失败 (已重试 {max_retries} 次): {last_error}")
     return {"exercise": 50, "diet": 50, "sleep": 50, "appearance": 50}
 
 
@@ -597,21 +521,21 @@ async def _evaluate_comprehensive(
         b64_url = _image_path_to_base64(portrait_photo_url)
         if b64_url:
             messages[0]["content"].append({"type": "image_url", "image_url": {"url": b64_url}})
-            print("[四维评分] 肖像图已转为base64")
+            logger.info("[四维评分] 肖像图已转为base64")
     
     # 添加正面图（用于体态分析）
     if front_photo_url:
         b64_url = _image_path_to_base64(front_photo_url)
         if b64_url:
             messages[0]["content"].append({"type": "image_url", "image_url": {"url": b64_url}})
-            print("[四维评分] 正面图已转为base64")
+            logger.info("[四维评分] 正面图已转为base64")
     
     # 添加侧面图（用于体态分析）
     if side_photo_url:
         b64_url = _image_path_to_base64(side_photo_url)
         if b64_url:
             messages[0]["content"].append({"type": "image_url", "image_url": {"url": b64_url}})
-            print("[四维评分] 侧面图已转为base64")
+            logger.info("[四维评分] 侧面图已转为base64")
     
     messages[0]["content"].append({"type": "text", "text": prompt})
     
@@ -622,58 +546,45 @@ async def _evaluate_comprehensive(
     for attempt in range(max_retries):
         try:
             if attempt > 0:
-                import asyncio
-                wait_time = 5 * attempt  # 递增等待时间
-                print(f"[四维评分] 第 {attempt + 1} 次尝试，等待 {wait_time} 秒...")
+                wait_time = 5 * attempt
+                logger.info(f"[四维评分] 第 {attempt + 1} 次尝试，等待 {wait_time} 秒...")
                 await asyncio.sleep(wait_time)
-            
-            async with httpx.AsyncClient(timeout=60) as client:
-                response = await client.post(
-                    f"{settings.AI_BASE_URL}/chat/completions",
-                    headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
-                    json={
-                        "model": settings.chat_model,
-                        "messages": messages,
-                        "max_tokens": 500,
-                        "response_format": {"type": "json_object"},
-                    },
-                )
-                data = response.json()
-                content = _extract_content(data)
-                
-                # 如果内容为空，抛出异常
-                if not content:
-                    raise Exception("AI 返回空内容")
-                
-                # 尝试清理和修复 JSON
-                content = content.strip()
-                # 如果 JSON 不完整，尝试修复
-                if content and not content.endswith('}'):
-                    # 找到最后一个完整的键值对
-                    last_brace = content.rfind('}')
-                    if last_brace > 0:
-                        content = content[:last_brace + 1]
-                    else:
-                        # 尝试添加缺失的括号
-                        content = content + '}'
-                
-                parsed = json.loads(content)
-                result = {
-                    "exercise": min(100, max(0, float(parsed.get("exercise", 50)))),
-                    "diet": min(100, max(0, float(parsed.get("diet", 50)))),
-                    "sleep": min(100, max(0, float(parsed.get("sleep", 50)))),
-                    "appearance": min(100, max(0, float(parsed.get("appearance", 50)))),
-                }
-                print(f"[四维评分] 综合评分成功 (第 {attempt + 1} 次尝试): {result}")
-                return result
+
+            content = await llm_chat(
+                messages=messages,
+                response_format={"type": "json_object"}
+            )
+
+            # 如果内容为空，抛出异常
+            if not content:
+                raise Exception("AI 返回空内容")
+
+            # 尝试清理和修复 JSON
+            content = content.strip()
+            if content and not content.endswith('}'):
+                last_brace = content.rfind('}')
+                if last_brace > 0:
+                    content = content[:last_brace + 1]
+                else:
+                    content = content + '}'
+
+            parsed = json.loads(content)
+            result = {
+                "exercise": min(100, max(0, float(parsed.get("exercise", 50)))),
+                "diet": min(100, max(0, float(parsed.get("diet", 50)))),
+                "sleep": min(100, max(0, float(parsed.get("sleep", 50)))),
+                "appearance": min(100, max(0, float(parsed.get("appearance", 50)))),
+            }
+            logger.info(f"[四维评分] 综合评分成功 (第 {attempt + 1} 次尝试): {result}")
+            return result
         except Exception as e:
             last_error = e
-            print(f"[四维评分] 第 {attempt + 1} 次尝试失败: {e}")
+            logger.error(f"[四维评分] 第 {attempt + 1} 次尝试失败: {e}")
             if attempt < max_retries - 1:
-                print(f"[四维评分] 返回内容: {content[:200] if 'content' in locals() else 'N/A'}")
-    
+                logger.info(f"[四维评分] 返回内容: {content[:200] if 'content' in locals() else 'N/A'}")
+
     # 所有重试都失败
-    print(f"[四维评分] 综合评分失败 (已重试 {max_retries} 次): {last_error}")
+    logger.error(f"[四维评分] 综合评分失败 (已重试 {max_retries} 次): {last_error}")
     raise last_error
 
 
@@ -694,7 +605,7 @@ async def evaluate_all_scores(
     has_eval_photo = portrait_photo_url or front_photo_url or side_photo_url
     
     if has_eval_photo:
-        print("[四维评分] 使用综合评分模式（图片+旷视+身体数据）")
+        logger.info("[四维评分] 使用综合评分模式（图片+旷视+身体数据）")
         try:
             scores = await _evaluate_comprehensive(
                 height_cm, weight_kg, age, gender,
@@ -703,16 +614,16 @@ async def evaluate_all_scores(
             )
             return scores, "photo"
         except Exception as e:
-            print(f"[四维评分] 综合评分失败，尝试问卷模式: {e}")
+            logger.warning(f"[四维评分] 综合评分失败，尝试问卷模式: {e}")
     
     # 无图片或综合评分失败时使用问卷模式
     if questionnaire:
-        print("[四维评分] 使用问卷模式")
+        logger.info("[四维评分] 使用问卷模式")
         scores = await _evaluate_with_questionnaire(height_cm, weight_kg, age, gender, questionnaire)
         return scores, "questionnaire"
     
     # 都没有时使用默认分数
-    print("[四维评分] 无图片无问卷，使用默认分数")
+    logger.info("[四维评分] 无图片无问卷，使用默认分数")
     return {"exercise": 50, "diet": 50, "sleep": 50, "appearance": 50}, "default"
 
 
@@ -898,22 +809,25 @@ async def detect_intent(message: str, today_tasks: list[dict]) -> dict:
     if not RULES_ONLY:
         result = await _detect_intent_ai(message, today_tasks)
         if result:
-            print(f"[意图检测] AI成功: {result}")
+            logger.info(f"[意图检测] AI成功: {result}")
             return result
         else:
-            print("[意图检测] AI失败，降级到关键词匹配")
+            logger.warning("[意图检测] AI失败，降级到关键词匹配")
 
     # 关键词匹配作为兜底
     result = _detect_intent_rules(message, today_tasks)
     if result:
-        print(f"[意图检测] 关键词匹配: {result}")
+        logger.info(f"[意图检测] 关键词匹配: {result}")
         return result
-    print("[意图检测] 未识别意图，返回chat")
+    logger.info("[意图检测] 未识别意图，返回chat")
     return {"intent": "chat"}
 
 
 async def _detect_intent_ai(message: str, today_tasks: list[dict]) -> dict | None:
-    """AI-based intent detection with JSON mode. Returns intent dict or None on failure."""
+    """AI-based intent detection with JSON mode. Returns intent dict or None on failure.
+
+    Uses llm_service for unified LLM access with retry/fallback.
+    """
     tasks_str = "\n".join(
         f"- {t['dimension']}: {t['title']} ({t['status']})"
         for t in today_tasks
@@ -922,28 +836,19 @@ async def _detect_intent_ai(message: str, today_tasks: list[dict]) -> dict | Non
     prompt = INTENT_PROMPT.format(today_tasks=tasks_str, message=message)
 
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(
-                f"{settings.AI_BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
-                json={
-                    "model": settings.chat_model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 500,
-                    "response_format": {"type": "json_object"},
-                },
-            )
-            data = response.json()
-            content = (data.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
-            if content:
-                parsed = json.loads(content)
-                if parsed.get("intent") in ("complete_task", "skip_task", "record_weight", "chat"):
-                    return parsed
-                else:
-                    print(f"[意图检测] AI返回无效intent: {parsed}")
+        content = await llm_chat(
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}
+        )
+        if content:
+            parsed = json.loads(content)
+            if parsed.get("intent") in ("complete_task", "skip_task", "record_weight", "chat"):
+                return parsed
             else:
-                print("[意图检测] AI返回空内容")
+                logger.warning(f"[意图检测] AI返回无效intent: {parsed}")
+        else:
+            logger.warning("[意图检测] AI返回空内容")
     except Exception as e:
-        print(f"[意图检测] AI异常: {e}")
+        logger.error(f"[意图检测] AI异常: {e}")
 
     return None
