@@ -7,7 +7,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from collections.abc import AsyncGenerator
 from app.core.config import get_settings
-from app.services.llm_service import chat_completion as llm_chat, chat_completion_stream as llm_chat_stream, chat_completion_with_fallback  # noqa: E501
+from app.services.llm_service import chat_completion_stream as llm_chat_stream, chat_completion_with_fallback  # noqa: E501
 from app.services.prompt_service import prompt_service
 
 logger = logging.getLogger(__name__)
@@ -105,7 +105,7 @@ async def generate_task(nickname: str, dimension: str, score: float, difficulty:
     )
 
     try:
-        content = await llm_chat(
+        content = await chat_completion_with_fallback(
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"}
         )
@@ -181,7 +181,7 @@ async def generate_appearance_analysis(
     messages[0]["content"].append({"type": "text", "text": prompt})
 
     try:
-        result = await llm_chat(messages=messages, max_tokens=1000)
+        result = await chat_completion_with_fallback(messages=messages, max_tokens=1000)
         # Validate: should not look like thinking
         if result and len(result) > 20 and not any(kw in result[:50] for kw in ["好的", "让我", "我需要", "用户要求"]):
             return result
@@ -217,7 +217,7 @@ async def generate_body_analysis(
     )
 
     try:
-        result = await llm_chat(
+        result = await chat_completion_with_fallback(
             messages=[{"role": "user", "content": prompt}],
             max_tokens=1000
         )
@@ -245,7 +245,7 @@ async def _score_dimension_from_photo(
     messages = [{"role": "user", "content": image_messages + [{"type": "text", "text": prompt}]}]
 
     try:
-        content = await llm_chat(
+        content = await chat_completion_with_fallback(
             messages=messages,
             max_tokens=200,
             response_format={"type": "json_object"}
@@ -322,72 +322,14 @@ async def _evaluate_with_photos(
     }
 
 
-QUESTIONNAIRE_PROMPT = """你是一个专业的健康评估AI。请根据以下信息，为用户评估四个维度的初始分数（0-100分）。
-
-【身体数据】
-- 身高：{height}cm
-- 体重：{weight}kg
-- BMI：{bmi:.1f}（{bmi_label}）
-- 年龄：{age}岁
-- 性别：{gender_cn}
-
-【用户自述】
-- 运动：{exercise_answer}
-- 饮食：{diet_answer}
-- 睡眠：{sleep_answer}
-- 外貌：{appearance_answer}
-
-【评分标准】
-- 根据用户自述内容合理评估，回答越详细、习惯越好，分数越高
-- BMI>25属于超重，运动/饮食评分应适当偏低
-
-请返回JSON：
-{{"exercise": 分数, "diet": 分数, "sleep": 分数, "appearance": 分数}}"""
-
-
-# 综合评分模式 prompt
-COMPREHENSIVE_PROMPT = """你是一个专业的健康评估AI。请根据以下信息，为用户评估四个维度的初始分数（0-100分）。
-
-【身体数据】
-- 身高：{height}cm
-- 体重：{weight}kg
-- BMI：{bmi:.1f}（{bmi_label}）
-- 年龄：{age}岁
-- 性别：{gender_cn}
-
-{skin_info}
-
-【评分标准】
-- 运动维度：BMI>25属于超重，运动评分应偏低；体态显示缺乏运动则更低
-- 饮食维度：BMI>25说明饮食可能不健康，评分应偏低
-- 睡眠维度：有黑眼圈、眼袋、疲惫迹象说明睡眠不足，评分应偏低
-- 外貌维度：肤质差、形象不整洁则评分偏低
-
-请根据图片和数据综合判断，返回JSON：
-{{"exercise": 分数, "diet": 分数, "sleep": 分数, "appearance": 分数}}"""
-
-
 async def _evaluate_with_questionnaire(
     height_cm: float, weight_kg: float, age: int, gender: str,
     questionnaire: dict[str, str],
 ) -> dict[str, float]:
     """Evaluate all 4 dimensions using questionnaire + body data."""
-    bmi = weight_kg / (height_cm / 100) ** 2
-    gender_cn = {"male": "男", "female": "女"}.get(gender, "其他")
-    
-    bmi_label = "偏瘦" if bmi < 18.5 else "正常" if bmi < 24 else "偏胖" if bmi < 28 else "肥胖"
-
-    # 清理用户输入中的特殊字符
-    def clean_answer(text: str) -> str:
-        return text.replace('"', '').replace("'", "").replace('\\', '/')
-
-    prompt = QUESTIONNAIRE_PROMPT.format(
-        height=height_cm, weight=weight_kg, bmi=bmi, bmi_label=bmi_label,
-        age=age, gender_cn=gender_cn,
-        exercise_answer=clean_answer(questionnaire.get("exercise", "未回答")),
-        diet_answer=clean_answer(questionnaire.get("diet", "未回答")),
-        sleep_answer=clean_answer(questionnaire.get("sleep", "未回答")),
-        appearance_answer=clean_answer(questionnaire.get("appearance", "未回答")),
+    prompt = prompt_service.build_questionnaire_prompt(
+        height=height_cm, weight=weight_kg, age=age, gender=gender,
+        questionnaire=questionnaire
     )
 
     # 重试机制：最多重试 3 次（JSON 解析层面，LLM 层面重试由 llm_service 处理）
@@ -401,7 +343,7 @@ async def _evaluate_with_questionnaire(
                 logger.info(f"[四维评分] 问卷评分第 {attempt + 1} 次尝试，等待 {wait_time} 秒...")
                 await asyncio.sleep(wait_time)
 
-            content = await llm_chat(
+            content = await chat_completion_with_fallback(
                 messages=[{"role": "user", "content": prompt}],
                 response_format={"type": "json_object"}
             )
@@ -448,22 +390,9 @@ async def _evaluate_comprehensive(
     skin_analysis: dict | None = None,
 ) -> dict[str, float]:
     """综合评分模式：图片 + 旷视结果 + 身体数据"""
-    bmi = weight_kg / (height_cm / 100) ** 2
-    gender_cn = {"male": "男", "female": "女"}.get(gender, "其他")
-    bmi_label = "偏瘦" if bmi < 18.5 else "正常" if bmi < 24 else "偏胖" if bmi < 28 else "肥胖"
-    
-    # 构建肤质信息
-    skin_info = ""
-    if skin_analysis:
-        skin_info = f"""【肤质分析结果】
-- 皮肤类型：{skin_analysis.get('skin_type_name', '未知')}
-- 肤质评分：{skin_analysis.get('skin_score', 0)}/100
-- 存在问题：{', '.join(skin_analysis.get('issues', ['无']))}"""
-    
-    prompt = COMPREHENSIVE_PROMPT.format(
-        height=height_cm, weight=weight_kg, bmi=bmi,
-        bmi_label=bmi_label,
-        age=age, gender_cn=gender_cn, skin_info=skin_info
+    prompt = prompt_service.build_comprehensive_prompt(
+        height=height_cm, weight=weight_kg, age=age, gender=gender,
+        skin_analysis=skin_analysis
     )
     
     # 构建图片消息
@@ -503,7 +432,7 @@ async def _evaluate_comprehensive(
                 logger.info(f"[四维评分] 第 {attempt + 1} 次尝试，等待 {wait_time} 秒...")
                 await asyncio.sleep(wait_time)
 
-            content = await llm_chat(
+            content = await chat_completion_with_fallback(
                 messages=messages,
                 response_format={"type": "json_object"}
             )
@@ -607,7 +536,7 @@ async def evaluate_initial_score(
     messages[0]["content"].append({"type": "text", "text": prompt})
 
     try:
-        content = await llm_chat(messages=messages, max_tokens=2000)
+        content = await chat_completion_with_fallback(messages=messages, max_tokens=2000)
         if "```" in content:
             content = content.split("```")[1]
             if content.startswith("json"):
@@ -640,7 +569,7 @@ async def analyze_image(image_url: str, analysis_type: str) -> str:
         image_url = b64_url
 
     try:
-        result = await llm_chat(
+        result = await chat_completion_with_fallback(
             messages=[{"role": "user", "content": [
                 {"type": "text", "text": prompt},
                 {"type": "image_url", "image_url": {"url": image_url}},
@@ -782,7 +711,7 @@ async def _detect_intent_ai(message: str, today_tasks: list[dict]) -> dict | Non
     prompt = INTENT_PROMPT.format(today_tasks=tasks_str, message=message)
 
     try:
-        content = await llm_chat(
+        content = await chat_completion_with_fallback(
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"}
         )

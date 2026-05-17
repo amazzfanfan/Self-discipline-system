@@ -74,6 +74,50 @@ class PromptService:
         "sleep": "睡眠类任务：早睡、放下手机、冥想、深呼吸、睡前放松、避免熬夜等睡眠相关。",
         "appearance": "外貌类任务：护肤、防晒、清洁面部、使用眼霜、敷面膜、整理仪容等外貌护理相关。",
     }
+
+    # 问卷评估提示词
+    QUESTIONNAIRE_PROMPT = """你是一个专业的健康评估AI。请根据以下信息，为用户评估四个维度的初始分数（0-100分）。
+
+【身体数据】
+- 身高：{height}cm
+- 体重：{weight}kg
+- BMI：{bmi:.1f}（{bmi_label}）
+- 年龄：{age}岁
+- 性别：{gender_cn}
+
+【用户自述】
+- 运动：{exercise_answer}
+- 饮食：{diet_answer}
+- 睡眠：{sleep_answer}
+- 外貌：{appearance_answer}
+
+【评分标准】
+- 根据用户自述内容合理评估，回答越详细、习惯越好，分数越高
+- BMI>25属于超重，运动/饮食评分应适当偏低
+
+请返回JSON：
+{{"exercise": 分数, "diet": 分数, "sleep": 分数, "appearance": 分数}}"""
+
+    # 综合评分模式提示词（图片 + 旷视 + 身体数据）
+    COMPREHENSIVE_PROMPT = """你是一个专业的健康评估AI。请根据以下信息，为用户评估四个维度的初始分数（0-100分）。
+
+【身体数据】
+- 身高：{height}cm
+- 体重：{weight}kg
+- BMI：{bmi:.1f}（{bmi_label}）
+- 年龄：{age}岁
+- 性别：{gender_cn}
+
+{skin_info}
+
+【评分标准】
+- 运动维度：BMI>25属于超重，运动评分应偏低；体态显示缺乏运动则更低
+- 饮食维度：BMI>25说明饮食可能不健康，评分应偏低
+- 睡眠维度：有黑眼圈、眼袋、疲惫迹象说明睡眠不足，评分应偏低
+- 外貌维度：肤质差、形象不整洁则评分偏低
+
+请根据图片和数据综合判断，返回JSON：
+{{"exercise": 分数, "diet": 分数, "sleep": 分数, "appearance": 分数}}"""
     
     def build_system_prompt(self, user_context: str = "") -> str:
         """
@@ -180,6 +224,81 @@ class PromptService:
             diet_answer=questionnaire.get("diet", "未回答"),
             sleep_answer=questionnaire.get("sleep", "未回答"),
             appearance_answer=questionnaire.get("appearance", "未回答")
+        )
+
+    def build_questionnaire_prompt(
+        self,
+        height: float,
+        weight: float,
+        age: int,
+        gender: str,
+        questionnaire: dict[str, str]
+    ) -> str:
+        """
+        构建问卷评估提示词（含 BMI 标签和评分标准）
+
+        Args:
+            height: 身高(cm)
+            weight: 体重(kg)
+            age: 年龄
+            gender: 性别
+            questionnaire: 问卷答案
+
+        Returns:
+            问卷评估提示词
+        """
+        bmi = weight / (height / 100) ** 2
+        gender_cn = {"male": "男", "female": "女"}.get(gender, "其他")
+        bmi_label = "偏瘦" if bmi < 18.5 else "正常" if bmi < 24 else "偏胖" if bmi < 28 else "肥胖"
+
+        def clean_answer(text: str) -> str:
+            return text.replace('"', '').replace("'", "").replace('\\', '/')
+
+        return self.QUESTIONNAIRE_PROMPT.format(
+            height=height, weight=weight, bmi=bmi, bmi_label=bmi_label,
+            age=age, gender_cn=gender_cn,
+            exercise_answer=clean_answer(questionnaire.get("exercise", "未回答")),
+            diet_answer=clean_answer(questionnaire.get("diet", "未回答")),
+            sleep_answer=clean_answer(questionnaire.get("sleep", "未回答")),
+            appearance_answer=clean_answer(questionnaire.get("appearance", "未回答")),
+        )
+
+    def build_comprehensive_prompt(
+        self,
+        height: float,
+        weight: float,
+        age: int,
+        gender: str,
+        skin_analysis: dict = None
+    ) -> str:
+        """
+        构建综合评估提示词（图片 + 旷视肤质 + 身体数据）
+
+        Args:
+            height: 身高(cm)
+            weight: 体重(kg)
+            age: 年龄
+            gender: 性别
+            skin_analysis: 旷视肤质分析结果
+
+        Returns:
+            综合评估提示词
+        """
+        bmi = weight / (height / 100) ** 2
+        gender_cn = {"male": "男", "female": "女"}.get(gender, "其他")
+        bmi_label = "偏瘦" if bmi < 18.5 else "正常" if bmi < 24 else "偏胖" if bmi < 28 else "肥胖"
+
+        skin_info = ""
+        if skin_analysis:
+            skin_info = f"""【肤质分析结果】
+- 皮肤类型：{skin_analysis.get('skin_type_name', '未知')}
+- 肤质评分：{skin_analysis.get('skin_score', 0)}/100
+- 存在问题：{', '.join(skin_analysis.get('issues', ['无']))}"""
+
+        return self.COMPREHENSIVE_PROMPT.format(
+            height=height, weight=weight, bmi=bmi,
+            bmi_label=bmi_label,
+            age=age, gender_cn=gender_cn, skin_info=skin_info
         )
 
 

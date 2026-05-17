@@ -4,6 +4,7 @@ Chat Router - 聊天路由（完整版）
 """
 
 import json
+import logging
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +20,7 @@ from app.services.profile_service import ProfileService
 from app.services.goal_service import goal_service
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/send")
@@ -94,8 +96,12 @@ async def send_message(
     )
 
     # AI reply
-    ai_reply = await ai_chat_completion(messages)
-    
+    try:
+        ai_reply = await ai_chat_completion(messages)
+    except Exception as e:
+        logger.error(f"AI 调用失败: {e}")
+        ai_reply = "当前 AI 不可用，请稍后再试。"
+
     # 如果 AI 返回空内容，使用默认回复
     if not ai_reply or not ai_reply.strip():
         ai_reply = "当前 AI 不可用，请稍后再试。"
@@ -214,9 +220,16 @@ async def stream_message(
 
     async def event_generator():
         full_reply = []
-        async for chunk in ai_chat_completion_stream(messages):
-            full_reply.append(chunk)
-            yield f"data: {json.dumps({'content': chunk}, ensure_ascii=False)}\n\n"
+        try:
+            async for chunk in ai_chat_completion_stream(messages):
+                full_reply.append(chunk)
+                yield f"data: {json.dumps({'content': chunk}, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            logger.error(f"AI 流式调用失败: {e}")
+            if not full_reply:
+                error_reply = "当前 AI 不可用，请稍后再试。"
+                full_reply.append(error_reply)
+                yield f"data: {json.dumps({'content': error_reply}, ensure_ascii=False)}\n\n"
 
         # 如果 AI 返回空内容，使用默认回复
         if not full_reply:

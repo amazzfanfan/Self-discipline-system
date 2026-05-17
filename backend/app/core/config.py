@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     LLM_PRIMARY_MODEL: str = "mimo-v2.5"
     LLM_MAX_RETRIES: int = 3
     LLM_TIMEOUT: int = 30
-    LLM_FALLBACK_MODEL: str = "GLM-4.7-Flash"
+    LLM_FALLBACK_MODEL: str = "astron-code-latest"
     LLM_FALLBACK_API_KEY: str = ""
     LLM_FALLBACK_BASE_URL: str = ""
     LLM_TEMPERATURE: float = 0.7

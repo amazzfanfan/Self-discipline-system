@@ -214,8 +214,7 @@ async def chat_completion_with_fallback(
             )
         except Exception as e2:
             logger.error(f"Fallback model also failed: {e2}")
-            # 返回预设回复
-            return "抱歉，AI 服务暂时不可用，请稍后再试。"
+            raise Exception("所有模型均不可用，主模型和备用模型都调用失败")
 
 
 def count_tokens(text: str, model: str = "gpt-4") -> int:
