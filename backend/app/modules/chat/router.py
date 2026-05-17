@@ -95,6 +95,10 @@ async def send_message(
 
     # AI reply
     ai_reply = await ai_chat_completion(messages)
+    
+    # 如果 AI 返回空内容，使用默认回复
+    if not ai_reply or not ai_reply.strip():
+        ai_reply = "当前 AI 不可用，请稍后再试。"
 
     # Save AI reply
     sys_msg = Conversation(user_id=user.id, role=RoleEnum.system, content=ai_reply)
@@ -213,6 +217,12 @@ async def stream_message(
         async for chunk in ai_chat_completion_stream(messages):
             full_reply.append(chunk)
             yield f"data: {json.dumps({'content': chunk}, ensure_ascii=False)}\n\n"
+
+        # 如果 AI 返回空内容，使用默认回复
+        if not full_reply:
+            default_reply = "当前 AI 不可用，请稍后再试。"
+            full_reply.append(default_reply)
+            yield f"data: {json.dumps({'content': default_reply}, ensure_ascii=False)}\n\n"
 
         # Save the complete AI reply in a fresh session
         try:

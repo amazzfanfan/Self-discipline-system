@@ -42,7 +42,18 @@ def _extract_content(data: dict) -> str:
     Non-reasoning models: content is in choices[0].message.content.
     Reasoning models (fallback): content may be in reasoning_content.
     """
-    msg = data["choices"][0]["message"]
+    # 检查是否有错误响应
+    if "error" in data:
+        error = data["error"]
+        print(f"[AI错误] {error.get('code', 'unknown')}: {error.get('message', 'unknown error')}")
+        return ""
+    
+    # 检查是否有 choices 字段
+    if "choices" not in data or not data["choices"]:
+        print(f"[AI错误] 响应中没有 choices 字段: {data}")
+        return ""
+    
+    msg = data["choices"][0].get("message", {})
     content = (msg.get("content") or "").strip()
 
     if content:
@@ -192,7 +203,7 @@ async def generate_task(nickname: str, dimension: str, score: float, difficulty:
                 json={
                     "model": settings.chat_model,
                     "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 100,
+                    "max_tokens": 500,
                     "response_format": {"type": "json_object"},
                 },
             )
@@ -490,46 +501,66 @@ async def _evaluate_with_questionnaire(
         appearance_answer=clean_answer(questionnaire.get("appearance", "未回答")),
     )
 
-    try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(
-                f"{settings.AI_BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
-                json={
-                    "model": settings.chat_model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 500,
-                    "response_format": {"type": "json_object"},
-                },
-            )
-            data = response.json()
-            content = _extract_content(data)
+    # 重试机制：最多重试 3 次
+    max_retries = 3
+    last_error = None
+    
+    for attempt in range(max_retries):
+        try:
+            if attempt > 0:
+                import asyncio
+                wait_time = 5 * attempt  # 递增等待时间
+                print(f"[四维评分] 问卷评分第 {attempt + 1} 次尝试，等待 {wait_time} 秒...")
+                await asyncio.sleep(wait_time)
             
-            # 尝试清理和修复 JSON
-            content = content.strip()
-            # 如果 JSON 不完整，尝试修复
-            if content and not content.endswith('}'):
-                # 找到最后一个完整的键值对
-                last_brace = content.rfind('}')
-                if last_brace > 0:
-                    content = content[:last_brace + 1]
-                else:
-                    # 尝试添加缺失的括号
-                    content = content + '}'
-            
-            parsed = json.loads(content)
-            result = {
-                "exercise": min(100, max(0, float(parsed.get("exercise", 50)))),
-                "diet": min(100, max(0, float(parsed.get("diet", 50)))),
-                "sleep": min(100, max(0, float(parsed.get("sleep", 50)))),
-                "appearance": min(100, max(0, float(parsed.get("appearance", 50)))),
-            }
-            print(f"[四维评分] 问卷评分成功: {result}")
-            return result
-    except Exception as e:
-        print(f"[四维评分] 问卷评分失败: {e}")
-        print(f"[四维评分] 返回内容: {content[:200] if 'content' in locals() else 'N/A'}")
-        return {"exercise": 50, "diet": 50, "sleep": 50, "appearance": 50}
+            async with httpx.AsyncClient(timeout=60) as client:
+                response = await client.post(
+                    f"{settings.AI_BASE_URL}/chat/completions",
+                    headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
+                    json={
+                        "model": settings.chat_model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "max_tokens": 500,
+                        "response_format": {"type": "json_object"},
+                    },
+                )
+                data = response.json()
+                content = _extract_content(data)
+                
+                # 如果内容为空，抛出异常
+                if not content:
+                    raise Exception("AI 返回空内容")
+                
+                # 尝试清理和修复 JSON
+                content = content.strip()
+                # 如果 JSON 不完整，尝试修复
+                if content and not content.endswith('}'):
+                    # 找到最后一个完整的键值对
+                    last_brace = content.rfind('}')
+                    if last_brace > 0:
+                        content = content[:last_brace + 1]
+                    else:
+                        # 尝试添加缺失的括号
+                        content = content + '}'
+                
+                parsed = json.loads(content)
+                result = {
+                    "exercise": min(100, max(0, float(parsed.get("exercise", 50)))),
+                    "diet": min(100, max(0, float(parsed.get("diet", 50)))),
+                    "sleep": min(100, max(0, float(parsed.get("sleep", 50)))),
+                    "appearance": min(100, max(0, float(parsed.get("appearance", 50)))),
+                }
+                print(f"[四维评分] 问卷评分成功 (第 {attempt + 1} 次尝试): {result}")
+                return result
+        except Exception as e:
+            last_error = e
+            print(f"[四维评分] 问卷评分第 {attempt + 1} 次尝试失败: {e}")
+            if attempt < max_retries - 1:
+                print(f"[四维评分] 返回内容: {content[:200] if 'content' in locals() else 'N/A'}")
+    
+    # 所有重试都失败
+    print(f"[四维评分] 问卷评分失败 (已重试 {max_retries} 次): {last_error}")
+    return {"exercise": 50, "diet": 50, "sleep": 50, "appearance": 50}
 
 
 async def _evaluate_comprehensive(
@@ -584,32 +615,66 @@ async def _evaluate_comprehensive(
     
     messages[0]["content"].append({"type": "text", "text": prompt})
     
-    try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(
-                f"{settings.AI_BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
-                json={
-                    "model": settings.chat_model,
-                    "messages": messages,
-                    "max_tokens": 200,
-                    "response_format": {"type": "json_object"},
-                },
-            )
-            data = response.json()
-            content = _extract_content(data)
-            parsed = json.loads(content)
-            result = {
-                "exercise": min(100, max(0, float(parsed.get("exercise", 50)))),
-                "diet": min(100, max(0, float(parsed.get("diet", 50)))),
-                "sleep": min(100, max(0, float(parsed.get("sleep", 50)))),
-                "appearance": min(100, max(0, float(parsed.get("appearance", 50)))),
-            }
-            print(f"[四维评分] 综合评分成功: {result}")
-            return result
-    except Exception as e:
-        print(f"[四维评分] 综合评分失败: {e}")
-        raise
+    # 重试机制：最多重试 3 次
+    max_retries = 3
+    last_error = None
+    
+    for attempt in range(max_retries):
+        try:
+            if attempt > 0:
+                import asyncio
+                wait_time = 5 * attempt  # 递增等待时间
+                print(f"[四维评分] 第 {attempt + 1} 次尝试，等待 {wait_time} 秒...")
+                await asyncio.sleep(wait_time)
+            
+            async with httpx.AsyncClient(timeout=60) as client:
+                response = await client.post(
+                    f"{settings.AI_BASE_URL}/chat/completions",
+                    headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
+                    json={
+                        "model": settings.chat_model,
+                        "messages": messages,
+                        "max_tokens": 500,
+                        "response_format": {"type": "json_object"},
+                    },
+                )
+                data = response.json()
+                content = _extract_content(data)
+                
+                # 如果内容为空，抛出异常
+                if not content:
+                    raise Exception("AI 返回空内容")
+                
+                # 尝试清理和修复 JSON
+                content = content.strip()
+                # 如果 JSON 不完整，尝试修复
+                if content and not content.endswith('}'):
+                    # 找到最后一个完整的键值对
+                    last_brace = content.rfind('}')
+                    if last_brace > 0:
+                        content = content[:last_brace + 1]
+                    else:
+                        # 尝试添加缺失的括号
+                        content = content + '}'
+                
+                parsed = json.loads(content)
+                result = {
+                    "exercise": min(100, max(0, float(parsed.get("exercise", 50)))),
+                    "diet": min(100, max(0, float(parsed.get("diet", 50)))),
+                    "sleep": min(100, max(0, float(parsed.get("sleep", 50)))),
+                    "appearance": min(100, max(0, float(parsed.get("appearance", 50)))),
+                }
+                print(f"[四维评分] 综合评分成功 (第 {attempt + 1} 次尝试): {result}")
+                return result
+        except Exception as e:
+            last_error = e
+            print(f"[四维评分] 第 {attempt + 1} 次尝试失败: {e}")
+            if attempt < max_retries - 1:
+                print(f"[四维评分] 返回内容: {content[:200] if 'content' in locals() else 'N/A'}")
+    
+    # 所有重试都失败
+    print(f"[四维评分] 综合评分失败 (已重试 {max_retries} 次): {last_error}")
+    raise last_error
 
 
 async def evaluate_all_scores(
@@ -864,7 +929,7 @@ async def _detect_intent_ai(message: str, today_tasks: list[dict]) -> dict | Non
                 json={
                     "model": settings.chat_model,
                     "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 100,
+                    "max_tokens": 500,
                     "response_format": {"type": "json_object"},
                 },
             )

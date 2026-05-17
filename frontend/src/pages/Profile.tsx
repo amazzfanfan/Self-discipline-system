@@ -179,7 +179,7 @@ export default function Profile() {
   const handleEditGoal = (goal: any) => {
     setEditingGoalId(goal.id);
     setGoalForm({
-      title: goal.title || '',
+      title: goal.content || '',
       description: goal.description || '',
       goal_type: goal.goal_type || 'other',
       target_value: goal.target_value?.toString() || '',
@@ -461,7 +461,7 @@ export default function Profile() {
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="text-white font-medium text-sm truncate">{goal.title}</span>
+                      <span className="text-white font-medium text-sm truncate">{goal.content}</span>
                       <span className="text-xs px-2 py-0.5 rounded bg-slate-700 text-slate-400 flex-shrink-0">
                         {goalTypeLabels[goal.goal_type] || '其他'}
                       </span>

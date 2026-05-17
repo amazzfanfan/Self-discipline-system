@@ -5,14 +5,13 @@ Goal Service - 目标管理服务
 """
 
 from datetime import datetime, timezone
-from sqlalchemy import select, func, and_, or_
+from sqlalchemy import select, func, and_, or_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.goal import Goal, GoalType, GoalStatus, GoalSource
 from typing import Optional
 import logging
 import re
 import traceback
-from pgvector.sqlalchemy import cosine_distance
 from app.services.embedding_service import embedding_service
 
 logger = logging.getLogger(__name__)
@@ -248,18 +247,19 @@ class GoalService:
                 stmt = (
                     select(
                         Goal,
-                        cosine_distance(Goal.embedding, query_embedding).label("distance")
+                        text("1 - (goal.embedding <=> :embedding)").label("similarity")
                     )
                     .where(Goal.user_id == user_id)
                     .where(Goal.embedding.isnot(None))
+                    .params(embedding=query_embedding)
                 )
 
                 if status:
                     stmt = stmt.where(Goal.status == status)
 
                 stmt = stmt.order_by(
-                    cosine_distance(Goal.embedding, query_embedding)
-                ).limit(top_k)
+                    text("goal.embedding <=> :embedding")
+                ).params(embedding=query_embedding).limit(top_k)
 
                 result = await db.execute(stmt)
                 rows = result.all()

@@ -14,6 +14,8 @@ import re
 import traceback
 from app.services.embedding_service import embedding_service
 from app.services.memory_judge import HybridMemoryJudge
+from app.services.memory_scorer import MemoryImportanceScorer
+from app.services.memory_decay import MemoryDecay
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +25,13 @@ class MemoryService:
     
     def __init__(self, db: AsyncSession, llm_client=None):
         self.db = db
-        self.judge = HybridMemoryJudge(llm_client=llm_client)
+        self.importance_scorer = MemoryImportanceScorer()
+        self.memory_decay = MemoryDecay()
+        self.judge = HybridMemoryJudge(
+            llm_client=llm_client,
+            importance_scorer=self.importance_scorer,
+            memory_decay=self.memory_decay
+        )
     
     async def store_memory(
         self,
