@@ -30,7 +30,27 @@ class MemoryService:
         self.judge = HybridMemoryJudge(
             llm_client=llm_client,
             importance_scorer=self.importance_scorer,
-            memory_decay=self.memory_decay
+            memory_decay=self.memory_decay)
+    
+    def _get_effective_importance(self, memory: Memory) -> float:
+        """计算记忆经过衰减后的有效重要性评分
+        
+        衰减规则：
+        - 距上次访问越久，重要性越低
+        - 访问次数越多，衰减越慢
+        - 最低不会低于 MIN_IMPORTANCE (0.01)
+        
+        Args:
+            memory: Memory ORM 对象
+            
+        Returns:
+            衰减后的重要性评分 (0.01 ~ 1.0)
+        """
+        return self.memory_decay.calculate_importance(
+            original_importance=float(memory.importance_score),
+            created_at=memory.created_at,
+            last_accessed=memory.last_accessed,
+            access_count=memory.access_count or 0,
         )
     
     async def store_memory(
@@ -142,14 +162,18 @@ class MemoryService:
                 for row in rows:
                     memory = row[0]
                     distance = row[1]
+                    # 增加访问计数（用于衰减计算）
                     memory.access_count += 1
                     memory.last_accessed = datetime.now(timezone.utc)
+                    # 计算衰减后的有效重要性
+                    effective_imp = self._get_effective_importance(memory)
                     memories.append({
                         "id": str(memory.id),
                         "content": memory.content,
                         "role": memory.role,
                         "memory_type": memory.memory_type,
                         "importance_score": memory.importance_score,
+                        "effective_importance": round(effective_imp, 4),
                         "created_at": memory.created_at.isoformat(),
                         "similarity": round(1 - distance, 4) if distance is not None else 0.0,
                     })
@@ -259,6 +283,7 @@ class MemoryService:
                 "role": m.role,
                 "memory_type": m.memory_type,
                 "importance_score": m.importance_score,
+                "effective_importance": round(self._get_effective_importance(m), 4),
                 "created_at": m.created_at.isoformat(),
             }
             for m in memories
@@ -267,6 +292,8 @@ class MemoryService:
     async def get_user_facts(self, user_id: str, limit: int = 10) -> list[str]:
         """
         获取用户的事实性记忆（偏好、习惯等）
+        
+        按衰减后的重要性排序，确保老记忆不会一直占据前列。
         
         Args:
             user_id: 用户 ID
@@ -279,10 +306,11 @@ class MemoryService:
             select(Memory)
             .where(Memory.user_id == user_id)
             .where(Memory.memory_type == "fact")
-            .order_by(Memory.importance_score.desc())
-            .limit(limit)
         )
-        return [m.content for m in result.scalars()]
+        all_facts = result.scalars().all()
+        # 按衰减后的重要性排序
+        all_facts.sort(key=lambda m: self._get_effective_importance(m), reverse=True)
+        return [m.content for m in all_facts[:limit]]
     
     async def get_recent_memories(
         self,
@@ -321,6 +349,7 @@ class MemoryService:
                 "role": m.role,
                 "memory_type": m.memory_type,
                 "importance_score": m.importance_score,
+                "effective_importance": round(self._get_effective_importance(m), 4),
                 "created_at": m.created_at.isoformat(),
             }
             for m in memories
