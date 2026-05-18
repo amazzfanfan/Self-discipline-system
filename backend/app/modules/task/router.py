@@ -18,6 +18,24 @@ async def get_today_tasks(user: User = Depends(get_current_user), db: AsyncSessi
         select(Task).where(and_(Task.user_id == user.id, Task.scheduled_date == date.today()))
     )
     tasks = result.scalars().all()
+
+    # 如果今天没有任务（定时器可能没触发），自动生成
+    if not tasks:
+        from app.services.scheduler_service import generate_tasks_for_user
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"今日无任务，为用户 {user.id} 自动生成")
+        try:
+            await generate_tasks_for_user(user.id, user.nickname, db)
+            await db.commit()
+            # 重新查询
+            result = await db.execute(
+                select(Task).where(and_(Task.user_id == user.id, Task.scheduled_date == date.today()))
+            )
+            tasks = result.scalars().all()
+        except Exception as e:
+            logger.error(f"自动生成任务失败: {e}")
+
     return [
         {
             "id": str(t.id), "dimension": t.dimension.value, "title": t.title,

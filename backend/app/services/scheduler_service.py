@@ -177,6 +177,7 @@ async def daily_task_generation():
 
 
 def start_scheduler():
-    # 使用北京时间早上8:00发布任务（UTC 0:00）
+    # 每天凌晨 0:00（北京时间）为所有用户生成任务
+    # 注意：如果服务器此时未运行，任务会在用户首次查询时自动生成（见 task router）
     scheduler.add_job(daily_task_generation, "cron", hour=0, minute=0, id="daily_tasks")
     scheduler.start()
