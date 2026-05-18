@@ -5,72 +5,14 @@ import re
 import os
 import logging
 from datetime import datetime, timezone, timedelta
-from collections.abc import AsyncGenerator
 from app.core.config import get_settings
-from app.services.llm_service import chat_completion_stream as llm_chat_stream, chat_completion_with_fallback  # noqa: E501
+from app.services.llm_service import chat_completion_with_fallback
 from app.services.prompt_service import prompt_service
 
 logger = logging.getLogger(__name__)
 BJT = timezone(timedelta(hours=8))
 
 settings = get_settings()
-
-
-async def chat_completion(messages: list[dict], user_context: str = "") -> str:
-    """Call AI model for chat completion.
-
-    Delegates to llm_service for unified LLM access with retry/fallback.
-    System prompt is injected by ContextBuilder, not here.
-    """
-    try:
-        return await chat_completion_with_fallback(messages)
-    except Exception as e:
-        logger.error(f"chat_completion failed: {e}")
-        return ""
-
-
-async def chat_completion_stream(messages: list[dict], user_context: str = "") -> AsyncGenerator[str, None]:
-    """Stream AI model chat completion, yielding content chunks.
-
-    Delegates to llm_service for unified LLM access.
-    System prompt is injected by ContextBuilder, not here.
-    """
-    async for chunk in llm_chat_stream(messages):
-        yield chunk
-
-
-# --- Dimension scoring prompts (for photo-based evaluation) ---
-
-DIMENSION_PROMPTS = {
-    "exercise": (
-        "评估用户的运动能力和体能水平（0-100分）。\n"
-        "分析照片中的：体型、肌肉线条、体态、是否有运动痕迹。\n"
-        "结合身体数据：身高{height}cm，体重{weight}kg，BMI {bmi:.1f}，{age}岁，{gender_cn}。\n"
-        "评分标准：90-100运动员体格，70-89经常运动，50-69普通，30-49缺乏运动，0-29体能极差。\n"
-        '只返回JSON：{{"score": 数字}}'
-    ),
-    "diet": (
-        "评估用户的饮食健康程度（0-100分）。\n"
-        "分析照片中的：体脂率、皮肤光泽、面色、是否有营养不良或过剩迹象。\n"
-        "结合身体数据：身高{height}cm，体重{weight}kg，BMI {bmi:.1f}，{age}岁，{gender_cn}。\n"
-        "评分标准：90-100非常健康，70-89良好，50-69普通，30-49不健康，0-29严重问题。\n"
-        '只返回JSON：{{"score": 数字}}'
-    ),
-    "sleep": (
-        "评估用户的睡眠质量（0-100分）。\n"
-        "分析照片中的：黑眼圈、眼袋、肤质、精神状态、面色。\n"
-        "结合身体数据：身高{height}cm，体重{weight}kg，BMI {bmi:.1f}，{age}岁，{gender_cn}。\n"
-        "评分标准：90-100精神饱满，70-89状态良好，50-69一般，30-49明显疲惫，0-29严重睡眠不足。\n"
-        '只返回JSON：{{"score": 数字}}'
-    ),
-    "appearance": (
-        "评估用户的外在形象（0-100分）。\n"
-        "分析照片中的：整体形象、穿着打扮、气质、面部状态。\n"
-        "结合身体数据：身高{height}cm，体重{weight}kg，BMI {bmi:.1f}，{age}岁，{gender_cn}。\n"
-        "评分标准：90-100形象出众，70-89良好，50-69普通，30-49需要打理，0-29需大幅改善。\n"
-        '只返回JSON：{{"score": 数字}}'
-    ),
-}
 
 
 # --- Task generation ---
@@ -80,14 +22,6 @@ TASK_DEFAULTS = {
     "diet": "记录今日三餐",
     "sleep": "23:00前放下手机",
     "appearance": "认真护肤一次",
-}
-
-# 每个维度的任务范围说明
-DIMENSION_TASK_GUIDE = {
-    "exercise": "运动类任务：体育锻炼、健身、跑步、跳绳、俯卧撑、深蹲、瑜伽、拉伸、散步、骑车、游泳等身体活动。不要包含学习、写作、阅读等非身体活动。",
-    "diet": "饮食类任务：健康饮食、喝水、记录饮食、少吃零食、多吃蔬菜、控制热量、少油少盐等饮食相关。",
-    "sleep": "睡眠类任务：早睡、放下手机、冥想、深呼吸、睡前放松、避免熬夜等睡眠相关。",
-    "appearance": "外貌类任务：护肤、防晒、清洁面部、使用眼霜、敷面膜、整理仪容等外貌护理相关。",
 }
 
 
@@ -132,7 +66,7 @@ def _clean_task_title(text: str) -> str:
     if not text:
         return ""
     # Remove quotes, bullets, numbering
-    text = text.strip().strip('"\'""「」·•- ')
+    text = text.strip().strip('"\'\u201c\u201d\u300c\u300d\u00b7\u2022- ')
     text = re.sub(r'^\d+[.、]\s*', '', text)
     # Remove common prefixes the model might add
     for prefix in ["任务：", "任务:", "标题：", "标题:", "今日任务：", "今日任务:"]:
@@ -238,7 +172,7 @@ async def _score_dimension_from_photo(
     bmi = weight_kg / (height_cm / 100) ** 2
     gender_cn = {"male": "男", "female": "女"}.get(gender, "其他")
 
-    prompt = DIMENSION_PROMPTS[dimension].format(
+    prompt = prompt_service.DIMENSION_PROMPTS[dimension].format(
         height=height_cm, weight=weight_kg, bmi=bmi, age=age, gender_cn=gender_cn
     )
 
@@ -280,46 +214,6 @@ def _image_path_to_base64(photo_url: str) -> str | None:
     except Exception as e:
         logger.error(f"[图片转换] 转换失败: {e}")
         return None
-
-
-async def _evaluate_with_photos(
-    height_cm: float, weight_kg: float, age: int, gender: str,
-    front_photo_url: str | None, side_photo_url: str | None,
-) -> dict[str, float]:
-    """Evaluate all 4 dimensions in parallel using photo analysis."""
-    # Build image message parts using base64
-    image_parts = []
-    if front_photo_url:
-        b64_url = _image_path_to_base64(front_photo_url)
-        if b64_url:
-            image_parts.append({"type": "image_url", "image_url": {"url": b64_url}})
-            logger.info("[四维评分] 正面照片已转为base64")
-        else:
-            logger.warning(f"[四维评分] 正面照片转换失败: {front_photo_url}")
-    if side_photo_url:
-        b64_url = _image_path_to_base64(side_photo_url)
-        if b64_url:
-            image_parts.append({"type": "image_url", "image_url": {"url": b64_url}})
-            logger.info("[四维评分] 侧面照片已转为base64")
-
-    if not image_parts:
-        logger.warning("[四维评分] 无有效图片，使用默认分数")
-        return {"exercise": 50, "diet": 50, "sleep": 50, "appearance": 50}
-
-    # Run 4 dimension evaluations in parallel
-    results = await asyncio.gather(
-        _score_dimension_from_photo("exercise", image_parts, height_cm, weight_kg, age, gender),
-        _score_dimension_from_photo("diet", image_parts, height_cm, weight_kg, age, gender),
-        _score_dimension_from_photo("sleep", image_parts, height_cm, weight_kg, age, gender),
-        _score_dimension_from_photo("appearance", image_parts, height_cm, weight_kg, age, gender),
-    )
-
-    return {
-        "exercise": results[0],
-        "diet": results[1],
-        "sleep": results[2],
-        "appearance": results[3],
-    }
 
 
 async def _evaluate_with_questionnaire(
@@ -509,79 +403,6 @@ async def evaluate_all_scores(
     return {"exercise": 50, "diet": 50, "sleep": 50, "appearance": 50}, "default"
 
 
-async def evaluate_initial_score(
-    height_cm: float, weight_kg: float, age: int, gender: str,
-    front_photo_url: str | None = None, side_photo_url: str | None = None,
-) -> float:
-    """AI evaluates appearance score based on user data and photos. Returns a score 0-100."""
-    bmi = weight_kg / (height_cm / 100) ** 2
-    gender_cn = {"male": "男", "female": "女"}.get(gender, "其他")
-
-    prompt = (
-        f"评估用户外貌/体态评分（0-100分）。\n"
-        f"数据：身高{height_cm}cm，体重{weight_kg}kg，BMI {bmi:.1f}，{age}岁，{gender_cn}\n"
-        f"评分标准：90-100出众，70-89良好，50-69普通，30-49需改善，0-29需较大改善\n"
-        f"只返回JSON：{{\"score\": 数字}}"
-    )
-
-    messages = [{"role": "user", "content": []}]
-    if front_photo_url:
-        b64_url = _image_path_to_base64(front_photo_url)
-        if b64_url:
-            messages[0]["content"].append({"type": "image_url", "image_url": {"url": b64_url}})
-    if side_photo_url:
-        b64_url = _image_path_to_base64(side_photo_url)
-        if b64_url:
-            messages[0]["content"].append({"type": "image_url", "image_url": {"url": b64_url}})
-    messages[0]["content"].append({"type": "text", "text": prompt})
-
-    try:
-        content = await chat_completion_with_fallback(messages=messages, max_tokens=2000)
-        if "```" in content:
-            content = content.split("```")[1]
-            if content.startswith("json"):
-                content = content[4:]
-        if "{" in content:
-            json_str = content[content.index("{"):content.rindex("}") + 1]
-            parsed = json.loads(json_str)
-            score = parsed.get("score", 50)
-            if isinstance(score, dict):
-                score = score.get("score", 50)
-            return min(100, max(0, float(score)))
-    except Exception as e:
-        logger.error(f"[初始评分] 失败: {e}")
-    return 50.0
-
-
-async def analyze_image(image_url: str, analysis_type: str) -> str:
-    """AI analyzes user-uploaded images."""
-    prompt_map = {
-        "body": "请分析这张身材照片，评估体态、肌肉线条、整体外形。给出0-100的评分和简要分析。",
-        "face": "请分析这张面部照片，评估皮肤状态、精神面貌。给出0-100的评分和简要分析。",
-    }
-    prompt = prompt_map.get(analysis_type, "请分析这张图片。")
-
-    # Convert to base64 if it's a local path
-    if image_url.startswith('/'):
-        b64_url = _image_path_to_base64(image_url)
-        if not b64_url:
-            return "图片加载失败"
-        image_url = b64_url
-
-    try:
-        result = await chat_completion_with_fallback(
-            messages=[{"role": "user", "content": [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": image_url}},
-            ]}],
-            max_tokens=300
-        )
-        return result
-    except Exception as e:
-        logger.error(f"[图片分析] 失败: {e}")
-        return "图片分析失败"
-
-
 # --- Intent detection ---
 
 
@@ -652,28 +473,6 @@ def _detect_intent_rules(message: str, today_tasks: list[dict]) -> dict | None:
     return None
 
 
-INTENT_PROMPT = """分析用户消息，判断意图。只返回JSON，不要其他内容。
-
-意图类型：
-- complete_task: 用户报告完成了某个任务（运动/饮食/睡眠/外貌）
-- skip_task: 用户表示不想做或放弃某个任务
-- record_weight: 用户报告体重数据
-- chat: 普通对话、提问、闲聊
-
-返回格式：
-{{"intent": "complete_task", "dimension": "exercise"}}
-{{"intent": "skip_task", "dimension": "diet"}}
-{{"intent": "record_weight", "weight_kg": 72.5}}
-{{"intent": "chat"}}
-
-dimension 只能是: exercise, diet, sleep, appearance
-
-今日任务：
-{today_tasks}
-
-用户消息：{message}"""
-
-
 # 测试时设为 True，只用AI检测；设为 False 时关键词匹配作为兜底
 RULES_ONLY = False
 
@@ -708,7 +507,7 @@ async def _detect_intent_ai(message: str, today_tasks: list[dict]) -> dict | Non
         for t in today_tasks
     ) if today_tasks else "无任务"
 
-    prompt = INTENT_PROMPT.format(today_tasks=tasks_str, message=message)
+    prompt = prompt_service.build_intent_ai_prompt(message, tasks_str)
 
     try:
         content = await chat_completion_with_fallback(

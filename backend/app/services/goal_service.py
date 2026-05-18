@@ -12,7 +12,7 @@ from typing import Optional
 import logging
 import re
 import traceback
-from app.services.embedding_service import embedding_service
+from app.services.llm_service import get_embedding
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ class GoalService:
             # 生成向量嵌入
             embedding = None
             try:
-                embedding = await embedding_service.get_embedding(content)
+                embedding = await get_embedding(content)
                 logger.info(f"Generated embedding for goal: dim={len(embedding)}")
             except Exception as e:
                 logger.warning(f"Failed to generate embedding, storing without it: {e}")
@@ -119,7 +119,7 @@ class GoalService:
             # 如果内容变化，更新向量嵌入
             if content_changed and goal.content:
                 try:
-                    embedding = await embedding_service.get_embedding(goal.content)
+                    embedding = await get_embedding(goal.content)
                     goal.embedding = embedding
                     logger.info(f"Updated embedding for goal {goal_id}")
                 except Exception as e:
@@ -240,7 +240,7 @@ class GoalService:
         try:
             # 尝试向量相似度搜索
             try:
-                query_embedding = await embedding_service.get_embedding(query)
+                query_embedding = await get_embedding(query)
                 logger.info(f"Vector search with embedding: dim={len(query_embedding)}")
 
                 # 使用 cosine_distance 排序（距离越小越相似）

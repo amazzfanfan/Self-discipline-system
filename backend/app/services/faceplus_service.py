@@ -14,6 +14,8 @@ import base64
 from typing import Optional
 from dataclasses import dataclass
 from app.core.config import get_settings
+from app.services.prompt_service import prompt_service
+from app.services.llm_service import chat_completion_with_fallback
 
 settings = get_settings()
 
@@ -224,87 +226,64 @@ async def _call_ai_analysis(image_path: str) -> Optional[SkinAnalysisResult]:
         b64 = base64.b64encode(image_data).decode('utf-8')
         b64_url = f"data:image/jpeg;base64,{b64}"
         
-        prompt = """请分析这张面部照片的肤质状况，返回 JSON 格式：
-
-{
-  "skin_type": 0-3 (0=油性, 1=干性, 2=中性, 3=混合性),
-  "dark_circle": 0或1 (黑眼圈),
-  "eye_pouch": 0或1 (眼袋),
-  "acne": 0或1 (痘痘),
-  "blackhead": 0或1 (黑头),
-  "skin_spot": 0或1 (斑点),
-  "pores_forehead": 0或1 (额头毛孔粗大),
-  "pores_left_cheek": 0或1 (左脸颊毛孔粗大),
-  "pores_right_cheek": 0或1 (右脸颊毛孔粗大),
-  "skin_score": 0-100 (综合肤质评分)
-}
-
-只返回 JSON，不要其他内容。"""
+        prompt = prompt_service.build_skin_analysis_prompt()
 
         messages = [{"role": "user", "content": [
             {"type": "image_url", "image_url": {"url": b64_url}},
             {"type": "text", "text": prompt}
         ]}]
         
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(
-                f"{settings.AI_BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
-                json={
-                    "model": settings.chat_model,
-                    "messages": messages,
-                    "max_tokens": 500,
-                    "response_format": {"type": "json_object"},
-                },
-            )
-            data = response.json()
-            content = data["choices"][0]["message"]["content"]
-            result = json.loads(content)
-            
-            # 构建问题列表
-            issues = []
-            issue_fields = {
-                "dark_circle": "黑眼圈",
-                "eye_pouch": "眼袋",
-                "acne": "痘痘",
-                "blackhead": "黑头",
-                "skin_spot": "皮肤斑点",
-                "pores_forehead": "额头毛孔粗大",
-                "pores_left_cheek": "左脸颊毛孔粗大",
-                "pores_right_cheek": "右脸颊毛孔粗大",
-            }
-            
-            for field, name in issue_fields.items():
-                if result.get(field, 0) == 1:
-                    issues.append(name)
-            
-            skin_type = result.get("skin_type", 2)
-            
-            return SkinAnalysisResult(
-                source="ai",
-                skin_type=skin_type,
-                skin_type_name=SKIN_TYPE_MAP.get(skin_type, "未知"),
-                dark_circle=result.get("dark_circle", 0),
-                eye_pouch=result.get("eye_pouch", 0),
-                forehead_wrinkle=result.get("forehead_wrinkle", 0),
-                nasolabial_fold=result.get("nasolabial_fold", 0),
-                crows_feet=result.get("crows_feet", 0),
-                glabella_wrinkle=result.get("glabella_wrinkle", 0),
-                eye_finelines=result.get("eye_finelines", 0),
-                acne=result.get("acne", 0),
-                blackhead=result.get("blackhead", 0),
-                skin_spot=result.get("skin_spot", 0),
-                mole=result.get("mole", 0),
-                pores_forehead=result.get("pores_forehead", 0),
-                pores_left_cheek=result.get("pores_left_cheek", 0),
-                pores_right_cheek=result.get("pores_right_cheek", 0),
-                pores_jaw=result.get("pores_jaw", 0),
-                left_eyelids=result.get("left_eyelids", 0),
-                right_eyelids=result.get("right_eyelids", 0),
-                skin_score=result.get("skin_score", 70),
-                issues=issues,
-                suggestions=[],  # 建议由AI后续动态生成
-            )
+        content = await chat_completion_with_fallback(
+            messages=messages,
+            max_tokens=500,
+            response_format={"type": "json_object"},
+        )
+        result = json.loads(content)
+        
+        # 构建问题列表
+        issues = []
+        issue_fields = {
+            "dark_circle": "黑眼圈",
+            "eye_pouch": "眼袋",
+            "acne": "痘痘",
+            "blackhead": "黑头",
+            "skin_spot": "皮肤斑点",
+            "pores_forehead": "额头毛孔粗大",
+            "pores_left_cheek": "左脸颊毛孔粗大",
+            "pores_right_cheek": "右脸颊毛孔粗大",
+        }
+        
+        for field, name in issue_fields.items():
+            if result.get(field, 0) == 1:
+                issues.append(name)
+        
+        skin_type = result.get("skin_type", 2)
+        
+        return SkinAnalysisResult(
+            source="ai",
+            skin_type=skin_type,
+            skin_type_name=SKIN_TYPE_MAP.get(skin_type, "未知"),
+            dark_circle=result.get("dark_circle", 0),
+            eye_pouch=result.get("eye_pouch", 0),
+            forehead_wrinkle=result.get("forehead_wrinkle", 0),
+            nasolabial_fold=result.get("nasolabial_fold", 0),
+            crows_feet=result.get("crows_feet", 0),
+            glabella_wrinkle=result.get("glabella_wrinkle", 0),
+            eye_finelines=result.get("eye_finelines", 0),
+            acne=result.get("acne", 0),
+            blackhead=result.get("blackhead", 0),
+            skin_spot=result.get("skin_spot", 0),
+            mole=result.get("mole", 0),
+            pores_forehead=result.get("pores_forehead", 0),
+            pores_left_cheek=result.get("pores_left_cheek", 0),
+            pores_right_cheek=result.get("pores_right_cheek", 0),
+            pores_jaw=result.get("pores_jaw", 0),
+            left_eyelids=result.get("left_eyelids", 0),
+            right_eyelids=result.get("right_eyelids", 0),
+            skin_score=result.get("skin_score", 70),
+            issues=issues,
+            suggestions=[],  # 建议由AI后续动态生成
+        )
     except Exception as e:
         print(f"[AI肤质分析] 分析异常: {e}")
         return None
@@ -442,38 +421,21 @@ async def generate_ai_suggestions(issues: list[str], skin_type_name: str) -> lis
         return [f"皮肤状态良好，继续保持{skin_type_name}皮肤的日常护理"]
     
     issues_str = "、".join(issues)
-    prompt = (
-        f"用户肤质分析结果：皮肤类型为{skin_type_name}，检测到以下问题：{issues_str}。\n\n"
-        f"请针对每个问题给出具体、可操作的护理建议，返回JSON格式：\n"
-        f'{{"suggestions": ["建议1", "建议2", "建议3"]}}\n\n'
-        f"要求：\n"
-        f"1. 每条建议要具体，包含具体的产品类型或操作方法\n"
-        f"2. 建议要结合用户的皮肤类型\n"
-        f"3. 最多返回3条最重要的建议\n"
-        f"4. 只返回JSON，不要其他内容"
-    )
+    prompt = prompt_service.build_skin_suggestion_prompt(skin_type_name, issues_str)
     
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(
-                f"{settings.AI_BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
-                json={
-                    "model": settings.chat_model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 300,
-                    "response_format": {"type": "json_object"},
-                },
-            )
-            data = response.json()
-            content = data["choices"][0]["message"]["content"]
-            parsed = json.loads(content)
-            suggestions = parsed.get("suggestions", [])
-            
-            # 验证返回的是列表且非空
-            if isinstance(suggestions, list) and suggestions:
-                print(f"[AI建议] 成功生成{suggestions}")
-                return suggestions[:3]  # 最多返回3条
+        content = await chat_completion_with_fallback(
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=300,
+            response_format={"type": "json_object"},
+        )
+        parsed = json.loads(content)
+        suggestions = parsed.get("suggestions", [])
+        
+        # 验证返回的是列表且非空
+        if isinstance(suggestions, list) and suggestions:
+            print(f"[AI建议] 成功生成{suggestions}")
+            return suggestions[:3]  # 最多返回3条
     except Exception as e:
         print(f"[AI建议] 生成失败: {e}")
     
@@ -501,35 +463,20 @@ async def generate_skin_task_ai(issues: list[str], skin_type_name: str) -> str:
         return type_tasks.get(skin_type_name, "认真护肤一次，保持良好状态")
     
     issues_str = "、".join(issues[:2])  # 取前两个主要问题
-    prompt = (
-        f"用户肤质问题：{issues_str}，皮肤类型：{skin_type_name}。\n\n"
-        f"请生成1个今日护肤任务，要求：\n"
-        f"1. 具体可执行，有明确的完成标准\n"
-        f"2. 针对用户的具体问题\n"
-        f"3. 20字以内\n\n"
-        f'返回JSON格式：{{"task": "任务描述"}}'
-    )
+    prompt = prompt_service.build_skin_task_prompt(issues_str, skin_type_name)
     
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(
-                f"{settings.AI_BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {settings.AI_API_KEY}", "Content-Type": "application/json"},
-                json={
-                    "model": settings.chat_model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 100,
-                    "response_format": {"type": "json_object"},
-                },
-            )
-            data = response.json()
-            content = data["choices"][0]["message"]["content"]
-            parsed = json.loads(content)
-            task = parsed.get("task", "")
-            
-            if task and len(task) < 100:
-                print(f"[AI护肤任务] 生成成功: {task}")
-                return task
+        content = await chat_completion_with_fallback(
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=100,
+            response_format={"type": "json_object"},
+        )
+        parsed = json.loads(content)
+        task = parsed.get("task", "")
+        
+        if task and len(task) < 100:
+            print(f"[AI护肤任务] 生成成功: {task}")
+            return task
     except Exception as e:
         print(f"[AI护肤任务] 生成失败: {e}")
     

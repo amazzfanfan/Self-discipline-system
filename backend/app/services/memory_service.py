@@ -12,7 +12,7 @@ from typing import Optional
 import logging
 import re
 import traceback
-from app.services.embedding_service import embedding_service
+from app.services.llm_service import get_embedding
 from app.services.memory_judge import HybridMemoryJudge
 from app.services.memory_scorer import MemoryImportanceScorer
 from app.services.memory_decay import MemoryDecay
@@ -80,7 +80,7 @@ class MemoryService:
             # 生成向量嵌入
             embedding = None
             try:
-                embedding = await embedding_service.get_embedding(content)
+                embedding = await get_embedding(content)
                 logger.info(f"Generated embedding for memory: dim={len(embedding)}")
             except Exception as e:
                 logger.warning(f"Failed to generate embedding, storing without it: {e}")
@@ -131,7 +131,7 @@ class MemoryService:
         try:
             # 尝试向量相似度搜索
             try:
-                query_embedding = await embedding_service.get_embedding(query)
+                query_embedding = await get_embedding(query)
                 logger.info(f"Vector search with embedding: dim={len(query_embedding)}")
 
                 # 使用 cosine_distance 排序（距离越小越相似）

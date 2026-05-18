@@ -10,6 +10,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from typing import Any, Optional
+from app.services.prompt_service import prompt_service
 
 logger = logging.getLogger(__name__)
 
@@ -129,40 +130,6 @@ class LLMBasedJudge:
     当规则过滤器无法判定时，使用 LLM 进行更精确的语义分析。
     """
 
-    JUDGE_PROMPT = """你是一个记忆判断助手。请分析以下对话内容，判断是否值得长期记忆。
-
-判断标准（满足以下任一才记住）：
-1. 包含用户个人信息（姓名、生日、职业、地址、宠物等）→ 值得记住
-2. 包含用户偏好或喜好（喜欢什么、讨厌什么）→ 值得记住
-3. 包含用户目标或计划（想做什么、计划做什么）→ 值得记住
-4. 包含重要事实（健康数据、重要事件）→ 值得记住
-5. 包含情感表达（心情、感受）→ 适度记住
-
-以下内容一律不记住（即使看起来有用）：
-- 闲聊问答："什么手机好"、"推荐一下"、"哪个比较好" → 不记住
-- 通用问题："什么是"、"怎么"、"为什么"、"介绍一下" → 不记住
-- 寒暄问候："你好"、"谢谢"、"好的"、"嗯" → 不记住
-- 临时请求："帮我查"、"帮我算"、"翻译一下" → 不记住
-- 时间/天气："现在几点"、"今天天气" → 不记住
-- AI 相关："你能做什么"、"你是谁" → 不记住
-- 系统回复：AI 给出的分析、建议、推荐 → 不记住
-
-重要：只有用户主动透露的个人信息、偏好、目标、情感才值得记住。
-AI 的回复、分析、推荐一律不记住。问题和请求一律不记住。
-
-请以 JSON 格式返回分析结果：
-{
-    "should_remember": true/false,
-    "importance": 0.0-1.0 之间的浮点数,
-    "memory_type": "fact/goal/preference/emotion/health/conversation" 中的一个,
-    "reason": "简短的判断理由"
-}
-
-待判断内容：
-{text}
-
-请只返回 JSON，不要有其他内容。"""
-
     def __init__(self, llm_client):
         """初始化 LLM 记忆判断器
 
@@ -183,7 +150,7 @@ AI 的回复、分析、推荐一律不记住。问题和请求一律不记住�
         import json
 
         try:
-            prompt = self.JUDGE_PROMPT.format(text=content)
+            prompt = prompt_service.build_judge_prompt(content)
             response = await self.llm_client.chat(
                 messages=[{"role": "user", "content": prompt}]
             )
