@@ -230,22 +230,3 @@ async def chat_completion_with_fallback(
             logger.error(f"Fallback model also failed: {e2}")
             raise Exception("所有模型均不可用，主模型和备用模型都调用失败")
 
-
-def count_tokens(text: str, model: str = "gpt-4") -> int:
-    """
-    计算文本的 token 数量
-    
-    Args:
-        text: 输入文本
-        model: 模型名称（用于选择 tokenizer）
-    
-    Returns:
-        token 数量
-    """
-    try:
-        import tiktoken
-        encoding = tiktoken.encoding_for_model(model)
-        return len(encoding.encode(text))
-    except Exception:
-        # 简单估算：中文约 1.5 token/字
-        return len(text) * 2

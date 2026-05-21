@@ -355,20 +355,7 @@ class MemoryService:
             for m in memories
         ]
     
-    async def should_remember(self, content: str, role: str = "user") -> bool:
-        """
-        判断内容是否值得记住
-        
-        Args:
-            content: 对话内容
-            role: 角色（user/system）
-        
-        Returns:
-            是否值得记住
-        """
-        result = await self.judge.judge(content, role=role)
-        return result["should_remember"]
-    
+
     async def auto_store_conversation(
         self,
         user_id: str,

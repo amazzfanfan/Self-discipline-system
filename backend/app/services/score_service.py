@@ -60,19 +60,3 @@ async def record_negative(db: AsyncSession, user_id: str, dimension: DimensionEn
     db.add(history)
     return {"dimension": dimension.value, "delta": -0.1}
 
-
-async def get_streak_info(db: AsyncSession, user_id: str) -> list[dict]:
-    """Get all dimensions' streak and progress info."""
-    result = await db.execute(select(UserScore).where(UserScore.user_id == user_id))
-    scores = result.scalars().all()
-
-    return [
-        {
-            "dimension": s.dimension.value,
-            "score": float(s.score),
-            "streak_days": s.streak_days,
-            "threshold": THRESHOLDS[s.dimension],
-            "progress": min(1.0, s.streak_days / THRESHOLDS[s.dimension]),
-        }
-        for s in scores
-    ]
