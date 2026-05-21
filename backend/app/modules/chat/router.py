@@ -33,8 +33,7 @@ async def send_message(
     from app.services.ai_service import detect_intent
     from app.services.task_service import complete_task_by_dimension, skip_task_by_dimension, get_today_tasks_dict
     from app.services.weight_service import record_weight as record_weight_service
-
-    # Save user message
+    from app.services.cache_service import invalidate_tasks, invalidate_scores
     user_msg = Conversation(user_id=user.id, role=RoleEnum.user, content=content)
     db.add(user_msg)
     await db.flush()
@@ -57,6 +56,8 @@ async def send_message(
                     action_context = f"[系统操作] {result['message']}"
                     if result.get("score_change"):
                         action_context += f"，评分变动：{result['score_change']}"
+                    await invalidate_tasks(str(user.id))
+                    await invalidate_scores(str(user.id))
                 else:
                     action_context = f"[系统提示] {result['message']}"
             except Exception as e:
@@ -70,6 +71,8 @@ async def send_message(
                 result = await skip_task_by_dimension(db, str(user.id), dim)
                 if result["success"]:
                     action_context = f"[系统操作] {result['message']}"
+                    await invalidate_tasks(str(user.id))
+                    await invalidate_scores(str(user.id))
                 else:
                     action_context = f"[系统提示] {result['message']}"
             except Exception as e:
@@ -150,6 +153,7 @@ async def stream_message(
     from app.services.ai_service import detect_intent
     from app.services.task_service import complete_task_by_dimension, skip_task_by_dimension, get_today_tasks_dict
     from app.services.weight_service import record_weight as record_weight_service
+    from app.services.cache_service import invalidate_tasks, invalidate_scores
 
     user_id = str(user.id)
     nickname = user.nickname
@@ -177,6 +181,8 @@ async def stream_message(
                     action_context = f"[系统操作] {result['message']}"
                     if result.get("score_change"):
                         action_context += f"，评分变动：{result['score_change']}"
+                    await invalidate_tasks(user_id)
+                    await invalidate_scores(user_id)
                 else:
                     action_context = f"[系统提示] {result['message']}"
             except Exception as e:
@@ -190,6 +196,8 @@ async def stream_message(
                 result = await skip_task_by_dimension(db, user_id, dim)
                 if result["success"]:
                     action_context = f"[系统操作] {result['message']}"
+                    await invalidate_tasks(user_id)
+                    await invalidate_scores(user_id)
                 else:
                     action_context = f"[系统提示] {result['message']}"
             except Exception as e:

@@ -5,6 +5,7 @@ from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.models.user import User
 from app.models.score import UserScore, ScoreHistory
+from app.services.cache_service import get_cached_scores, set_cached_scores
 
 
 router = APIRouter(prefix="/api/scores", tags=["scores"])
@@ -12,12 +13,17 @@ router = APIRouter(prefix="/api/scores", tags=["scores"])
 
 @router.get("")
 async def get_scores(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    cached = await get_cached_scores(str(user.id))
+    if cached is not None:
+        return cached
     result = await db.execute(select(UserScore).where(UserScore.user_id == user.id))
     scores = result.scalars().all()
-    return [
+    result_list = [
         {"dimension": s.dimension.value, "score": float(s.score), "streak_days": s.streak_days}
         for s in scores
     ]
+    await set_cached_scores(str(user.id), result_list)
+    return result_list
 
 
 @router.get("/history")

@@ -8,12 +8,18 @@ from app.models.user import User
 from app.models.task import Task, TaskStatusEnum
 from app.models.score import DimensionEnum
 from app.services.task_service import complete_task_by_dimension
+from app.services.cache_service import get_cached_tasks, set_cached_tasks, invalidate_tasks, invalidate_scores
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
 
 @router.get("/today")
 async def get_today_tasks(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    # 先查缓存
+    cached = await get_cached_tasks(str(user.id))
+    if cached is not None:
+        return cached
+
     result = await db.execute(
         select(Task).where(and_(Task.user_id == user.id, Task.scheduled_date == date.today()))
     )
@@ -36,7 +42,7 @@ async def get_today_tasks(user: User = Depends(get_current_user), db: AsyncSessi
         except Exception as e:
             logger.error(f"自动生成任务失败: {e}")
 
-    return [
+    result_list = [
         {
             "id": str(t.id), "dimension": t.dimension.value, "title": t.title,
             "description": t.description, "difficulty": t.difficulty.value,
@@ -44,6 +50,10 @@ async def get_today_tasks(user: User = Depends(get_current_user), db: AsyncSessi
         }
         for t in tasks
     ]
+
+    # 写入缓存
+    await set_cached_tasks(str(user.id), result_list)
+    return result_list
 
 
 @router.post("/{task_id}/complete")
@@ -61,6 +71,10 @@ async def complete_task(task_id: str, user: User = Depends(get_current_user), db
 
     from app.services.score_service import record_task_completion
     score_change = await record_task_completion(db, user.id, task.dimension)
+
+    # 清除缓存
+    await invalidate_tasks(str(user.id))
+    await invalidate_scores(str(user.id))
 
     return {
         "message": "任务完成",

@@ -16,6 +16,7 @@ from app.services.llm_service import get_embedding
 from app.services.memory_judge import HybridMemoryJudge
 from app.services.memory_scorer import MemoryImportanceScorer
 from app.services.memory_decay import MemoryDecay
+from app.services.cache_service import get_cached_memory_search, set_cached_memory_search
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,11 @@ class MemoryService:
             相关记忆列表
         """
         try:
+            # 检查 Redis 缓存
+            cached = await get_cached_memory_search(user_id, query)
+            if cached is not None:
+                logger.info(f"Memory search cache hit for user={user_id}")
+                return cached
             # 尝试向量相似度搜索
             try:
                 query_embedding = await get_embedding(query)
@@ -181,6 +187,7 @@ class MemoryService:
                 await self.db.commit()
 
                 if memories:
+                    await set_cached_memory_search(user_id, query, memories)
                     logger.info(f"Vector search found {len(memories)} memories")
                     return memories
 
