@@ -2,7 +2,7 @@
 
 > AI驱动的自律成长系统，灵感来源于小说中的成长系统
 
-[![Version](https://img.shields.io/badge/version-v4.0-blue.svg)](https://github.com/amazzfanfan/Self-discipline-system/releases)
+[![Version](https://img.shields.io/badge/version-v7.0-blue.svg)](https://github.com/amazzfanfan/Self-discipline-system/releases)
 [![Python](https://img.shields.io/badge/python-3.11+-green.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
@@ -16,6 +16,33 @@
 - **鼓励驱动**：用正向反馈激励用户坚持
 - **关注趋势**：单次失败不代表失败，关注长期进步
 - **主动关怀**：检测到异常时主动询问
+
+## 📸 项目截图
+
+### 身体数据采集
+<p align="center">
+  <img src="docs/screenshots/onboarding.png" width="700" alt="身体数据采集引导页"/>
+</p>
+
+### 主仪表盘
+<p align="center">
+  <img src="docs/screenshots/dashboard.png" width="700" alt="主仪表盘 - 四维评分、今日任务、趋势图表"/>
+</p>
+
+### AI 对话系统
+<p align="center">
+  <img src="docs/screenshots/chat.png" width="700" alt="系统对话 - 意图识别、任务完成、流式响应"/>
+</p>
+
+### 肤质分析
+<p align="center">
+  <img src="docs/screenshots/skin-analysis.png" width="700" alt="肤质分析 - face++ API 集成"/>
+</p>
+
+### 任务列表
+<p align="center">
+  <img src="docs/screenshots/task-list.png" width="700" alt="任务列表 - 按维度筛选、完成状态"/>
+</p>
 
 ## 🚀 功能特点
 
