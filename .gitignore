@@ -4,6 +4,8 @@ node_modules/
 .env.local
 dist/
 build/
+test-results/
+playwright-report/
 __pycache__/
 *.pyc
 .pytest_cache/

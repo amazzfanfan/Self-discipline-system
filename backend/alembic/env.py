@@ -17,9 +17,11 @@ if config.config_file_name is not None:
 
 # Import all models so that Base.metadata is populated
 from app.core.database import Base  # noqa: E402
+from app.core.config import get_settings  # noqa: E402
 import app.models  # noqa: E402, F401
 
 target_metadata = Base.metadata
+config.set_main_option("sqlalchemy.url", get_settings().DATABASE_URL)
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:

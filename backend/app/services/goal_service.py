@@ -4,17 +4,19 @@ Goal Service - 目标管理服务
 支持向量嵌入的语义搜索，关键词搜索作为降级方案
 """
 
-from datetime import datetime, timezone
-from sqlalchemy import select, func, and_, or_, text
+from datetime import date, datetime, timezone
+from sqlalchemy import select, or_, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models.goal import Goal, GoalType, GoalStatus, GoalSource
+from app.models.goal import Goal, GoalStatus, GoalSource
 from typing import Optional
 import logging
 import re
 import traceback
 from app.services.llm_service import get_embedding
+from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 
 class GoalService:
@@ -30,6 +32,11 @@ class GoalService:
         content: str,
         goal_type: str = "exercise",
         structured_data: dict = None,
+        target_metric: str | None = None,
+        target_value: float | None = None,
+        current_value: float | None = None,
+        deadline: date | None = None,
+        milestones: list[dict] | None = None,
         source: str = "manual",
     ) -> Goal:
         """
@@ -61,7 +68,13 @@ class GoalService:
                 content=content,
                 goal_type=goal_type,
                 structured_data=structured_data,
+                target_metric=target_metric,
+                target_value=target_value,
+                current_value=current_value,
+                deadline=deadline,
+                milestones=milestones or [],
                 embedding=embedding,
+                embedding_model=settings.EMBEDDING_MODEL if embedding else None,
                 source=source,
                 status=GoalStatus.active.value,
             )
@@ -118,9 +131,12 @@ class GoalService:
 
             # 如果内容变化，更新向量嵌入
             if content_changed and goal.content:
+                goal.embedding = None
+                goal.embedding_model = None
                 try:
                     embedding = await get_embedding(goal.content)
                     goal.embedding = embedding
+                    goal.embedding_model = settings.EMBEDDING_MODEL
                     logger.info(f"Updated embedding for goal {goal_id}")
                 except Exception as e:
                     logger.warning(f"Failed to update embedding for goal {goal_id}: {e}")
@@ -251,6 +267,7 @@ class GoalService:
                     )
                     .where(Goal.user_id == user_id)
                     .where(Goal.embedding.isnot(None))
+                    .where(Goal.embedding_model == settings.EMBEDDING_MODEL)
                     .params(embedding=query_embedding)
                 )
 
@@ -267,9 +284,9 @@ class GoalService:
                 goals = []
                 for row in rows:
                     goal = row[0]
-                    distance = row[1]
+                    similarity = row[1]
                     goal_dict = goal.to_dict()
-                    goal_dict["similarity"] = round(1 - distance, 4) if distance is not None else 0.0
+                    goal_dict["similarity"] = round(float(similarity), 4) if similarity is not None else 0.0
                     goals.append(goal_dict)
 
                 if goals:

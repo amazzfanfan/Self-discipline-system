@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuthStore } from '../stores/authStore';
 
@@ -45,6 +45,14 @@ const navItems = [
     ),
   },
   {
+    to: '/goals', label: '目标',
+    icon: (
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6l4 2m5-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+    ),
+  },
+  {
     to: '/settings', label: '设置',
     icon: (
       <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
@@ -59,19 +67,21 @@ export default function Layout() {
   const [expanded, setExpanded] = useState(false);
   const logout = useAuthStore((s) => s.logout);
   const navigate = useNavigate();
+  const location = useLocation();
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    await logout();
     navigate('/login');
   };
 
   return (
-    <div className="h-screen bg-slate-950 flex overflow-hidden">
+    <div className="relative h-screen bg-[#030611] flex overflow-hidden">
+      <div className="pointer-events-none absolute -left-40 top-1/3 h-96 w-96 rounded-full bg-blue-600/5 blur-[120px]" />
       {/* Icon Rail Sidebar */}
       <motion.aside
         animate={{ width: expanded ? 200 : 68 }}
         transition={{ duration: 0.25, ease: 'easeInOut' }}
-        className="bg-slate-900/50 backdrop-blur-xl border-r border-slate-800/50 flex flex-col flex-shrink-0 relative z-10"
+        className="bg-slate-950/55 backdrop-blur-2xl border-r border-white/[0.06] flex flex-col flex-shrink-0 relative z-20 shadow-[12px_0_50px_rgba(0,0,0,.12)]"
       >
         {/* Logo */}
         <div className="p-4 flex items-center gap-3 h-16 border-b border-slate-800/50">
@@ -169,7 +179,7 @@ export default function Layout() {
           </button>
 
           {/* Logout */}
-          <button onClick={handleLogout}
+          <button onClick={() => void handleLogout()}
             className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-all">
             <svg className="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15m3 0l3-3m0 0l-3-3m3 3H9" />
@@ -191,9 +201,18 @@ export default function Layout() {
       </motion.aside>
 
       {/* Main content */}
-      <main className="flex-1 overflow-hidden">
-        <Outlet />
-      </main>
+      <AnimatePresence mode="wait" initial={false}>
+        <motion.main
+          key={location.pathname}
+          initial={{ opacity: 0, y: 8, filter: 'blur(4px)' }}
+          animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+          exit={{ opacity: 0, y: -5, filter: 'blur(3px)' }}
+          transition={{ duration: 0.22, ease: 'easeOut' }}
+          className="relative z-10 flex-1 overflow-hidden"
+        >
+          <Outlet />
+        </motion.main>
+      </AnimatePresence>
     </div>
   );
 }

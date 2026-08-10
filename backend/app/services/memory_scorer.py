@@ -198,7 +198,7 @@ class MemoryImportanceScorer:
         score = 0.5  # 基准分
 
         # ── 角色信号 ──────────────────────────────────────────────
-        role = context.get("role", "user")
+        role = context.get("role")
         if role == "user":
             score += 0.1  # 用户主动提供的信息更重要
         elif role == "system":

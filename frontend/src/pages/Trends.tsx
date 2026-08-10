@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { motion } from 'framer-motion';
 import api from '../services/api';
+import type { ScoreHistory, UserScore } from '../types';
 
 const DIM_COLORS = {
   exercise: '#3b82f6',
@@ -10,21 +11,28 @@ const DIM_COLORS = {
   appearance: '#ec4899',
 };
 
+const DIM_LABELS: Record<string, string> = {
+  exercise: '运动',
+  diet: '饮食',
+  sleep: '睡眠',
+  appearance: '形象管理',
+};
+
 export default function Trends() {
-  const { data: scores } = useQuery({
+  const { data: scores } = useQuery<UserScore[]>({
     queryKey: ['scores'],
     queryFn: () => api.get('/scores').then((r) => r.data),
   });
 
-  const { data: history } = useQuery({
+  const { data: history } = useQuery<ScoreHistory[]>({
     queryKey: ['score-history'],
     queryFn: () => api.get('/scores/history?limit=100').then((r) => r.data),
   });
 
   // Build chart data
-  const chartData = (history || []).reverse().map((h: any, i: number) => ({
+  const chartData = [...(history ?? [])].reverse().map((h, i) => ({
     index: i + 1,
-    [h.dimension]: Math.abs(h.delta),
+    [h.dimension]: h.delta,
     date: new Date(h.created_at).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' }),
   }));
 
@@ -36,13 +44,13 @@ export default function Trends() {
 
         {/* Current score cards */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-          {scores?.map((s: any) => (
+          {scores?.map((s) => (
             <motion.div key={s.dimension} initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}
               className="bg-slate-900 rounded-xl p-4 border border-slate-800 text-center">
               <div className="text-2xl font-bold" style={{ color: DIM_COLORS[s.dimension as keyof typeof DIM_COLORS] }}>
                 {s.score.toFixed(1)}
               </div>
-              <div className="text-sm text-slate-400 mt-1">{s.dimension}</div>
+              <div className="text-sm text-slate-400 mt-1">{DIM_LABELS[s.dimension]}</div>
               <div className="text-xs text-slate-500 mt-1">连续 {s.streak_days} 天</div>
             </motion.div>
           ))}

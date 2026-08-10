@@ -7,6 +7,13 @@ const COLORS = {
   appearance: { bar: 'from-pink-500 to-pink-400', text: 'text-pink-400', icon: '✨' },
 };
 
+const LABELS: Record<string, string> = {
+  exercise: '运动',
+  diet: '饮食',
+  sleep: '睡眠',
+  appearance: '形象管理',
+};
+
 interface Props {
   dimension: string;
   score: number;
@@ -20,7 +27,7 @@ export default function DimensionBar({ dimension, score, streak, threshold }: Pr
   return (
     <div className="mb-4">
       <div className="flex justify-between items-center mb-1">
-        <span className={`${colors.text} text-sm`}>{colors.icon} {dimension}</span>
+        <span className={`${colors.text} text-sm`}>{colors.icon} {LABELS[dimension] || dimension}</span>
         <span className="text-slate-300 text-sm">{score.toFixed(1)}</span>
       </div>
       <div className="h-2 bg-slate-800 rounded-full overflow-hidden">

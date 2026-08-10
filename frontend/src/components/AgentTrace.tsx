@@ -1,0 +1,100 @@
+import { useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import type { AgentMetrics, AgentTraceEvent } from '../types';
+
+interface AgentTraceProps {
+  trace: AgentTraceEvent[];
+  metrics?: AgentMetrics;
+  live?: boolean;
+}
+
+const traceStyle: Record<AgentTraceEvent['type'], { icon: string; color: string; ring: string }> = {
+  status: { icon: '✦', color: 'text-cyan-300', ring: 'bg-cyan-400/15 border-cyan-400/25' },
+  plan: { icon: '◇', color: 'text-violet-300', ring: 'bg-violet-400/15 border-violet-400/25' },
+  tool_call: { icon: '↗', color: 'text-blue-300', ring: 'bg-blue-400/15 border-blue-400/25' },
+  tool_result: { icon: '✓', color: 'text-emerald-300', ring: 'bg-emerald-400/15 border-emerald-400/25' },
+  guardrail: { icon: '!', color: 'text-amber-300', ring: 'bg-amber-400/15 border-amber-400/25' },
+  error: { icon: '×', color: 'text-rose-300', ring: 'bg-rose-400/15 border-rose-400/25' },
+};
+
+export default function AgentTrace({ trace, metrics, live = false }: AgentTraceProps) {
+  const [expanded, setExpanded] = useState(live);
+  if (!trace.length) return null;
+
+  const toolCount = metrics?.tool_calls ?? trace.filter((item) => item.type === 'tool_call').length;
+  const duration = (metrics?.planning_duration_ms ?? 0) + (metrics?.response_duration_ms ?? 0);
+
+  return (
+    <div className="mb-3 overflow-hidden rounded-xl border border-white/8 bg-slate-950/45">
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition-colors hover:bg-white/[0.035]"
+      >
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className="relative flex h-2.5 w-2.5">
+            {live && <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-cyan-400 opacity-60" />}
+            <span className={`relative inline-flex h-2.5 w-2.5 rounded-full ${live ? 'bg-cyan-400' : 'bg-emerald-400'}`} />
+          </span>
+          <span className="text-[11px] font-semibold tracking-wide text-slate-300">
+            {live ? 'AGENT 正在执行' : 'AGENT 执行轨迹'}
+          </span>
+          <span className="truncate text-[10px] text-slate-600">
+            {trace.at(-1)?.title}
+          </span>
+        </div>
+        <div className="flex flex-shrink-0 items-center gap-2 text-[10px] text-slate-500">
+          {toolCount > 0 && <span>{toolCount} 次工具</span>}
+          {duration > 0 && <span>{(duration / 1000).toFixed(1)}s</span>}
+          <motion.span animate={{ rotate: expanded ? 180 : 0 }} className="text-slate-600">⌄</motion.span>
+        </div>
+      </button>
+
+      <AnimatePresence initial={false}>
+        {expanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.25, ease: 'easeOut' }}
+            className="overflow-hidden"
+          >
+            <div className="border-t border-white/5 px-3 py-3">
+              {trace.map((item, index) => {
+                const style = traceStyle[item.type];
+                return (
+                  <motion.div
+                    key={`${item.type}-${item.step}-${index}`}
+                    initial={{ opacity: 0, x: -8 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: Math.min(index * 0.04, 0.2) }}
+                    className="relative flex gap-2.5 pb-3 last:pb-0"
+                  >
+                    {index < trace.length - 1 && (
+                      <div className="absolute left-[11px] top-6 h-[calc(100%-18px)] w-px bg-gradient-to-b from-slate-700 to-transparent" />
+                    )}
+                    <div className={`relative z-10 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-lg border text-[11px] ${style.ring} ${style.color}`}>
+                      {item.type === 'tool_call' && live && index === trace.length - 1 ? (
+                        <motion.span animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: 'linear' }}>↻</motion.span>
+                      ) : style.icon}
+                    </div>
+                    <div className="min-w-0 pt-0.5">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={`text-[11px] font-medium ${style.color}`}>{item.title}</span>
+                        {item.tool && <code className="rounded bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-500">{item.tool}</code>}
+                        {item.duration_ms != null && item.duration_ms > 0 && (
+                          <span className="text-[9px] text-slate-600">{item.duration_ms}ms</span>
+                        )}
+                      </div>
+                      {item.detail && <p className="mt-1 break-words text-[10px] leading-relaxed text-slate-500">{item.detail}</p>}
+                    </div>
+                  </motion.div>
+                );
+              })}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}

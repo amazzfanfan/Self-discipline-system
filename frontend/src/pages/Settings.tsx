@@ -1,39 +1,133 @@
+import { useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
+import { useNavigate } from 'react-router-dom';
+import api from '../services/api';
+import { useAuthStore } from '../stores/authStore';
+import type { UserProfile } from '../types';
+
+function Toggle({ enabled, onClick }: { enabled: boolean; onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick}
+      className={`relative h-6 w-11 rounded-full transition-colors ${enabled ? 'bg-cyan-500' : 'bg-slate-700'}`}>
+      <motion.span animate={{ x: enabled ? 21 : 3 }} transition={{ type: 'spring', stiffness: 450, damping: 30 }}
+        className="absolute left-0 top-1 h-4 w-4 rounded-full bg-white" />
+    </button>
+  );
+}
 
 export default function Settings() {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const logout = useAuthStore((state) => state.logout);
+  const [message, setMessage] = useState('');
+  const [deletePassword, setDeletePassword] = useState('');
+  const { data: profile } = useQuery<UserProfile>({
+    queryKey: ['profile'],
+    queryFn: () => api.get('/users/me/profile').then((response) => response.data),
+  });
+
+  const savePreferences = async (updates: Record<string, unknown>) => {
+    await api.patch('/users/me/preferences', updates);
+    await queryClient.invalidateQueries({ queryKey: ['profile'] });
+    setMessage('设置已保存');
+  };
+
+  const notificationSettings = profile?.notification_settings ?? {};
+
+  const exportData = async () => {
+    const { data } = await api.get('/users/me/data-export');
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `system-agent-export-${new Date().toISOString().slice(0, 10)}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    setMessage('数据导出完成');
+  };
+
+  const clearMemories = async () => {
+    if (!window.confirm('确定删除全部长期记忆吗？对话记录不会被删除。')) return;
+    const { data } = await api.delete('/users/me/memories');
+    setMessage(`已删除 ${data.deleted} 条长期记忆`);
+  };
+
+  const deleteAccount = async () => {
+    if (!deletePassword || !window.confirm('该操作不可恢复，确定永久删除账号和全部数据吗？')) return;
+    await api.delete('/users/me', { data: { password: deletePassword } });
+    await logout();
+    navigate('/register');
+  };
+
   return (
     <div className="h-full overflow-y-auto p-6">
-      <div className="max-w-2xl mx-auto">
-        <h1 className="text-2xl font-bold text-white mb-6">设置</h1>
+      <div className="mx-auto max-w-2xl">
+        <div className="mb-6">
+          <h1 className="text-2xl font-bold text-white">设置与隐私</h1>
+          <p className="mt-1 text-sm text-slate-500">控制任务节奏、Agent 记忆和个人数据</p>
+        </div>
 
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
-          className="bg-slate-900 rounded-2xl p-6 border border-slate-800 mb-6">
-          <h2 className="text-lg text-slate-300 mb-4">通知设置</h2>
-          <div className="space-y-3">
-            <div className="flex justify-between items-center">
-              <span className="text-slate-400 text-sm">每日任务推送</span>
-              <div className="w-10 h-6 bg-blue-600 rounded-full relative cursor-pointer">
-                <div className="w-4 h-4 bg-white rounded-full absolute top-1 right-1"></div>
-              </div>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-slate-400 text-sm">评分变动提醒</span>
-              <div className="w-10 h-6 bg-blue-600 rounded-full relative cursor-pointer">
-                <div className="w-4 h-4 bg-white rounded-full absolute top-1 right-1"></div>
-              </div>
+        {message && <div className="mb-4 rounded-xl border border-emerald-400/15 bg-emerald-400/[0.06] px-4 py-3 text-xs text-emerald-300">{message}</div>}
+
+        <motion.section initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}
+          className="mb-5 rounded-2xl border border-slate-800 bg-slate-900 p-6">
+          <h2 className="mb-4 text-base font-semibold text-slate-200">计划偏好</h2>
+          <div className="mb-5">
+            <p className="text-sm text-slate-400">每日任务预算</p>
+            <p className="mt-1 text-xs text-slate-600">Check-in 的可用时间可能进一步减少当天任务量</p>
+            <div className="mt-3 flex gap-2">
+              {[1, 2, 3, 4].map((value) => <button key={value} type="button"
+                onClick={() => void savePreferences({ daily_task_budget: value })}
+                className={`h-9 w-12 rounded-lg text-sm ${profile?.daily_task_budget === value ? 'bg-cyan-400 text-slate-950' : 'bg-slate-800 text-slate-500'}`}>{value}</button>)}
             </div>
           </div>
-        </motion.div>
-
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
-          className="bg-slate-900 rounded-2xl p-6 border border-slate-800">
-          <h2 className="text-lg text-slate-300 mb-4">关于系统</h2>
-          <div className="space-y-2 text-sm text-slate-500">
-            <p>版本：1.0.0</p>
-            <p>灵感来源于小说中的成长系统</p>
-            <p>帮助你通过每日任务持续提升自己</p>
+          <div className="flex items-center justify-between border-t border-white/5 pt-4">
+            <div>
+              <p className="text-sm text-slate-400">长期记忆</p>
+              <p className="mt-1 text-xs text-slate-600">关闭后不再写入或召回个人记忆</p>
+            </div>
+            <Toggle enabled={profile?.memory_enabled !== 0}
+              onClick={() => void savePreferences({ memory_enabled: profile?.memory_enabled === 0 })} />
           </div>
-        </motion.div>
+        </motion.section>
+
+        <motion.section initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.06 }}
+          className="mb-5 rounded-2xl border border-slate-800 bg-slate-900 p-6">
+          <h2 className="mb-4 text-base font-semibold text-slate-200">通知设置</h2>
+          {[['daily_tasks', '每日任务提醒'], ['weekly_review', '每周复盘提醒']].map(([key, label]) => (
+            <div key={key} className="flex items-center justify-between border-b border-white/5 py-3 last:border-0">
+              <span className="text-sm text-slate-400">{label}</span>
+              <Toggle enabled={Boolean(notificationSettings[key])} onClick={() => void savePreferences({
+                notification_settings: { ...notificationSettings, [key]: !notificationSettings[key] },
+              })} />
+            </div>
+          ))}
+        </motion.section>
+
+        <motion.section initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.12 }}
+          className="mb-5 rounded-2xl border border-slate-800 bg-slate-900 p-6">
+          <h2 className="mb-2 text-base font-semibold text-slate-200">我的数据</h2>
+          <p className="mb-4 text-xs leading-5 text-slate-600">可以导出全部画像、任务、对话、记忆和 Agent 运行记录。</p>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={() => void exportData()} className="rounded-xl bg-cyan-400/10 px-4 py-2 text-xs text-cyan-300">导出 JSON</button>
+            <button type="button" onClick={() => void clearMemories()} className="rounded-xl bg-amber-400/10 px-4 py-2 text-xs text-amber-300">清空长期记忆</button>
+          </div>
+        </motion.section>
+
+        <motion.section initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.18 }}
+          className="rounded-2xl border border-rose-400/15 bg-rose-400/[0.035] p-6">
+          <h2 className="text-base font-semibold text-rose-200">删除账号</h2>
+          <p className="mt-2 text-xs leading-5 text-slate-600">永久删除照片、画像、任务、对话、长期记忆和所有评估记录，无法恢复。</p>
+          <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+            <input type="password" value={deletePassword} onChange={(event) => setDeletePassword(event.target.value)} placeholder="输入当前密码确认"
+              className="flex-1 rounded-xl border border-white/5 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none focus:border-rose-400/30" />
+            <button type="button" onClick={() => void deleteAccount()} disabled={!deletePassword}
+              className="rounded-xl bg-rose-500/15 px-4 py-2.5 text-xs font-medium text-rose-300 disabled:opacity-40">永久删除</button>
+          </div>
+        </motion.section>
+
+        <p className="py-8 text-center text-xs text-slate-700">System Agent v9.0 · Face++ 仅用于肤质观察</p>
       </div>
     </div>
   );

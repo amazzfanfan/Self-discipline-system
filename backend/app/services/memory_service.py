@@ -5,20 +5,26 @@ Memory Service - 记忆管理服务
 """
 
 from datetime import datetime, timezone
-from sqlalchemy import select, func, and_, or_, text
+from sqlalchemy import select, func, or_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.memory import Memory
-from typing import Optional
+from app.models.user import UserProfile
 import logging
 import re
-import traceback
 from app.services.llm_service import get_embedding
 from app.services.memory_judge import HybridMemoryJudge
 from app.services.memory_scorer import MemoryImportanceScorer
 from app.services.memory_decay import MemoryDecay
-from app.services.cache_service import get_cached_memory_search, set_cached_memory_search
+from app.services.cache_service import (
+    get_cached_memory_search,
+    invalidate_memory_search,
+    set_cached_memory_search,
+)
+from app.core.config import get_settings
+from app.services.llm_service import LLMChatAdapter
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 
 class MemoryService:
@@ -26,6 +32,8 @@ class MemoryService:
     
     def __init__(self, db: AsyncSession, llm_client=None):
         self.db = db
+        if llm_client is None and settings.AI_API_KEY:
+            llm_client = LLMChatAdapter()
         self.importance_scorer = MemoryImportanceScorer()
         self.memory_decay = MemoryDecay()
         self.judge = HybridMemoryJudge(
@@ -78,6 +86,33 @@ class MemoryService:
             Memory 对象
         """
         try:
+            # Exact duplicates add noise and retrieval bias. Merge them instead.
+            existing_result = await self.db.execute(
+                select(Memory).where(
+                    Memory.user_id == user_id,
+                    Memory.content == content,
+                    Memory.role == role,
+                ).limit(1)
+            )
+            existing = existing_result.scalar_one_or_none()
+            if existing:
+                existing.importance_score = max(
+                    float(existing.importance_score or 0), importance_score
+                )
+                if (
+                    existing.embedding is None
+                    or existing.embedding_model != settings.EMBEDDING_MODEL
+                ):
+                    try:
+                        existing.embedding = await get_embedding(content)
+                        existing.embedding_model = settings.EMBEDDING_MODEL
+                    except Exception as exc:
+                        logger.warning("Failed to refresh memory embedding: %s", exc)
+                existing.updated_at = datetime.now(timezone.utc)
+                await self.db.commit()
+                await invalidate_memory_search(user_id)
+                return existing
+
             # 生成向量嵌入
             embedding = None
             try:
@@ -95,10 +130,12 @@ class MemoryService:
                 importance_score=importance_score,
                 source_id=source_id,
                 embedding=embedding,
+                embedding_model=settings.EMBEDDING_MODEL if embedding else None,
             )
             
             self.db.add(memory)
             await self.db.commit()
+            await invalidate_memory_search(user_id)
             
             logger.info(f"Stored memory for user {user_id}: {content[:50]}...")
             return memory
@@ -131,7 +168,9 @@ class MemoryService:
         """
         try:
             # 检查 Redis 缓存
-            cached = await get_cached_memory_search(user_id, query)
+            cached = await get_cached_memory_search(
+                user_id, query, top_k, memory_type, min_importance
+            )
             if cached is not None:
                 logger.info(f"Memory search cache hit for user={user_id}")
                 return cached
@@ -140,7 +179,9 @@ class MemoryService:
                 query_embedding = await get_embedding(query)
                 logger.info(f"Vector search with embedding: dim={len(query_embedding)}")
 
-                # 使用 cosine_distance 排序（距离越小越相似）
+                # Retrieve a wider candidate set, then rerank by semantic similarity
+                # and time-decayed importance.
+                candidate_limit = max(top_k * 3, top_k)
                 stmt = (
                     select(
                         Memory,
@@ -148,18 +189,16 @@ class MemoryService:
                     )
                     .where(Memory.user_id == user_id)
                     .where(Memory.embedding.isnot(None))
+                    .where(Memory.embedding_model == settings.EMBEDDING_MODEL)
                     .params(embedding=query_embedding)
                 )
 
                 if memory_type:
                     stmt = stmt.where(Memory.memory_type == memory_type)
 
-                if min_importance > 0:
-                    stmt = stmt.where(Memory.importance_score >= min_importance)
-
                 stmt = stmt.order_by(
                     text("memory.embedding <=> :embedding")
-                ).params(embedding=query_embedding).limit(top_k)
+                ).params(embedding=query_embedding).limit(candidate_limit)
 
                 result = await self.db.execute(stmt)
                 rows = result.all()
@@ -167,12 +206,15 @@ class MemoryService:
                 memories = []
                 for row in rows:
                     memory = row[0]
-                    distance = row[1]
+                    similarity = float(row[1])
                     # 增加访问计数（用于衰减计算）
                     memory.access_count += 1
                     memory.last_accessed = datetime.now(timezone.utc)
                     # 计算衰减后的有效重要性
                     effective_imp = self._get_effective_importance(memory)
+                    if effective_imp < min_importance:
+                        continue
+                    relevance_score = 0.75 * similarity + 0.25 * effective_imp
                     memories.append({
                         "id": str(memory.id),
                         "content": memory.content,
@@ -181,13 +223,23 @@ class MemoryService:
                         "importance_score": memory.importance_score,
                         "effective_importance": round(effective_imp, 4),
                         "created_at": memory.created_at.isoformat(),
-                        "similarity": round(1 - distance, 4) if distance is not None else 0.0,
+                        "similarity": round(similarity, 4),
+                        "relevance_score": round(relevance_score, 4),
                     })
 
                 await self.db.commit()
 
                 if memories:
-                    await set_cached_memory_search(user_id, query, memories)
+                    memories.sort(key=lambda item: item["relevance_score"], reverse=True)
+                    memories = memories[:top_k]
+                    await set_cached_memory_search(
+                        user_id,
+                        query,
+                        memories,
+                        top_k,
+                        memory_type,
+                        min_importance,
+                    )
                     logger.info(f"Vector search found {len(memories)} memories")
                     return memories
 
@@ -224,6 +276,15 @@ class MemoryService:
         stop_words = {'的', '了', '是', '在', '我', '你', '他', '她', '它', '们', '这', '那', '有', '和', '与', '或', '但', '不', '也', '就', '都', '很', '会', '要', '能', '可以', '可能', '应该', '需要', '想', '说', '看', '做', '来', '去', '到', '从', '把', '被', '让', '给', '对', '向', '往', '以', '因', '为', '所', '如', '果', '虽', '然', '而', '且', '或', '者', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十', '个', '些', '每', '各', '某', '这', '那', '哪', '什', '么', '怎', '样', '多', '少', '大', '小', '长', '短', '高', '低', '快', '慢', '好', '坏', '新', '旧', '美', '丑', '真', '假', '对', '错', '是', '非'}
         
         keywords = [word for word in words if len(word) >= 2 and word not in stop_words]
+        # Chinese text usually has no spaces. Character n-grams provide a useful
+        # deterministic fallback when the remote embedding service is unavailable.
+        compact = re.sub(r"[^\u4e00-\u9fff]", "", text)
+        if compact and len(words) <= 1:
+            for size in (4, 3, 2):
+                for index in range(0, max(len(compact) - size + 1, 0), max(size - 1, 1)):
+                    token = compact[index:index + size]
+                    if token and token not in stop_words:
+                        keywords.append(token)
         
         return keywords[:10]  # 最多返回 10 个关键词
 
@@ -265,13 +326,10 @@ class MemoryService:
         if memory_type:
             stmt = stmt.where(Memory.memory_type == memory_type)
 
-        if min_importance > 0:
-            stmt = stmt.where(Memory.importance_score >= min_importance)
-
         stmt = stmt.order_by(
             Memory.importance_score.desc(),
             Memory.created_at.desc()
-        ).limit(top_k)
+        ).limit(max(top_k * 3, top_k))
 
         result = await self.db.execute(stmt)
         memories = result.scalars().all()
@@ -282,8 +340,7 @@ class MemoryService:
 
         await self.db.commit()
 
-        logger.info(f"Keyword search found {len(memories)} memories")
-        return [
+        result_items = [
             {
                 "id": str(m.id),
                 "content": m.content,
@@ -291,10 +348,24 @@ class MemoryService:
                 "memory_type": m.memory_type,
                 "importance_score": m.importance_score,
                 "effective_importance": round(self._get_effective_importance(m), 4),
+                "relevance_score": round(self._get_effective_importance(m), 4),
                 "created_at": m.created_at.isoformat(),
             }
             for m in memories
+            if self._get_effective_importance(m) >= min_importance
         ]
+        result_items.sort(key=lambda item: item["relevance_score"], reverse=True)
+        result_items = result_items[:top_k]
+        await set_cached_memory_search(
+            user_id,
+            query,
+            result_items,
+            top_k,
+            memory_type,
+            min_importance,
+        )
+        logger.info(f"Keyword search found {len(result_items)} memories")
+        return result_items
     
     async def get_user_facts(self, user_id: str, limit: int = 10) -> list[str]:
         """
@@ -379,6 +450,12 @@ class MemoryService:
             role: 角色（user/system）
             source_id: 来源 ID（可选）
         """
+        setting_result = await self.db.execute(
+            select(UserProfile.memory_enabled).where(UserProfile.user_id == user_id)
+        )
+        memory_enabled = setting_result.scalar_one_or_none()
+        if memory_enabled == 0:
+            return
         judgment = await self.judge.judge(content, role=role)
 
         if judgment["should_remember"]:
@@ -412,6 +489,7 @@ class MemoryService:
         if memory:
             await self.db.delete(memory)
             await self.db.commit()
+            await invalidate_memory_search(user_id)
             logger.info(f"Deleted memory {memory_id}")
             return True
         

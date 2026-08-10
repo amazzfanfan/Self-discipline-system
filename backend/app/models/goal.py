@@ -6,7 +6,7 @@ Goal Model - 用户目标模型
 import uuid
 import enum
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, DateTime, ForeignKey, Text, Float, JSON, Index
+from sqlalchemy import Column, String, Date, DateTime, ForeignKey, Text, Float, JSON, Index
 from sqlalchemy.dialects.postgresql import UUID
 from pgvector.sqlalchemy import Vector
 from app.core.database import Base
@@ -46,9 +46,16 @@ class Goal(Base):
 
     # 结构化数据
     structured_data = Column(JSON, nullable=True)  # AI 解析后的结构化数据
+    target_metric = Column(String(100))
+    target_value = Column(Float)
+    current_value = Column(Float)
+    deadline = Column(Date)
+    milestones = Column(JSON, nullable=False, default=list)
 
     # 向量嵌入
-    embedding = Column(Vector(1536))  # OpenAI ada-002 维度
+    # 向量由远程百炼 Embedding API 生成；本地 pgvector 只负责存储与检索。
+    embedding = Column(Vector(1536))
+    embedding_model = Column(String(100))
 
     # 评分和状态
     importance_score = Column(Float, default=0.5)  # 0-1 重要性评分
@@ -80,6 +87,12 @@ class Goal(Base):
             "content": self.content,
             "goal_type": self.goal_type,
             "structured_data": self.structured_data,
+            "target_metric": self.target_metric,
+            "target_value": self.target_value,
+            "current_value": self.current_value,
+            "deadline": self.deadline.isoformat() if self.deadline else None,
+            "milestones": self.milestones or [],
+            "embedding_model": self.embedding_model,
             "importance_score": self.importance_score,
             "status": self.status,
             "source": self.source,

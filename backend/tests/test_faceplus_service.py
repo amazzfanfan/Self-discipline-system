@@ -1,0 +1,68 @@
+import asyncio
+from unittest.mock import AsyncMock
+
+import pytest
+
+from app.services import faceplus_service
+
+
+def test_skin_score_uses_deterministic_penalties():
+    raw_result = {
+        "dark_circle": {"value": 1},
+        "acne": {"value": 1},
+        "pores_forehead": {"value": 1},
+    }
+
+    first = faceplus_service._calculate_skin_score(raw_result)
+    second = faceplus_service._calculate_skin_score(raw_result)
+
+    assert first == second
+    assert first[0] == 79.0
+    assert first[1] == ["黑眼圈", "痘痘", "额头毛孔粗大"]
+
+
+def test_missing_faceplus_credentials_returns_unavailable(monkeypatch, tmp_path):
+    async def cache_miss(*_args):
+        return None
+
+    monkeypatch.setattr(faceplus_service, "get_cached_skin_analysis", cache_miss)
+    monkeypatch.setattr(faceplus_service.settings, "FACEPLUSPLUS_API_KEY", "")
+    monkeypatch.setattr(faceplus_service.settings, "FACEPLUSPLUS_API_SECRET", "")
+    image = tmp_path / "face.jpg"
+    image.write_bytes(b"test-image")
+
+    result = asyncio.run(faceplus_service.analyze_skin(str(image), "f" * 64))
+
+    assert result.source == "unavailable"
+    assert result.skin_score is None
+    assert result.error
+
+
+def test_skin_suggestions_are_ai_generated_without_thinking(monkeypatch):
+    completion = AsyncMock(
+        return_value='{"suggestions":["建议一","建议二"]}'
+    )
+    monkeypatch.setattr(faceplus_service, "chat_completion_with_fallback", completion)
+
+    result = asyncio.run(
+        faceplus_service.generate_ai_suggestions(["眼袋"], "中性")
+    )
+
+    assert result == ["建议一", "建议二"]
+    kwargs = completion.await_args.kwargs
+    assert kwargs["enable_thinking"] is False
+    assert kwargs["num_retries"] == 0
+    assert kwargs["timeout"] == 20
+
+
+def test_skin_suggestions_do_not_fall_back_to_default(monkeypatch):
+    monkeypatch.setattr(
+        faceplus_service,
+        "chat_completion_with_fallback",
+        AsyncMock(side_effect=TimeoutError("model timeout")),
+    )
+
+    with pytest.raises(TimeoutError, match="model timeout"):
+        asyncio.run(
+            faceplus_service.generate_ai_suggestions(["眼袋"], "中性")
+        )

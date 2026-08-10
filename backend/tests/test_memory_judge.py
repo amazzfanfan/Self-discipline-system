@@ -1,27 +1,17 @@
 """Tests for the memory judgment system.
 
-Covers:
-- RuleBasedFilter: high/low priority pattern matching
-- MemoryImportanceScorer: scoring logic (with bug documentation)
-- MemoryDecay: decay calculations
-- HybridMemoryJudge: integration of rule + LLM + scorer + decay
-
-KNOWN BUGS:
-1. memory_scorer.py line 74: bare string in LOW_IMPORTANCE_PATTERNS causes
-   ValueError when _rule_score iterates patterns that don't match items 0-4.
-2. memory_judge.py JUDGE_PROMPT: unescaped {..} braces in the JSON example
-   cause str.format() to raise KeyError, so LLMBasedJudge always returns
-   the fallback (False, 0.5, "conversation").
+Covers rule filtering, importance scoring, decay, and the hybrid LLM path.
 """
 
 import pytest
 import asyncio
 from datetime import datetime, timezone, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 from app.services.memory_judge import RuleBasedFilter, LLMBasedJudge, HybridMemoryJudge
 from app.services.memory_scorer import MemoryImportanceScorer
 from app.services.memory_decay import MemoryDecay
+from app.services.prompt_service import prompt_service
 
 
 # ============================================================
@@ -167,13 +157,7 @@ class TestRuleBasedFilter:
 # ============================================================
 
 class TestMemoryImportanceScorer:
-    """Test the importance scoring module.
-
-    NOTE: MemoryImportanceScorer has a bug in LOW_IMPORTANCE_PATTERNS (line 74)
-    where a bare string is used instead of a tuple. This causes ValueError
-    when _rule_score iterates past the first 5 low-importance patterns.
-    Only tests that match patterns 0-4 of LOW or any HIGH pattern will work.
-    """
+    """Test the importance scoring module."""
 
     def setup_method(self):
         self.scorer = MemoryImportanceScorer()
@@ -182,12 +166,9 @@ class TestMemoryImportanceScorer:
         assert self.scorer.score("") == 0.0
         assert self.scorer.score("   ") == 0.0
 
-    def test_bug_high_importance_text_crashes(self):
-        """BUG: High-importance text like goals still crashes because
-        _rule_score checks LOW patterns first (and the buggy bare string
-        at index 5 is hit before HIGH patterns are ever checked)."""
-        with pytest.raises(ValueError):
-            self.scorer.score("我的目标是明年学会弹钢琴")
+    def test_high_importance_goal_scores_high(self):
+        score = self.scorer.score("我的目标是明年学会弹钢琴")
+        assert score >= 0.7
 
     def test_low_importance_ai_question(self):
         """Matches first low-importance pattern (index 0), safe path."""
@@ -214,17 +195,12 @@ class TestMemoryImportanceScorer:
         score = self.scorer.score("什么是人工智能")
         assert score <= 0.3
 
-    def test_bug_neutral_text_crashes(self):
-        """BUG: Neutral text hits bare string in LOW_IMPORTANCE_PATTERNS (line 74)
-        and raises ValueError because unpacking a string fails."""
-        with pytest.raises(ValueError):
-            self.scorer.score("今天天气不错，适合出去走走")
+    def test_neutral_text_returns_bounded_score(self):
+        score = self.scorer.score("今天天气不错，适合出去走走")
+        assert 0.0 <= score <= 1.0
 
-    def test_bug_short_text_crashes(self):
-        """BUG: Short text that doesn't match early low-importance patterns
-        hits the buggy bare string entry."""
-        with pytest.raises(ValueError):
-            self.scorer.score("你好")
+    def test_short_greeting_scores_low(self):
+        assert self.scorer.score("你好") <= 0.3
 
     def test_rule_score_with_safe_input(self):
         """Test _rule_score with text that matches low-importance pattern (safe path)."""
@@ -434,13 +410,7 @@ class TestHybridMemoryJudge:
         assert result < 1.0
         assert result >= MemoryDecay.MIN_IMPORTANCE
 
-    def test_bug_llm_judge_always_returns_fallback(self):
-        """BUG: LLMBasedJudge always returns fallback due to unescaped
-        braces in JUDGE_PROMPT causing str.format() to raise KeyError.
-
-        The KeyError is caught by the except clause and returns
-        (False, 0.5, "conversation").
-        """
+    def test_llm_judge_parses_valid_response(self):
         mock_client = AsyncMock()
         mock_client.chat.return_value = (
             '{"should_remember": true, "importance": 0.85, '
@@ -448,33 +418,23 @@ class TestHybridMemoryJudge:
         )
         judge = LLMBasedJudge(mock_client)
         result = self._run(judge.judge("昨天去了一个有意思的展览"))
-        # Due to the bug, this always returns fallback values
-        assert result == (False, 0.5, "conversation")
+        assert result == (True, 0.85, "fact")
+        mock_client.chat.assert_awaited_once()
 
-    def test_bug_llm_prompt_format_error(self):
-        """Verify the JUDGE_PROMPT format bug directly."""
-        judge = LLMBasedJudge(AsyncMock())
-        with pytest.raises(KeyError):
-            judge.JUDGE_PROMPT.format(text="test")
+    def test_llm_prompt_formats_json_example(self):
+        prompt = prompt_service.build_judge_prompt("test")
+        assert '"should_remember": true/false' in prompt
+        assert "test" in prompt
 
-    def test_llm_judge_mock_bypasses_prompt(self):
-        """When mocking, we can test the LLM response parsing by
-        directly providing a properly formatted prompt response."""
+    def test_llm_judge_normalizes_invalid_fields(self):
         mock_client = AsyncMock()
-
-        # Bypass the buggy format() by using a monkey-patched judge
+        mock_client.chat.return_value = (
+            '{"should_remember": true, "importance": 5, '
+            '"memory_type": "unknown"}'
+        )
         judge = LLMBasedJudge(mock_client)
-
-        # Manually test the JSON parsing logic
-        import json
-        response = '{"should_remember": true, "importance": 0.85, "memory_type": "fact", "reason": "test"}'
-        result = json.loads(response)
-        should_remember = result.get("should_remember", False)
-        importance = float(result.get("importance", 0.5))
-        memory_type = result.get("memory_type", "conversation")
-        assert should_remember is True
-        assert importance == 0.85
-        assert memory_type == "fact"
+        result = self._run(judge.judge("值得记忆的内容"))
+        assert result == (True, 1.0, "conversation")
 
     def test_hybrid_without_llm_no_scorer(self):
         """Hybrid judge with no LLM and no scorer defaults to 0.5."""

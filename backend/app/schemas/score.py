@@ -4,6 +4,7 @@ from pydantic import BaseModel
 class ScoreResponse(BaseModel):
     dimension: str
     score: float
+    baseline_score: float
     streak_days: int
 
 

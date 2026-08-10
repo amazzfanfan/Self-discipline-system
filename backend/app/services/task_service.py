@@ -1,9 +1,10 @@
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 from app.models.task import Task, TaskStatusEnum
 from app.models.score import DimensionEnum
 from app.services.score_service import record_task_completion, record_negative
+from app.core.time import local_today
 
 
 async def complete_task_by_dimension(db: AsyncSession, user_id: str, dimension: str) -> dict:
@@ -13,7 +14,7 @@ async def complete_task_by_dimension(db: AsyncSession, user_id: str, dimension: 
         select(Task).where(
             and_(
                 Task.user_id == user_id,
-                Task.scheduled_date == date.today(),
+                Task.scheduled_date == local_today(),
                 Task.dimension == dim_enum,
                 Task.status == TaskStatusEnum.pending,
             )
@@ -42,7 +43,7 @@ async def skip_task_by_dimension(db: AsyncSession, user_id: str, dimension: str)
         select(Task).where(
             and_(
                 Task.user_id == user_id,
-                Task.scheduled_date == date.today(),
+                Task.scheduled_date == local_today(),
                 Task.dimension == dim_enum,
                 Task.status == TaskStatusEnum.pending,
             )
@@ -67,7 +68,7 @@ async def get_today_tasks_dict(db: AsyncSession, user_id: str) -> list[dict]:
     """Get today's tasks as list of dicts for intent detection."""
     result = await db.execute(
         select(Task).where(
-            and_(Task.user_id == user_id, Task.scheduled_date == date.today())
+            and_(Task.user_id == user_id, Task.scheduled_date == local_today())
         )
     )
     return [

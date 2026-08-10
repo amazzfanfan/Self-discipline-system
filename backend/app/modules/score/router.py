@@ -12,14 +12,19 @@ router = APIRouter(prefix="/api/scores", tags=["scores"])
 
 
 @router.get("")
-async def get_scores(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def get_scores(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db, scope="function")):
     cached = await get_cached_scores(str(user.id))
     if cached is not None:
         return cached
     result = await db.execute(select(UserScore).where(UserScore.user_id == user.id))
     scores = result.scalars().all()
     result_list = [
-        {"dimension": s.dimension.value, "score": float(s.score), "streak_days": s.streak_days}
+        {
+            "dimension": s.dimension.value,
+            "score": float(s.score),
+            "baseline_score": float(s.baseline_score),
+            "streak_days": s.streak_days,
+        }
         for s in scores
     ]
     await set_cached_scores(str(user.id), result_list)
@@ -29,7 +34,7 @@ async def get_scores(user: User = Depends(get_current_user), db: AsyncSession = 
 @router.get("/history")
 async def get_score_history(
     user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
     limit: int = 50,
 ):
     result = await db.execute(
@@ -50,7 +55,7 @@ async def get_score_history(
 
 
 @router.get("/trends")
-async def get_trends(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def get_trends(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db, scope="function")):
     result = await db.execute(
         select(ScoreHistory)
         .where(ScoreHistory.user_id == user.id)

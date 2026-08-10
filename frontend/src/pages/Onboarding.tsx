@@ -1,562 +1,675 @@
-import { useState, useRef, useEffect } from 'react';
+import { useMemo, useRef, useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
-import { motion, AnimatePresence } from 'framer-motion';
-import api from '../services/api';
-import { useNotification } from '../components/Notification';
 
-const EVAL_STEPS = [
-  { key: 'upload', label: '上传照片', icon: '📸' },
-  { key: 'skin', label: '肤质分析', icon: '🔍' },
-  { key: 'analyze', label: 'AI综合分析', icon: '🧠' },
-  { key: 'score', label: '建立评分', icon: '📊' },
-  { key: 'tasks', label: '生成任务', icon: '📋' },
+import { useNotification } from '../components/notification-context';
+import api from '../services/api';
+
+type PhotoType = 'avatar' | 'portrait' | 'front' | 'side';
+type EvalStage = 'upload' | 'assess' | 'done';
+
+interface QuestionOption {
+  value: string;
+  label: string;
+}
+
+interface Question {
+  key: string;
+  label: string;
+  hint: string;
+  options: QuestionOption[];
+}
+
+interface QuestionGroup {
+  dimension: string;
+  title: string;
+  icon: string;
+  accent: string;
+  questions: Question[];
+}
+
+const QUESTION_GROUPS: QuestionGroup[] = [
+  {
+    dimension: 'exercise',
+    title: '运动状态',
+    icon: '🏃',
+    accent: 'from-blue-500/20 to-cyan-500/10 border-blue-400/20',
+    questions: [
+      {
+        key: 'exercise_days',
+        label: '你每周通常有几天会主动运动？',
+        hint: '快走、跑步、力量训练、球类等都可以计算。',
+        options: [
+          { value: 'none', label: '几乎不运动' },
+          { value: '1_2', label: '1–2 天' },
+          { value: '3_4', label: '3–4 天' },
+          { value: '5_plus', label: '5 天及以上' },
+        ],
+      },
+      {
+        key: 'exercise_duration',
+        label: '每次运动通常持续多久？',
+        hint: '按最近一个月的常见情况选择。',
+        options: [
+          { value: 'under_20', label: '少于 20 分钟' },
+          { value: '20_40', label: '20–40 分钟' },
+          { value: '40_60', label: '40–60 分钟' },
+          { value: 'over_60', label: '60 分钟以上' },
+        ],
+      },
+      {
+        key: 'sedentary_hours',
+        label: '你每天大约久坐多长时间？',
+        hint: '包括学习、办公、刷手机和通勤。',
+        options: [
+          { value: 'under_4', label: '少于 4 小时' },
+          { value: '4_6', label: '4–6 小时' },
+          { value: '7_9', label: '7–9 小时' },
+          { value: '10_plus', label: '10 小时及以上' },
+        ],
+      },
+    ],
+  },
+  {
+    dimension: 'diet',
+    title: '饮食习惯',
+    icon: '🥗',
+    accent: 'from-emerald-500/20 to-lime-500/10 border-emerald-400/20',
+    questions: [
+      {
+        key: 'meal_regularity',
+        label: '你最近的三餐规律程度如何？',
+        hint: '按最近两周的实际情况选择。',
+        options: [
+          { value: 'rarely', label: '经常不规律' },
+          { value: 'sometimes', label: '偶尔规律' },
+          { value: 'usually', label: '大多数时候规律' },
+          { value: 'always', label: '基本每天规律' },
+        ],
+      },
+      {
+        key: 'vegetable_frequency',
+        label: '你通常多久吃一次蔬菜或水果？',
+        hint: '这里关注持续习惯，不要求精确称重。',
+        options: [
+          { value: 'rarely', label: '很少' },
+          { value: 'one', label: '每天约 1 次' },
+          { value: 'two_plus', label: '每天 2 次及以上' },
+        ],
+      },
+      {
+        key: 'sugary_drinks',
+        label: '你喝含糖饮料的频率是？',
+        hint: '包括奶茶、含糖汽水和加糖咖啡。',
+        options: [
+          { value: 'daily', label: '几乎每天' },
+          { value: 'weekly', label: '每周 1–3 次' },
+          { value: 'rarely', label: '很少或不喝' },
+        ],
+      },
+    ],
+  },
+  {
+    dimension: 'sleep',
+    title: '睡眠状态',
+    icon: '🌙',
+    accent: 'from-violet-500/20 to-indigo-500/10 border-violet-400/20',
+    questions: [
+      {
+        key: 'sleep_duration',
+        label: '你平均每天睡多久？',
+        hint: '以最近两周的平均情况为准。',
+        options: [
+          { value: 'under_6', label: '少于 6 小时' },
+          { value: '6_7', label: '6–7 小时' },
+          { value: '7_9', label: '7–9 小时' },
+          { value: 'over_9', label: '9 小时以上' },
+        ],
+      },
+      {
+        key: 'sleep_regularity',
+        label: '你的入睡和起床时间规律吗？',
+        hint: '周末和工作日差异很大也属于不规律。',
+        options: [
+          { value: 'irregular', label: '经常变化' },
+          { value: 'sometimes', label: '偶尔规律' },
+          { value: 'regular', label: '基本固定' },
+        ],
+      },
+      {
+        key: 'sleep_quality',
+        label: '早上醒来时通常是什么状态？',
+        hint: '这是主观感受，没有“标准答案”。',
+        options: [
+          { value: 'poor', label: '经常疲惫' },
+          { value: 'average', label: '一般' },
+          { value: 'good', label: '大多数时候精神良好' },
+        ],
+      },
+    ],
+  },
+  {
+    dimension: 'appearance',
+    title: '形象管理',
+    icon: '✨',
+    accent: 'from-pink-500/20 to-rose-500/10 border-pink-400/20',
+    questions: [
+      {
+        key: 'skincare_frequency',
+        label: '你进行基础清洁和护肤的频率是？',
+        hint: '只评估习惯，不评价长相。',
+        options: [
+          { value: 'rarely', label: '很少' },
+          { value: 'sometimes', label: '偶尔' },
+          { value: 'daily', label: '基本每天' },
+        ],
+      },
+      {
+        key: 'sunscreen_frequency',
+        label: '日间外出时，你通常会防晒吗？',
+        hint: '包括防晒霜、帽子或遮阳伞。',
+        options: [
+          { value: 'rarely', label: '很少' },
+          { value: 'sometimes', label: '按需使用' },
+          { value: 'daily', label: '日间基本坚持' },
+        ],
+      },
+      {
+        key: 'grooming_frequency',
+        label: '你整理仪容和保持整洁的习惯是？',
+        hint: '关注自我护理，而不是审美排名。',
+        options: [
+          { value: 'rarely', label: '很少注意' },
+          { value: 'sometimes', label: '重要场合会注意' },
+          { value: 'daily', label: '日常保持整洁' },
+        ],
+      },
+    ],
+  },
 ];
 
-const QUESTIONS = [
-  { key: 'exercise', text: '你每周运动几次，一次运动多长时间？' },
-  { key: 'diet', text: '你的饮食规律如何？' },
-  { key: 'sleep', text: '你通常几点睡觉，每次睡几个小时？' },
-  { key: 'appearance', text: '你平常是否有注意打理自己，你对自己的外在形象满意吗？' },
+const EVAL_STAGES: Array<{ key: EvalStage; label: string; icon: string }> = [
+  { key: 'upload', label: '上传并校验资料', icon: '↑' },
+  { key: 'assess', label: 'Face++ 与规则引擎评估', icon: '◇' },
+  { key: 'done', label: '保存画像并生成任务', icon: '✓' },
 ];
 
 interface PhotoSlotProps {
   label: string;
-  desc: string;
+  description: string;
   preview: string;
   onUpload: (file: File) => void;
   onRemove: () => void;
   inputRef: React.RefObject<HTMLInputElement | null>;
 }
 
-function PhotoSlot({ label, desc, preview, onUpload, onRemove, inputRef }: PhotoSlotProps) {
+function PhotoSlot({ label, description, preview, onUpload, onRemove, inputRef }: PhotoSlotProps) {
   return (
     <div className="relative">
-      <input ref={inputRef} type="file" accept="image/*" className="hidden"
-        onChange={(e) => e.target.files?.[0] && onUpload(e.target.files[0])} />
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        className="hidden"
+        onChange={(event) => event.target.files?.[0] && onUpload(event.target.files[0])}
+      />
       {preview ? (
-        <div className="relative aspect-square rounded-xl overflow-hidden border border-slate-700">
-          <img src={preview} alt={label} className="w-full h-full object-cover" />
-          <button onClick={onRemove}
-            className="absolute top-1.5 right-1.5 w-6 h-6 bg-slate-900/80 rounded-full flex items-center justify-center text-white hover:bg-red-600 transition-colors text-xs">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.94 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="group relative aspect-square overflow-hidden rounded-2xl border border-cyan-400/20 bg-slate-900"
+        >
+          <img src={preview} alt={label} className="h-full w-full object-cover" />
+          <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-transparent to-transparent" />
+          <button
+            onClick={onRemove}
+            className="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-full bg-slate-950/80 text-xs text-white transition hover:bg-rose-500"
+            aria-label={`移除${label}`}
+          >
             ✕
           </button>
-          <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent p-2">
-            <p className="text-white text-xs font-medium">{label}</p>
+          <div className="absolute bottom-0 left-0 right-0 p-3">
+            <p className="text-sm font-medium text-white">{label}</p>
+            <p className="text-[11px] text-slate-400">{description}</p>
           </div>
-        </div>
+        </motion.div>
       ) : (
-        <button onClick={() => inputRef.current?.click()}
-          className="w-full aspect-square border-2 border-dashed border-slate-700 rounded-xl flex flex-col items-center justify-center gap-1.5 text-slate-400 hover:border-blue-500 hover:text-blue-400 transition-colors">
-          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 16v-8m0 0l-3 3m3-3l3 3M3 16l3-3a2 2 0 012.828 0L12 16.172l3.172-3.172a2 2 0 012.828 0L21 16" />
-          </svg>
-          <span className="text-xs font-medium">{label}</span>
-          <span className="text-[10px] text-slate-500">{desc}</span>
-        </button>
+        <motion.button
+          whileHover={{ y: -2 }}
+          whileTap={{ scale: 0.98 }}
+          onClick={() => inputRef.current?.click()}
+          className="flex aspect-square w-full flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-slate-700 bg-slate-900/60 text-slate-400 transition hover:border-cyan-400/50 hover:bg-cyan-400/5 hover:text-cyan-300"
+        >
+          <span className="text-2xl">＋</span>
+          <span className="text-sm font-medium">{label}</span>
+          <span className="px-3 text-center text-[10px] text-slate-500">{description}</span>
+        </motion.button>
       )}
     </div>
   );
 }
 
 export default function Onboarding() {
+  const navigate = useNavigate();
   const { addNotification } = useNotification();
   const [step, setStep] = useState(0);
+  const [questionGroup, setQuestionGroup] = useState(0);
   const [height, setHeight] = useState('');
   const [weight, setWeight] = useState('');
   const [age, setAge] = useState('');
   const [gender, setGender] = useState('male');
-  
-  // 图片状态
-  const [avatar, setAvatar] = useState<File | null>(null);
-  const [portraitPhoto, setPortraitPhoto] = useState<File | null>(null);
-  const [frontPhoto, setFrontPhoto] = useState<File | null>(null);
-  const [sidePhoto, setSidePhoto] = useState<File | null>(null);
-  const [avatarPreview, setAvatarPreview] = useState('');
-  const [portraitPreview, setPortraitPreview] = useState('');
-  const [frontPreview, setFrontPreview] = useState('');
-  const [sidePreview, setSidePreview] = useState('');
-  
-  // 评估状态
-  const [evaluating, setEvaluating] = useState(false);
-  const [evalStep, setEvalStep] = useState(0);
-  const [evalError, setEvalError] = useState('');
-  const [evalMode, setEvalMode] = useState('');
-  
-  // 问卷状态
   const [questionnaire, setQuestionnaire] = useState<Record<string, string>>({});
-  const [questionStep, setQuestionStep] = useState(0);
-  const [currentAnswer, setCurrentAnswer] = useState('');
-  
+  const [photos, setPhotos] = useState<Record<PhotoType, File | null>>({
+    avatar: null,
+    portrait: null,
+    front: null,
+    side: null,
+  });
+  const [previews, setPreviews] = useState<Record<PhotoType, string>>({
+    avatar: '',
+    portrait: '',
+    front: '',
+    side: '',
+  });
+  const [evaluating, setEvaluating] = useState(false);
+  const [evalStage, setEvalStage] = useState<EvalStage>('upload');
+  const [evalError, setEvalError] = useState('');
+
   const avatarInputRef = useRef<HTMLInputElement>(null);
   const portraitInputRef = useRef<HTMLInputElement>(null);
   const frontInputRef = useRef<HTMLInputElement>(null);
   const sideInputRef = useRef<HTMLInputElement>(null);
-  const navigate = useNavigate();
 
-  const handleAnswerSubmit = () => {
-    if (!currentAnswer.trim()) return;
-    const q = QUESTIONS[questionStep];
-    setQuestionnaire({ ...questionnaire, [q.key]: currentAnswer.trim() });
-    setCurrentAnswer('');
-    setQuestionStep(questionStep + 1);
+  const bmi = useMemo(() => {
+    const heightValue = Number(height);
+    const weightValue = Number(weight);
+    if (!heightValue || !weightValue) return null;
+    return weightValue / (heightValue / 100) ** 2;
+  }, [height, weight]);
+
+  const currentGroup = QUESTION_GROUPS[questionGroup];
+  const currentGroupComplete = currentGroup.questions.every((question) => questionnaire[question.key]);
+  const allQuestionsComplete = QUESTION_GROUPS.every((group) =>
+    group.questions.every((question) => questionnaire[question.key]),
+  );
+
+  const selectPhoto = (file: File, type: PhotoType) => {
+    if (previews[type]) URL.revokeObjectURL(previews[type]);
+    setPhotos((current) => ({ ...current, [type]: file }));
+    setPreviews((current) => ({ ...current, [type]: URL.createObjectURL(file) }));
   };
 
-  const handlePhotoSelect = (file: File, type: 'avatar' | 'portrait' | 'front' | 'side') => {
-    const url = URL.createObjectURL(file);
-    switch (type) {
-      case 'avatar':
-        setAvatar(file);
-        setAvatarPreview(url);
-        break;
-      case 'portrait':
-        setPortraitPhoto(file);
-        setPortraitPreview(url);
-        break;
-      case 'front':
-        setFrontPhoto(file);
-        setFrontPreview(url);
-        break;
-      case 'side':
-        setSidePhoto(file);
-        setSidePreview(url);
-        break;
-    }
+  const removePhoto = (type: PhotoType) => {
+    if (previews[type]) URL.revokeObjectURL(previews[type]);
+    setPhotos((current) => ({ ...current, [type]: null }));
+    setPreviews((current) => ({ ...current, [type]: '' }));
   };
 
-  const handlePhotoRemove = (type: 'avatar' | 'portrait' | 'front' | 'side') => {
-    switch (type) {
-      case 'avatar':
-        setAvatar(null);
-        setAvatarPreview('');
-        break;
-      case 'portrait':
-        setPortraitPhoto(null);
-        setPortraitPreview('');
-        break;
-      case 'front':
-        setFrontPhoto(null);
-        setFrontPreview('');
-        break;
-      case 'side':
-        setSidePhoto(null);
-        setSidePreview('');
-        break;
-    }
-  };
-
-  const hasEvalPhoto = portraitPhoto || frontPhoto || sidePhoto;
-
-  // Auto-advance eval steps with simulated timing
-  useEffect(() => {
-    if (!evaluating) return;
-    const delays = hasEvalPhoto ? [1500, 3000, 5000, 2000, 3000] : [500, 500, 500, 1500, 3000];
-    let timeout: ReturnType<typeof setTimeout>;
-    if (evalStep < delays.length - 1) {
-      timeout = setTimeout(() => setEvalStep((s) => s + 1), delays[evalStep]);
-    }
-    return () => clearTimeout(timeout);
-  }, [evaluating, evalStep, hasEvalPhoto]);
-
-  const handleSubmit = async () => {
+  const submitAssessment = async () => {
+    if (!allQuestionsComplete) return;
     setEvaluating(true);
-    setEvalStep(0);
+    setEvalStage('upload');
     setEvalError('');
-    
+
     try {
-      // 上传照片
-      if (avatar || portraitPhoto || frontPhoto || sidePhoto) {
+      if (Object.values(photos).some(Boolean)) {
         const formData = new FormData();
-        if (avatar) formData.append('avatar', avatar);
-        if (portraitPhoto) formData.append('portrait_photo', portraitPhoto);
-        if (frontPhoto) formData.append('front_photo', frontPhoto);
-        if (sidePhoto) formData.append('side_photo', sidePhoto);
-        
-        await api.post('/users/me/photos/upload', formData, {
+        if (photos.avatar) formData.append('avatar', photos.avatar);
+        if (photos.portrait) formData.append('portrait_photo', photos.portrait);
+        if (photos.front) formData.append('front_photo', photos.front);
+        if (photos.side) formData.append('side_photo', photos.side);
+        const uploadResponse = await api.post('/users/me/photos/upload', formData, {
           headers: { 'Content-Type': 'multipart/form-data' },
         });
+        const quality = uploadResponse.data.portrait_quality as { warnings?: string[] } | undefined;
+        if (quality?.warnings?.length) {
+          addNotification({
+            type: 'warning',
+            title: '照片质量提示',
+            message: quality.warnings[0],
+            duration: 7000,
+          });
+        }
       }
-      
-      // 判断是否需要问卷
-      if (!hasEvalPhoto) {
-        // 没有评估图片，显示问卷
-        setEvaluating(false);
-        setStep(4); // 跳转到问卷步骤
-        return;
-      }
-      
-      // 有评估图片，直接评估
-      setEvalStep(2); // 跳到AI分析步骤
-      const response = await api.post('/users/me/evaluate', {
-        height_cm: parseFloat(height),
-        weight_kg: parseFloat(weight),
-        age: parseInt(age),
-        gender,
-        questionnaire: Object.keys(questionnaire).length > 0 ? questionnaire : undefined,
-      });
-      
-      setEvalMode(response.data.eval_mode);
-      
-      // 检查降级情况
-      const { skin_source, eval_mode } = response.data;
-      if (skin_source === 'ai') {
+
+      setEvalStage('assess');
+      const response = await api.post(
+        '/users/me/evaluate',
+        {
+          height_cm: Number(height),
+          weight_kg: Number(weight),
+          age: Number(age),
+          gender,
+          questionnaire,
+        },
+        { timeout: 60_000 },
+      );
+
+      if (response.data.skin_source === 'unavailable') {
         addNotification({
           type: 'warning',
-          title: '肤质分析降级',
-          message: '外部API不可用，已使用系统AI进行肤质分析',
-          duration: 8000,
+          title: 'Face++ 暂未返回结果',
+          message: '肤质观察已标记为不可用，四项行为评分不受影响。',
+          duration: 7000,
         });
-      } else if (skin_source === 'fallback') {
+      } else if (response.data.assessment?.reused) {
         addNotification({
-          type: 'warning',
-          title: '肤质分析降级',
-          message: '肤质分析服务不可用，已使用默认评估',
-          duration: 8000,
+          type: 'success',
+          title: '已复用一致评估',
+          message: '检测到相同输入，已返回同一规则版本的评估结果。',
+          duration: 5000,
         });
       }
-      
-      setEvalStep(4); // 跳到生成任务步骤
-      setTimeout(() => navigate('/'), 1200);
-    } catch {
-      setEvalError('评估失败，请重试');
+
+      setEvalStage('done');
+      window.setTimeout(() => navigate('/'), 800);
+    } catch (error: unknown) {
+      let message = '评估失败，请重试。';
+      if (
+        typeof error === 'object'
+        && error !== null
+        && 'code' in error
+        && (error as { code?: string }).code === 'ECONNABORTED'
+      ) {
+        message = '评估等待超过 60 秒，请检查 Face++ 服务后重试。';
+      } else if (typeof error === 'object' && error !== null && 'response' in error) {
+        const response = (error as {
+          response?: { status?: number; data?: { detail?: unknown } };
+        }).response;
+        const detail = response?.data?.detail;
+        if (typeof detail === 'string') {
+          message = detail;
+        } else if (Array.isArray(detail)) {
+          const fields = detail.map((item) => {
+            if (typeof item !== 'object' || item === null) return '未知字段校验失败';
+            const entry = item as { loc?: unknown[]; msg?: string };
+            const location = entry.loc?.slice(1).join('.') || '请求数据';
+            return `${location}：${entry.msg || '格式不正确'}`;
+          });
+          message = fields.join('；');
+        } else if (response?.status) {
+          message = `评估请求失败（HTTP ${response.status}），请稍后重试。`;
+        }
+      }
+      setEvalError(message);
       setEvaluating(false);
     }
   };
 
-  const handleQuestionnaireSubmit = async () => {
-    setEvaluating(true);
-    setEvalStep(2);
-    
-    try {
-      const response = await api.post('/users/me/evaluate', {
-        height_cm: parseFloat(height),
-        weight_kg: parseFloat(weight),
-        age: parseInt(age),
-        gender,
-        questionnaire,
-      });
-      
-      setEvalMode(response.data.eval_mode);
-      
-      // 检查降级情况
-      const { eval_mode } = response.data;
-      if (eval_mode === 'default') {
-        addNotification({
-          type: 'warning',
-          title: '评估降级',
-          message: 'AI评估服务不可用，已使用默认评分',
-          duration: 8000,
-        });
-      }
-      
-      setEvalStep(4);
-      setTimeout(() => navigate('/'), 1200);
-    } catch {
-      setEvalError('评估失败，请重试');
-      setEvaluating(false);
-    }
-  };
-
-  // Evaluating progress screen
   if (evaluating) {
+    const activeIndex = EVAL_STAGES.findIndex((stage) => stage.key === evalStage);
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
-        <div className="bg-slate-900 rounded-2xl p-8 w-full max-w-md border border-slate-800">
-          <div className="text-center mb-8">
-            <div className="text-5xl mb-4">⚡</div>
-            <h2 className="text-xl font-bold text-white mb-2">系统初始化中</h2>
-            <p className="text-slate-400 text-sm">正在为你建立个人画像...</p>
+      <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-slate-950 p-4">
+        <motion.div
+          className="absolute h-80 w-80 rounded-full bg-cyan-500/10 blur-3xl"
+          animate={{ x: [-80, 90, -80], y: [-30, 50, -30], scale: [0.9, 1.2, 0.9] }}
+          transition={{ duration: 7, repeat: Infinity, ease: 'easeInOut' }}
+        />
+        <div className="relative w-full max-w-lg rounded-3xl border border-white/10 bg-slate-900/80 p-8 shadow-2xl shadow-cyan-950/30 backdrop-blur-xl">
+          <div className="mb-8 text-center">
+            <motion.div
+              className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl border border-cyan-300/20 bg-cyan-300/10 text-3xl"
+              animate={{ rotate: [0, 4, -4, 0], boxShadow: ['0 0 0 rgba(34,211,238,0)', '0 0 35px rgba(34,211,238,.25)', '0 0 0 rgba(34,211,238,0)'] }}
+              transition={{ duration: 2, repeat: Infinity }}
+            >
+              ◇
+            </motion.div>
+            <h2 className="text-2xl font-semibold text-white">正在建立状态画像</h2>
+            <p className="mt-2 text-sm text-slate-400">评分由固定规则计算，照片仅用于 Face++ 肤质观察</p>
           </div>
 
-          {/* Progress bar */}
-          <div className="w-full bg-slate-800 rounded-full h-2 mb-8">
+          <div className="mb-7 h-1.5 overflow-hidden rounded-full bg-slate-800">
             <motion.div
-              className="bg-gradient-to-r from-blue-600 to-violet-500 h-2 rounded-full"
-              initial={{ width: '0%' }}
-              animate={{ width: `${((evalStep + 1) / EVAL_STEPS.length) * 100}%` }}
-              transition={{ duration: 0.6, ease: 'easeOut' }}
+              className="h-full rounded-full bg-gradient-to-r from-cyan-400 via-blue-500 to-violet-500"
+              animate={{ width: `${((activeIndex + 1) / EVAL_STAGES.length) * 100}%` }}
+              transition={{ duration: 0.45 }}
             />
           </div>
 
-          {/* Steps */}
-          <div className="space-y-4">
-            {EVAL_STEPS.map((s, i) => (
-              <motion.div
-                key={s.key}
-                initial={{ opacity: 0, x: -10 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: i * 0.1 }}
-                className={`flex items-center gap-3 ${
-                  i < evalStep ? 'text-emerald-400' : i === evalStep ? 'text-blue-400' : 'text-slate-600'
-                }`}
-              >
-                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm flex-shrink-0 ${
-                  i < evalStep ? 'bg-emerald-900/50' : i === evalStep ? 'bg-blue-900/50' : 'bg-slate-800'
-                }`}>
-                  {i < evalStep ? '✓' : i === evalStep ? (
-                    <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-                  ) : s.icon}
-                </div>
-                <span className="text-sm font-medium">{s.label}</span>
-                {i === evalStep && evalMode && (
-                  <span className="text-xs text-slate-500 ml-auto">
-                    {evalMode === 'photo' ? '图片+AI' : evalMode === 'questionnaire' ? '问卷' : ''}
+          <div className="space-y-3">
+            {EVAL_STAGES.map((stage, index) => {
+              const complete = index < activeIndex || evalStage === 'done';
+              const active = index === activeIndex && evalStage !== 'done';
+              return (
+                <motion.div
+                  key={stage.key}
+                  layout
+                  className={`flex items-center gap-3 rounded-xl border px-4 py-3 ${
+                    active
+                      ? 'border-cyan-400/30 bg-cyan-400/10 text-cyan-200'
+                      : complete
+                        ? 'border-emerald-400/20 bg-emerald-400/5 text-emerald-300'
+                        : 'border-transparent bg-slate-900 text-slate-600'
+                  }`}
+                >
+                  <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-950/60 text-sm">
+                    {complete ? '✓' : active ? <span className="h-3 w-3 animate-pulse rounded-full bg-cyan-300" /> : stage.icon}
                   </span>
-                )}
-              </motion.div>
-            ))}
+                  <span className="text-sm font-medium">{stage.label}</span>
+                  {active && <span className="ml-auto text-xs text-cyan-300/60">进行中</span>}
+                </motion.div>
+              );
+            })}
           </div>
-
-          {evalError && (
-            <div className="mt-6 text-center">
-              <p className="text-red-400 text-sm mb-3">{evalError}</p>
-              <button onClick={() => { setEvaluating(false); setEvalStep(0); }}
-                className="px-6 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-sm transition-colors">
-                重试
-              </button>
-            </div>
-          )}
         </div>
       </div>
     );
   }
 
-  const onboardingSteps = [
-    // Step 0: Welcome
-    <motion.div key="welcome" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
-      className="text-center">
-      <div className="text-6xl mb-6">⚡</div>
-      <h1 className="text-3xl font-bold text-white mb-4">欢迎来到系统</h1>
-      <p className="text-slate-400 mb-8 max-w-md">
-        系统将根据你的身体数据和照片，为你建立初始画像并制定专属成长计划。
-        请如实填写，这将影响你的初始评分。
+  const steps = [
+    <motion.div key="welcome" initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} className="text-center">
+      <motion.div
+        className="mx-auto mb-7 flex h-20 w-20 items-center justify-center rounded-3xl border border-cyan-300/20 bg-gradient-to-br from-cyan-400/15 to-violet-500/15 text-4xl"
+        animate={{ y: [0, -6, 0] }}
+        transition={{ duration: 2.8, repeat: Infinity, ease: 'easeInOut' }}
+      >
+        ◇
+      </motion.div>
+      <p className="mb-3 text-xs font-semibold uppercase tracking-[0.28em] text-cyan-300/70">Personal Baseline</p>
+      <h1 className="text-3xl font-semibold text-white">先建立一份可信的状态画像</h1>
+      <p className="mx-auto mt-4 max-w-xl text-sm leading-7 text-slate-400">
+        初始分数来自结构化问卷和固定规则，同样的输入会得到同样的结果。照片是可选项，Face++ 肤质观察不会被用来猜测你的运动、饮食或睡眠。
       </p>
-      <button onClick={() => setStep(1)}
-        className="px-8 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors">
-        开始评估
-      </button>
+      <motion.button
+        whileHover={{ y: -2 }}
+        whileTap={{ scale: 0.98 }}
+        onClick={() => setStep(1)}
+        className="mt-8 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 px-9 py-3 text-sm font-semibold text-white shadow-lg shadow-cyan-950/40"
+      >
+        开始建立画像
+      </motion.button>
     </motion.div>,
 
-    // Step 1: Basic info
-    <motion.div key="info" initial={{ opacity: 0, x: 50 }} animate={{ opacity: 1, x: 0 }}>
-      <h2 className="text-xl font-bold text-white mb-6">身体数据</h2>
-      <div className="space-y-4">
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="text-slate-400 text-sm mb-1 block">身高 (cm)</label>
-            <input type="number" value={height} onChange={(e) => setHeight(e.target.value)}
-              placeholder="175" className="w-full px-4 py-3 bg-slate-800 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500" />
-          </div>
-          <div>
-            <label className="text-slate-400 text-sm mb-1 block">体重 (kg)</label>
-            <input type="number" value={weight} onChange={(e) => setWeight(e.target.value)}
-              placeholder="70" className="w-full px-4 py-3 bg-slate-800 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500" />
-          </div>
-        </div>
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="text-slate-400 text-sm mb-1 block">年龄</label>
-            <input type="number" value={age} onChange={(e) => setAge(e.target.value)}
-              placeholder="25" className="w-full px-4 py-3 bg-slate-800 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500" />
-          </div>
-          <div>
-            <label className="text-slate-400 text-sm mb-1 block">性别</label>
-            <select value={gender} onChange={(e) => setGender(e.target.value)}
-              className="w-full px-4 py-3 bg-slate-800 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
-              <option value="male">男</option>
-              <option value="female">女</option>
-              <option value="other">其他</option>
-            </select>
-          </div>
-        </div>
-        <button onClick={() => setStep(2)} disabled={!height || !weight || !age}
-          className="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 disabled:text-slate-500 text-white rounded-lg font-medium transition-colors">
+    <motion.div key="basic" initial={{ opacity: 0, x: 30 }} animate={{ opacity: 1, x: 0 }}>
+      <p className="text-xs font-medium uppercase tracking-[0.2em] text-cyan-300/60">01 · Basic</p>
+      <h2 className="mt-2 text-2xl font-semibold text-white">基础信息</h2>
+      <p className="mt-2 text-sm text-slate-400">用于建立档案与后续计划，不通过 BMI 推断生活习惯。</p>
+      <div className="mt-7 grid gap-4 sm:grid-cols-2">
+        {[
+          { label: '身高', unit: 'cm', value: height, setter: setHeight, placeholder: '175', min: 100, max: 250 },
+          { label: '体重', unit: 'kg', value: weight, setter: setWeight, placeholder: '70', min: 30, max: 300 },
+          { label: '年龄', unit: '岁', value: age, setter: setAge, placeholder: '25', min: 13, max: 100 },
+        ].map((field) => (
+          <label key={field.label} className="rounded-2xl border border-slate-800 bg-slate-950/40 p-4">
+            <span className="text-xs text-slate-500">{field.label}</span>
+            <div className="mt-2 flex items-center gap-2">
+              <input
+                type="number"
+                min={field.min}
+                max={field.max}
+                value={field.value}
+                onChange={(event) => field.setter(event.target.value)}
+                placeholder={field.placeholder}
+                className="min-w-0 flex-1 bg-transparent text-xl font-medium text-white outline-none placeholder:text-slate-700"
+              />
+              <span className="text-xs text-slate-600">{field.unit}</span>
+            </div>
+          </label>
+        ))}
+        <label className="rounded-2xl border border-slate-800 bg-slate-950/40 p-4">
+          <span className="text-xs text-slate-500">性别</span>
+          <select
+            value={gender}
+            onChange={(event) => setGender(event.target.value)}
+            className="mt-2 w-full bg-transparent text-lg text-white outline-none"
+          >
+            <option className="bg-slate-900" value="male">男</option>
+            <option className="bg-slate-900" value="female">女</option>
+            <option className="bg-slate-900" value="other">其他</option>
+          </select>
+        </label>
+      </div>
+      <div className="mt-6 flex gap-3">
+        <button onClick={() => setStep(0)} className="flex-1 rounded-xl bg-slate-800 py-3 text-sm text-slate-300 transition hover:bg-slate-700">返回</button>
+        <button
+          onClick={() => setStep(2)}
+          disabled={!height || !weight || !age || Number(age) < 13}
+          className="flex-1 rounded-xl bg-blue-600 py-3 text-sm font-medium text-white transition hover:bg-blue-500 disabled:bg-slate-800 disabled:text-slate-600"
+        >
           下一步
         </button>
       </div>
     </motion.div>,
 
-    // Step 2: Photo upload (2x2 grid)
-    <motion.div key="photos" initial={{ opacity: 0, x: 50 }} animate={{ opacity: 1, x: 0 }}>
-      <h2 className="text-xl font-bold text-white mb-2">上传照片</h2>
-      <p className="text-slate-400 text-sm mb-5">
-        上传照片可以帮助系统更准确地评估你的状态。所有照片都是可选的。
-      </p>
-      
-      <div className="grid grid-cols-2 gap-3 mb-4">
-        <PhotoSlot
-          label="头像"
-          desc="仅显示"
-          preview={avatarPreview}
-          onUpload={(file) => handlePhotoSelect(file, 'avatar')}
-          onRemove={() => handlePhotoRemove('avatar')}
-          inputRef={avatarInputRef}
-        />
-        <PhotoSlot
-          label="正面肖像"
-          desc="肤质分析"
-          preview={portraitPreview}
-          onUpload={(file) => handlePhotoSelect(file, 'portrait')}
-          onRemove={() => handlePhotoRemove('portrait')}
-          inputRef={portraitInputRef}
-        />
-        <PhotoSlot
-          label="正面图"
-          desc="体态分析"
-          preview={frontPreview}
-          onUpload={(file) => handlePhotoSelect(file, 'front')}
-          onRemove={() => handlePhotoRemove('front')}
-          inputRef={frontInputRef}
-        />
-        <PhotoSlot
-          label="侧面图"
-          desc="体态分析"
-          preview={sidePreview}
-          onUpload={(file) => handlePhotoSelect(file, 'side')}
-          onRemove={() => handlePhotoRemove('side')}
-          inputRef={sideInputRef}
-        />
+    <motion.div key="photos" initial={{ opacity: 0, x: 30 }} animate={{ opacity: 1, x: 0 }}>
+      <p className="text-xs font-medium uppercase tracking-[0.2em] text-cyan-300/60">02 · Optional photo</p>
+      <h2 className="mt-2 text-2xl font-semibold text-white">照片资料</h2>
+      <p className="mt-2 text-sm leading-6 text-slate-400">正面肖像用于 Face++ 肤质观察；全身照片仅作为日后成长对比素材，不参与初始评分。</p>
+      <div className="mt-6 grid grid-cols-2 gap-4">
+        <PhotoSlot label="头像" description="仅用于账号展示" preview={previews.avatar} onUpload={(file) => selectPhoto(file, 'avatar')} onRemove={() => removePhoto('avatar')} inputRef={avatarInputRef} />
+        <PhotoSlot label="正面肖像" description="Face++ 肤质观察" preview={previews.portrait} onUpload={(file) => selectPhoto(file, 'portrait')} onRemove={() => removePhoto('portrait')} inputRef={portraitInputRef} />
+        <PhotoSlot label="正面全身" description="成长对比，不参与评分" preview={previews.front} onUpload={(file) => selectPhoto(file, 'front')} onRemove={() => removePhoto('front')} inputRef={frontInputRef} />
+        <PhotoSlot label="侧面全身" description="成长对比，不参与评分" preview={previews.side} onUpload={(file) => selectPhoto(file, 'side')} onRemove={() => removePhoto('side')} inputRef={sideInputRef} />
       </div>
-      
-      <p className="text-slate-500 text-xs mb-4">
-        如果不上传评估照片（肖像/正面/侧面），系统将以问卷形式进行评估。
-      </p>
-      
-      <div className="flex gap-3">
-        <button onClick={() => setStep(1)}
-          className="flex-1 py-3 bg-slate-800 hover:bg-slate-700 text-white rounded-lg font-medium transition-colors">返回</button>
-        <button onClick={() => setStep(hasEvalPhoto ? 3 : 4)}
-          className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors">下一步</button>
+      <div className="mt-6 flex gap-3">
+        <button onClick={() => setStep(1)} className="flex-1 rounded-xl bg-slate-800 py-3 text-sm text-slate-300 transition hover:bg-slate-700">返回</button>
+        <button onClick={() => setStep(3)} className="flex-1 rounded-xl bg-blue-600 py-3 text-sm font-medium text-white transition hover:bg-blue-500">进入问卷</button>
       </div>
     </motion.div>,
 
-    // Step 3: Confirm & evaluate (有图片)
-    <motion.div key="confirm" initial={{ opacity: 0, x: 50 }} animate={{ opacity: 1, x: 0 }}>
-      <h2 className="text-xl font-bold text-white mb-6">确认信息</h2>
-      <div className="bg-slate-800 rounded-lg p-4 mb-6 space-y-2">
-        <div className="flex justify-between text-sm">
-          <span className="text-slate-400">身高</span>
-          <span className="text-white">{height} cm</span>
+    <motion.div key="questionnaire" initial={{ opacity: 0, x: 30 }} animate={{ opacity: 1, x: 0 }}>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <p className="text-xs font-medium uppercase tracking-[0.2em] text-cyan-300/60">03 · Evidence</p>
+          <h2 className="mt-2 text-2xl font-semibold text-white">{currentGroup.icon} {currentGroup.title}</h2>
+          <p className="mt-2 text-sm text-slate-400">第 {questionGroup + 1} / {QUESTION_GROUPS.length} 组 · 请选择最接近真实情况的选项</p>
         </div>
-        <div className="flex justify-between text-sm">
-          <span className="text-slate-400">体重</span>
-          <span className="text-white">{weight} kg</span>
-        </div>
-        <div className="flex justify-between text-sm">
-          <span className="text-slate-400">年龄</span>
-          <span className="text-white">{age} 岁</span>
-        </div>
-        <div className="flex justify-between text-sm">
-          <span className="text-slate-400">性别</span>
-          <span className="text-white">{gender === 'male' ? '男' : gender === 'female' ? '女' : '其他'}</span>
-        </div>
-        <div className="flex justify-between text-sm">
-          <span className="text-slate-400">BMI</span>
-          <span className="text-white">{(parseFloat(weight) / (parseFloat(height) / 100) ** 2).toFixed(1)}</span>
-        </div>
-        <div className="flex justify-between text-sm">
-          <span className="text-slate-400">头像</span>
-          <span className="text-white">{avatar ? '已上传' : '未上传'}</span>
-        </div>
-        <div className="flex justify-between text-sm">
-          <span className="text-slate-400">正面肖像图</span>
-          <span className="text-white">{portraitPhoto ? '已上传' : '未上传'}</span>
-        </div>
-        <div className="flex justify-between text-sm">
-          <span className="text-slate-400">正面图</span>
-          <span className="text-white">{frontPhoto ? '已上传' : '未上传'}</span>
-        </div>
-        <div className="flex justify-between text-sm">
-          <span className="text-slate-400">侧面图</span>
-          <span className="text-white">{sidePhoto ? '已上传' : '未上传'}</span>
+        <div className="flex gap-1.5 pt-2">
+          {QUESTION_GROUPS.map((group, index) => (
+            <button
+              key={group.dimension}
+              onClick={() => setQuestionGroup(index)}
+              className={`h-2 rounded-full transition-all ${index === questionGroup ? 'w-7 bg-cyan-400' : 'w-2 bg-slate-700'}`}
+              aria-label={group.title}
+            />
+          ))}
         </div>
       </div>
-      <p className="text-slate-500 text-sm mb-6">
-        AI将综合分析你的照片和身体数据，给出四维初始评分。
-      </p>
-      <div className="flex gap-3">
-        <button onClick={() => setStep(2)}
-          className="flex-1 py-3 bg-slate-800 hover:bg-slate-700 text-white rounded-lg font-medium transition-colors">返回修改</button>
-        <button onClick={handleSubmit}
-          className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors">开始评估</button>
-      </div>
-    </motion.div>,
 
-    // Step 4: Questionnaire (无图片)
-    <motion.div key="questionnaire" initial={{ opacity: 0, x: 50 }} animate={{ opacity: 1, x: 0 }}>
-      <h2 className="text-xl font-bold text-white mb-2">回答几个问题</h2>
-      <p className="text-slate-400 text-sm mb-6">
-        你没有上传评估照片，系统将通过以下问题来评估你的四维度初始评分。
-      </p>
-
-      {/* Already answered questions */}
-      <div className="space-y-3 mb-4">
-        {QUESTIONS.slice(0, questionStep).map((q, i) => (
-          <div key={q.key} className="bg-slate-800 rounded-lg p-3">
-            <div className="text-blue-400 text-xs mb-1">系统：{q.text}</div>
-            <div className="text-white text-sm">{questionnaire[q.key]}</div>
-          </div>
+      <div className="mt-6 space-y-4">
+        {currentGroup.questions.map((question, questionIndex) => (
+          <motion.div
+            key={question.key}
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: questionIndex * 0.06 }}
+            className={`rounded-2xl border bg-gradient-to-br p-4 ${currentGroup.accent}`}
+          >
+            <p className="text-sm font-medium text-white">{question.label}</p>
+            <p className="mt-1 text-xs text-slate-500">{question.hint}</p>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              {question.options.map((option) => {
+                const selected = questionnaire[question.key] === option.value;
+                return (
+                  <motion.button
+                    key={option.value}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={() => setQuestionnaire((current) => ({ ...current, [question.key]: option.value }))}
+                    className={`rounded-xl border px-3 py-2.5 text-left text-xs transition ${
+                      selected
+                        ? 'border-cyan-300/50 bg-cyan-300/15 text-cyan-100 shadow-[0_0_20px_rgba(34,211,238,.08)]'
+                        : 'border-white/5 bg-slate-950/35 text-slate-400 hover:border-white/15 hover:text-slate-200'
+                    }`}
+                  >
+                    <span className={`mr-2 inline-block h-2 w-2 rounded-full ${selected ? 'bg-cyan-300' : 'bg-slate-700'}`} />
+                    {option.label}
+                  </motion.button>
+                );
+              })}
+            </div>
+          </motion.div>
         ))}
       </div>
 
-      {/* Current question */}
-      {questionStep < QUESTIONS.length && (
-        <div className="space-y-3">
-          <div className="bg-slate-800 rounded-lg p-3">
-            <div className="text-blue-400 text-xs mb-1">系统：</div>
-            <div className="text-white text-sm">{QUESTIONS[questionStep].text}</div>
-          </div>
-          <div className="flex gap-2">
-            <input
-              value={currentAnswer}
-              onChange={(e) => setCurrentAnswer(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') handleAnswerSubmit(); }}
-              placeholder="输入你的回答..."
-              aria-label="回答当前问题"
-              className="flex-1 px-4 py-3 bg-slate-800 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-            <button
-              onClick={handleAnswerSubmit}
-              disabled={!currentAnswer.trim()}
-              className="px-4 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 text-white rounded-lg text-sm transition-colors"
-            >
-              发送
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* All questions answered */}
-      {questionStep >= QUESTIONS.length && (
-        <div className="text-center">
-          <p className="text-emerald-400 text-sm mb-4">所有问题已回答完毕！</p>
-          <button onClick={handleQuestionnaireSubmit}
-            className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors">
-            开始评估
-          </button>
-        </div>
-      )}
-
-      <div className="flex gap-3 mt-4">
-        <button onClick={() => { setStep(2); setQuestionStep(0); setQuestionnaire({}); setCurrentAnswer(''); }}
-          className="flex-1 py-3 bg-slate-800 hover:bg-slate-700 text-white rounded-lg font-medium transition-colors">
+      <div className="mt-6 flex gap-3">
+        <button
+          onClick={() => questionGroup === 0 ? setStep(2) : setQuestionGroup((current) => current - 1)}
+          className="flex-1 rounded-xl bg-slate-800 py-3 text-sm text-slate-300 transition hover:bg-slate-700"
+        >
           返回
         </button>
+        <button
+          disabled={!currentGroupComplete}
+          onClick={() => questionGroup === QUESTION_GROUPS.length - 1 ? setStep(4) : setQuestionGroup((current) => current + 1)}
+          className="flex-1 rounded-xl bg-blue-600 py-3 text-sm font-medium text-white transition hover:bg-blue-500 disabled:bg-slate-800 disabled:text-slate-600"
+        >
+          {questionGroup === QUESTION_GROUPS.length - 1 ? '查看并确认' : '下一组'}
+        </button>
+      </div>
+    </motion.div>,
+
+    <motion.div key="confirm" initial={{ opacity: 0, x: 30 }} animate={{ opacity: 1, x: 0 }}>
+      <p className="text-xs font-medium uppercase tracking-[0.2em] text-cyan-300/60">04 · Confirm</p>
+      <h2 className="mt-2 text-2xl font-semibold text-white">确认评估资料</h2>
+      <div className="mt-6 grid gap-3 sm:grid-cols-2">
+        <div className="rounded-2xl border border-slate-800 bg-slate-950/40 p-4">
+          <p className="text-xs text-slate-500">身体数据</p>
+          <p className="mt-2 text-lg font-medium text-white">{height} cm · {weight} kg</p>
+          <p className="mt-1 text-xs text-slate-500">{age} 岁 · BMI {bmi?.toFixed(1)}</p>
+        </div>
+        <div className="rounded-2xl border border-slate-800 bg-slate-950/40 p-4">
+          <p className="text-xs text-slate-500">证据完整度</p>
+          <p className="mt-2 text-lg font-medium text-emerald-300">12 / 12 项</p>
+          <p className="mt-1 text-xs text-slate-500">固定规则 · 可解释 · 可复现</p>
+        </div>
+      </div>
+      <div className="mt-4 rounded-2xl border border-cyan-400/15 bg-cyan-400/5 p-4 text-sm leading-6 text-slate-400">
+        <p className="font-medium text-cyan-200">本次评估如何工作</p>
+        <p className="mt-1">四项分数只由问卷规则计算；{photos.portrait || photos.front ? 'Face++ 会额外生成独立肤质观察。' : '你没有上传面部照片，本次不会调用 Face++。'}</p>
+      </div>
+      {evalError && <p className="mt-4 rounded-xl bg-rose-500/10 px-4 py-3 text-sm text-rose-300">{evalError}</p>}
+      <div className="mt-6 flex gap-3">
+        <button onClick={() => setStep(3)} className="flex-1 rounded-xl bg-slate-800 py-3 text-sm text-slate-300 transition hover:bg-slate-700">返回修改</button>
+        <motion.button
+          whileHover={{ y: -1 }}
+          whileTap={{ scale: 0.98 }}
+          onClick={submitAssessment}
+          className="flex-1 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 py-3 text-sm font-semibold text-white shadow-lg shadow-cyan-950/30"
+        >
+          建立状态画像
+        </motion.button>
       </div>
     </motion.div>,
   ];
 
   return (
-    <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
-      <div className="bg-slate-900 rounded-2xl p-8 w-full max-w-md border border-slate-800">
-        {/* Progress dots */}
-        <div className="flex justify-center gap-2 mb-8">
-          {Array.from({ length: hasEvalPhoto ? 4 : 5 }, (_, i) => (
-            <div key={i} className={`w-2 h-2 rounded-full transition-colors ${i <= step ? 'bg-blue-500' : 'bg-slate-700'}`} />
-          ))}
+    <div className="relative min-h-screen overflow-hidden bg-slate-950 px-4 py-8">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_20%_15%,rgba(34,211,238,.09),transparent_34%),radial-gradient(circle_at_85%_80%,rgba(139,92,246,.08),transparent_34%)]" />
+      <div className="relative mx-auto flex min-h-[calc(100vh-4rem)] max-w-3xl items-center">
+        <div className="w-full rounded-3xl border border-white/10 bg-slate-900/75 p-6 shadow-2xl shadow-black/30 backdrop-blur-xl sm:p-9">
+          <div className="mb-8 flex items-center gap-2">
+            {Array.from({ length: 5 }, (_, index) => (
+              <div key={index} className="h-1 flex-1 overflow-hidden rounded-full bg-slate-800">
+                <motion.div
+                  className="h-full bg-gradient-to-r from-cyan-400 to-blue-500"
+                  animate={{ width: index <= step ? '100%' : '0%' }}
+                  transition={{ duration: 0.35 }}
+                />
+              </div>
+            ))}
+          </div>
+          <AnimatePresence mode="wait">{steps[step]}</AnimatePresence>
         </div>
-        <AnimatePresence mode="wait">
-          {onboardingSteps[step]}
-        </AnimatePresence>
       </div>
     </div>
   );

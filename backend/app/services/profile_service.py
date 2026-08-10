@@ -4,12 +4,9 @@ Profile Service - 用户画像服务
 """
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 from app.models.user import User
 from app.services.memory_service import MemoryService
-from typing import Optional
 import logging
-import json
 
 logger = logging.getLogger(__name__)
 

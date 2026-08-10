@@ -1,12 +1,14 @@
 import axios from 'axios';
+import { getAccessToken, refreshAccessToken, setAccessToken } from './authSession';
 
 const api = axios.create({
   baseURL: '/api',
+  withCredentials: true,
   headers: { 'Content-Type': 'application/json' },
 });
 
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('access_token');
+  const token = getAccessToken();
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
@@ -14,15 +16,16 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (res) => res,
   async (error) => {
-    if (error.response?.status === 401) {
-      const refresh = localStorage.getItem('refresh_token');
-      if (refresh) {
-        const { data } = await axios.post('/api/auth/refresh', { refresh_token: refresh });
-        localStorage.setItem('access_token', data.access_token);
-        error.config.headers.Authorization = `Bearer ${data.access_token}`;
-        return api(error.config);
+    const request = error.config as (typeof error.config & { _retried?: boolean });
+    if (error.response?.status === 401 && request && !request._retried) {
+      request._retried = true;
+      const token = await refreshAccessToken();
+      if (token) {
+        request.headers.Authorization = `Bearer ${token}`;
+        return api(request);
       }
-      window.location.href = '/login';
+      setAccessToken(null);
+      if (!window.location.pathname.startsWith('/login')) window.location.href = '/login';
     }
     return Promise.reject(error);
   }

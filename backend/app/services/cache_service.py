@@ -11,11 +11,12 @@ Cache Service - Redis 缓存服务
 import json
 import hashlib
 import logging
-from datetime import datetime, timezone, timedelta
+import uuid
 
 import redis.asyncio as redis
 
 from app.core.config import get_settings
+from app.core.time import local_today, seconds_until_local_midnight
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -28,7 +29,12 @@ def _get_redis() -> redis.Redis:
     """获取 Redis 客户端（单例）"""
     global redis_client
     if redis_client is None:
-        redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+        redis_client = redis.from_url(
+            settings.REDIS_URL,
+            decode_responses=True,
+            socket_connect_timeout=1,
+            socket_timeout=2,
+        )
     return redis_client
 
 
@@ -60,20 +66,161 @@ async def delete_cached(key: str):
         logger.warning(f"Redis delete failed for key={key}: {e}")
 
 
+async def cache_is_ready() -> bool:
+    try:
+        return bool(await _get_redis().ping())
+    except Exception:
+        return False
+
+
+# ─── Refresh sessions ───────────────────────────────────────────────────
+
+
+def _refresh_session_key(jti: str) -> str:
+    return f"auth:refresh:{jti}"
+
+
+def _user_refresh_set_key(user_id: str) -> str:
+    return f"auth:user-refresh:{user_id}"
+
+
+async def store_refresh_session(jti: str, user_id: str, ttl: int) -> bool:
+    """Persist one refresh-token session. Authentication fails closed."""
+    try:
+        client = _get_redis()
+        async with client.pipeline(transaction=True) as pipeline:
+            pipeline.set(_refresh_session_key(jti), user_id, ex=ttl)
+            pipeline.sadd(_user_refresh_set_key(user_id), jti)
+            pipeline.expire(_user_refresh_set_key(user_id), ttl)
+            results = await pipeline.execute()
+        return bool(results[0])
+    except Exception as exc:
+        logger.error("Failed to persist refresh session: %s", exc)
+        return False
+
+
+async def consume_refresh_session(jti: str, user_id: str) -> bool:
+    """Atomically consume a refresh token so concurrent replay cannot rotate it twice."""
+    try:
+        client = _get_redis()
+        stored = await client.getdel(_refresh_session_key(jti))
+        if stored:
+            await client.srem(_user_refresh_set_key(stored), jti)
+        return stored == user_id
+    except Exception as exc:
+        logger.error("Failed to consume refresh session: %s", exc)
+        return False
+
+
+async def revoke_refresh_session(jti: str) -> None:
+    try:
+        client = _get_redis()
+        key = _refresh_session_key(jti)
+        user_id = await client.get(key)
+        await client.delete(key)
+        if user_id:
+            await client.srem(_user_refresh_set_key(user_id), jti)
+    except Exception as exc:
+        logger.warning("Failed to revoke refresh session: %s", exc)
+
+
+async def revoke_all_refresh_sessions(user_id: str) -> None:
+    try:
+        client = _get_redis()
+        set_key = _user_refresh_set_key(user_id)
+        session_ids = await client.smembers(set_key)
+        keys = [_refresh_session_key(jti) for jti in session_ids]
+        if keys:
+            await client.delete(*keys)
+        await client.delete(set_key)
+    except Exception as exc:
+        logger.warning("Failed to revoke all refresh sessions: %s", exc)
+
+
+# ─── Durable background jobs (Redis Stream) ─────────────────────────────
+
+
+BACKGROUND_JOB_STREAM = "system-agent:jobs"
+BACKGROUND_JOB_GROUP = "system-agent-workers"
+
+
+async def enqueue_background_job(kind: str, payload: dict) -> str | None:
+    try:
+        return await _get_redis().xadd(
+            BACKGROUND_JOB_STREAM,
+            {"kind": kind, "payload": json.dumps(payload, ensure_ascii=False)},
+            maxlen=10_000,
+            approximate=True,
+        )
+    except Exception as exc:
+        logger.warning("Failed to enqueue background job %s: %s", kind, exc)
+        return None
+
+
+async def ensure_background_job_group() -> None:
+    try:
+        await _get_redis().xgroup_create(
+            BACKGROUND_JOB_STREAM,
+            BACKGROUND_JOB_GROUP,
+            id="0",
+            mkstream=True,
+        )
+    except Exception as exc:
+        if "BUSYGROUP" not in str(exc):
+            raise
+
+
+async def read_background_jobs(consumer: str, count: int = 10, block_ms: int = 1000):
+    await ensure_background_job_group()
+    return await _get_redis().xreadgroup(
+        BACKGROUND_JOB_GROUP,
+        consumer,
+        {BACKGROUND_JOB_STREAM: ">"},
+        count=count,
+        block=block_ms,
+    )
+
+
+async def acknowledge_background_job(message_id: str) -> None:
+    await _get_redis().xack(BACKGROUND_JOB_STREAM, BACKGROUND_JOB_GROUP, message_id)
+
+
 # ─── 今日任务缓存 ──────────────────────────────────────────────────────
 
 
 def _tasks_key(user_id: str) -> str:
     """今日任务缓存 key，每天自动隔离"""
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    return f"tasks:{user_id}:{today}"
+    return f"tasks:{user_id}:{local_today().isoformat()}"
 
 
 def _seconds_until_midnight() -> int:
-    """计算距离 UTC 午夜的秒数（作为 TTL）"""
-    now = datetime.now(timezone.utc)
-    tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-    return int((tomorrow - now).total_seconds())
+    """计算距离业务时区午夜的秒数（作为 TTL）。"""
+    return seconds_until_local_midnight()
+
+
+async def acquire_lock(name: str, ttl: int = 300) -> str | None:
+    """Return a token when acquired, an empty string when held, or None if Redis is down."""
+    token = uuid.uuid4().hex
+    try:
+        acquired = await _get_redis().set(f"lock:{name}", token, ex=ttl, nx=True)
+        return token if acquired else ""
+    except Exception as exc:
+        logger.warning("Redis lock unavailable for %s: %s", name, exc)
+        return None
+
+
+async def release_lock(name: str, token: str) -> None:
+    """Release a lease only when this process still owns it."""
+    script = """
+    if redis.call('get', KEYS[1]) == ARGV[1] then
+      return redis.call('del', KEYS[1])
+    end
+    return 0
+    """
+    try:
+        await _get_redis().eval(script, 1, f"lock:{name}", token)
+    except Exception as exc:
+        logger.warning("Redis lock release failed for %s: %s", name, exc)
 
 
 async def get_cached_tasks(user_id: str) -> list[dict] | None:
@@ -129,21 +276,65 @@ async def invalidate_scores(user_id: str):
     await delete_cached(_scores_key(user_id))
 
 
+# ─── Face++ result cache ───────────────────────────────────────────────
+
+
+def _skin_analysis_key(image_hash: str, pipeline_version: str) -> str:
+    return f"skin_analysis:{pipeline_version}:{image_hash}"
+
+
+async def get_cached_skin_analysis(image_hash: str, pipeline_version: str) -> dict | None:
+    raw = await get_cached(_skin_analysis_key(image_hash, pipeline_version))
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+
+async def set_cached_skin_analysis(
+    image_hash: str,
+    pipeline_version: str,
+    result: dict,
+) -> None:
+    await set_cached(
+        _skin_analysis_key(image_hash, pipeline_version),
+        json.dumps(result, ensure_ascii=False),
+        settings.FACEPLUSPLUS_CACHE_TTL_SECONDS,
+    )
+
+
 # ─── 向量搜索缓存 ──────────────────────────────────────────────────────
 
 
 MEMORY_SEARCH_TTL = 120  # 2 分钟
 
 
-def _memory_search_key(user_id: str, query: str) -> str:
+def _memory_search_key(
+    user_id: str,
+    query: str,
+    top_k: int = 5,
+    memory_type: str | None = None,
+    min_importance: float = 0.0,
+) -> str:
     """向量搜索缓存 key，基于 query 内容 hash"""
     query_hash = hashlib.md5(query.encode()).hexdigest()[:12]
-    return f"memory_search:{user_id}:{query_hash}"
+    type_part = memory_type or "all"
+    return f"memory_search:{user_id}:{query_hash}:{top_k}:{type_part}:{min_importance:.2f}"
 
 
-async def get_cached_memory_search(user_id: str, query: str) -> list[dict] | None:
+async def get_cached_memory_search(
+    user_id: str,
+    query: str,
+    top_k: int = 5,
+    memory_type: str | None = None,
+    min_importance: float = 0.0,
+) -> list[dict] | None:
     """获取缓存的向量搜索结果，未命中返回 None"""
-    raw = await get_cached(_memory_search_key(user_id, query))
+    raw = await get_cached(
+        _memory_search_key(user_id, query, top_k, memory_type, min_importance)
+    )
     if raw:
         try:
             return json.loads(raw)
@@ -152,10 +343,28 @@ async def get_cached_memory_search(user_id: str, query: str) -> list[dict] | Non
     return None
 
 
-async def set_cached_memory_search(user_id: str, query: str, results: list[dict]):
+async def set_cached_memory_search(
+    user_id: str,
+    query: str,
+    results: list[dict],
+    top_k: int = 5,
+    memory_type: str | None = None,
+    min_importance: float = 0.0,
+):
     """缓存向量搜索结果，TTL 2 分钟"""
     await set_cached(
-        _memory_search_key(user_id, query),
+        _memory_search_key(user_id, query, top_k, memory_type, min_importance),
         json.dumps(results, ensure_ascii=False),
         MEMORY_SEARCH_TTL
     )
+
+
+async def invalidate_memory_search(user_id: str) -> None:
+    """Invalidate every cached query variant after memory mutations."""
+    try:
+        client = _get_redis()
+        keys = [key async for key in client.scan_iter(match=f"memory_search:{user_id}:*")]
+        if keys:
+            await client.delete(*keys)
+    except Exception as e:
+        logger.warning(f"Redis memory cache invalidation failed: {e}")

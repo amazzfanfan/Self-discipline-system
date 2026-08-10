@@ -1,27 +1,66 @@
 import { useState, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
+import PrivateImage from '../components/PrivateImage';
+import type { AssessmentRun } from '../types';
 
 const goalTypeIcons: Record<string, string> = {
   exercise: '🏃',
   diet: '🥗',
   sleep: '😴',
   appearance: '✨',
-  weight: '⚖️',
-  habit: '🔄',
-  other: '🎯',
 };
 
 const goalTypeLabels: Record<string, string> = {
   exercise: '运动',
   diet: '饮食',
   sleep: '睡眠',
-  appearance: '外貌',
-  weight: '体重',
-  habit: '习惯',
-  other: '其他',
+  appearance: '形象管理',
 };
+
+interface ProfileData {
+  height_cm: number | null;
+  weight_kg: number | null;
+  age: number | null;
+  gender: string | null;
+  avatar_url: string | null;
+  portrait_photo_url: string | null;
+  front_photo_url: string | null;
+  side_photo_url: string | null;
+  questionnaire: Record<string, string> | null;
+  skin_analysis: Record<string, unknown> | null;
+}
+
+interface ProfilePayload {
+  height_cm: number;
+  weight_kg: number;
+  age: number;
+  gender: string;
+}
+
+interface GoalStructuredData {
+  description?: string;
+  target_value?: number;
+  target_unit?: string;
+  deadline?: string;
+  current_value?: number;
+}
+
+interface GoalData {
+  id: string;
+  content: string;
+  goal_type: string;
+  structured_data?: GoalStructuredData | null;
+  status: string;
+}
+
+interface GoalPayload {
+  content: string;
+  goal_type: string;
+  structured_data: GoalStructuredData;
+}
 
 interface GoalForm {
   title: string;
@@ -35,13 +74,14 @@ interface GoalForm {
 const emptyGoalForm: GoalForm = {
   title: '',
   description: '',
-  goal_type: 'other',
+  goal_type: 'exercise',
   target_value: '',
   target_unit: '',
   deadline: '',
 };
 
 export default function Profile() {
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({ height_cm: '', weight_kg: '', age: '', gender: 'male' });
@@ -51,12 +91,12 @@ export default function Profile() {
   // Goal management state
   const [showGoalForm, setShowGoalForm] = useState(false);
   const [goalForm, setGoalForm] = useState<GoalForm>(emptyGoalForm);
-  const [editingGoalId, setEditingGoalId] = useState<number | null>(null);
-  const [deletingGoalId, setDeletingGoalId] = useState<number | null>(null);
+  const [editingGoalId, setEditingGoalId] = useState<string | null>(null);
+  const [deletingGoalId, setDeletingGoalId] = useState<string | null>(null);
 
-  const { data: profile } = useQuery({
+  const { data: profile } = useQuery<ProfileData>({
     queryKey: ['profile'],
-    queryFn: () => api.get('/users/me/profile').then((r) => {
+    queryFn: () => api.get<ProfileData>('/users/me/profile').then((r) => {
       const p = r.data;
       setForm({
         height_cm: p.height_cm?.toString() || '',
@@ -68,14 +108,20 @@ export default function Profile() {
     }),
   });
 
+  const { data: latestAssessment } = useQuery<AssessmentRun>({
+    queryKey: ['latest-assessment'],
+    queryFn: () => api.get<AssessmentRun>('/users/me/assessment/latest').then((response) => response.data),
+    retry: false,
+  });
+
   // Goals query
-  const { data: goals, isLoading: goalsLoading } = useQuery({
+  const { data: goals, isLoading: goalsLoading } = useQuery<GoalData[]>({
     queryKey: ['goals'],
-    queryFn: () => api.get('/goals').then((r) => r.data),
+    queryFn: () => api.get<GoalData[]>('/goals').then((r) => r.data),
   });
 
   const updateMutation = useMutation({
-    mutationFn: (data: any) => api.put('/users/me/profile', data),
+    mutationFn: (data: ProfilePayload) => api.put('/users/me/profile', data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['profile'] });
       setEditing(false);
@@ -93,8 +139,10 @@ export default function Profile() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['scores'] });
       queryClient.invalidateQueries({ queryKey: ['profile'] });
-      alert('AI评估完成，四维度分数已更新');
+      queryClient.invalidateQueries({ queryKey: ['latest-assessment'] });
+      alert('规则评估完成，状态基线已更新');
     },
+    onError: () => alert('请先重新填写结构化问卷，再进行评估'),
   });
 
   const photoMutation = useMutation({
@@ -117,7 +165,7 @@ export default function Profile() {
 
   // Goal mutations
   const createGoalMutation = useMutation({
-    mutationFn: (data: any) => api.post('/goals', data),
+    mutationFn: (data: GoalPayload) => api.post('/goals', data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['goals'] });
       setShowGoalForm(false);
@@ -126,7 +174,7 @@ export default function Profile() {
   });
 
   const updateGoalMutation = useMutation({
-    mutationFn: ({ id, data }: { id: number; data: any }) => api.put(`/goals/${id}`, data),
+    mutationFn: ({ id, data }: { id: string; data: GoalPayload }) => api.put(`/goals/${id}`, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['goals'] });
       setEditingGoalId(null);
@@ -136,7 +184,7 @@ export default function Profile() {
   });
 
   const deleteGoalMutation = useMutation({
-    mutationFn: (id: number) => api.delete(`/goals/${id}`),
+    mutationFn: (id: string) => api.delete(`/goals/${id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['goals'] });
       setDeletingGoalId(null);
@@ -160,13 +208,15 @@ export default function Profile() {
   };
 
   const handleGoalSubmit = () => {
-    const payload: any = {
-      title: goalForm.title,
-      description: goalForm.description || undefined,
+    const payload: GoalPayload = {
+      content: goalForm.title,
       goal_type: goalForm.goal_type,
-      target_value: goalForm.target_value ? parseFloat(goalForm.target_value) : undefined,
-      target_unit: goalForm.target_unit || undefined,
-      deadline: goalForm.deadline || undefined,
+      structured_data: {
+        description: goalForm.description || undefined,
+        target_value: goalForm.target_value ? parseFloat(goalForm.target_value) : undefined,
+        target_unit: goalForm.target_unit || undefined,
+        deadline: goalForm.deadline || undefined,
+      },
     };
 
     if (editingGoalId !== null) {
@@ -176,15 +226,16 @@ export default function Profile() {
     }
   };
 
-  const handleEditGoal = (goal: any) => {
+  const handleEditGoal = (goal: GoalData) => {
+    const details = goal.structured_data ?? {};
     setEditingGoalId(goal.id);
     setGoalForm({
       title: goal.content || '',
-      description: goal.description || '',
-      goal_type: goal.goal_type || 'other',
-      target_value: goal.target_value?.toString() || '',
-      target_unit: goal.target_unit || '',
-      deadline: goal.deadline || '',
+      description: details.description || '',
+      goal_type: goal.goal_type || 'exercise',
+      target_value: details.target_value?.toString() || '',
+      target_unit: details.target_unit || '',
+      deadline: details.deadline || '',
     });
     setShowGoalForm(true);
   };
@@ -195,7 +246,7 @@ export default function Profile() {
     setGoalForm(emptyGoalForm);
   };
 
-  const handleDeleteGoal = (id: number) => {
+  const handleDeleteGoal = (id: string) => {
     if (confirm('确定要删除这个目标吗？')) {
       deleteGoalMutation.mutate(id);
     }
@@ -215,7 +266,7 @@ export default function Profile() {
             className="bg-slate-900 rounded-2xl p-5 border border-slate-800 flex flex-col items-center">
             <div className="w-full aspect-square rounded-xl overflow-hidden bg-slate-800 mb-3 relative group">
               {profile?.front_photo_url ? (
-                <img
+                <PrivateImage
                   src={profile.front_photo_url}
                   alt="个人照片"
                   className="w-full h-full object-cover"
@@ -243,7 +294,7 @@ export default function Profile() {
               className="w-full py-2 text-sm text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors disabled:opacity-50">
               {uploadingPhoto ? '上传中...' : profile?.front_photo_url ? '更换照片' : '上传照片'}
             </button>
-            <p className="text-slate-600 text-xs mt-2 text-center">正面照用于AI外貌评估</p>
+            <p className="text-slate-600 text-xs mt-2 text-center">正面照仅用于 Face++ 肤质观察</p>
           </motion.div>
 
           {/* Body data card */}
@@ -448,7 +499,7 @@ export default function Profile() {
             </div>
           ) : (
             <div className="space-y-2">
-              {goals?.map((goal: any, i: number) => (
+              {goals?.map((goal, i) => (
                 <motion.div
                   key={goal.id}
                   initial={{ opacity: 0, x: -10 }}
@@ -466,23 +517,23 @@ export default function Profile() {
                         {goalTypeLabels[goal.goal_type] || '其他'}
                       </span>
                     </div>
-                    {goal.description && (
-                      <p className="text-slate-500 text-xs mt-0.5 truncate">{goal.description}</p>
+                    {goal.structured_data?.description && (
+                      <p className="text-slate-500 text-xs mt-0.5 truncate">{goal.structured_data.description}</p>
                     )}
                     <div className="flex items-center gap-3 mt-1">
-                      {goal.target_value && (
+                      {goal.structured_data?.target_value && (
                         <span className="text-slate-600 text-xs">
-                          目标: {goal.target_value} {goal.target_unit || ''}
+                          目标: {goal.structured_data.target_value} {goal.structured_data.target_unit || ''}
                         </span>
                       )}
-                      {goal.deadline && (
+                      {goal.structured_data?.deadline && (
                         <span className="text-slate-600 text-xs">
-                          截止: {goal.deadline}
+                          截止: {goal.structured_data.deadline}
                         </span>
                       )}
-                      {goal.current_value !== undefined && goal.target_value && (
+                      {goal.structured_data?.current_value !== undefined && goal.structured_data.target_value && (
                         <span className="text-emerald-500/60 text-xs">
-                          进度: {goal.current_value}/{goal.target_value} {goal.target_unit || ''}
+                          进度: {goal.structured_data.current_value}/{goal.structured_data.target_value} {goal.structured_data.target_unit || ''}
                         </span>
                       )}
                     </div>
@@ -523,37 +574,37 @@ export default function Profile() {
         {/* Re-evaluate */}
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }}
           className="bg-slate-900 rounded-2xl p-5 border border-slate-800">
-          <h2 className="text-base font-semibold text-slate-300 mb-2">AI 重新评估</h2>
+          <h2 className="text-base font-semibold text-slate-300 mb-2">状态基线重新评估</h2>
           <p className="text-slate-500 text-sm mb-4">
-            更新身体数据或更换照片后，可让AI重新评估你的四维度评分。
-            {profile?.front_photo_url
-              ? '将通过照片分析评估运动、饮食、睡眠、外貌四个维度。'
-              : profile?.questionnaire
-              ? '将根据身体数据和问卷回答评估四维度评分。'
-              : '请先上传照片或填写问卷。'}
+            四项分数由结构化问卷和固定规则计算；照片只更新 Face++ 肤质观察，不影响运动、饮食或睡眠评分。
           </p>
+          {latestAssessment && (
+            <div className="mb-4 grid grid-cols-2 gap-3 rounded-xl border border-slate-800 bg-slate-950/30 p-3 text-xs">
+              <div>
+                <p className="text-slate-600">规则版本</p>
+                <p className="mt-1 text-slate-300">{latestAssessment.rubric_version}</p>
+              </div>
+              <div>
+                <p className="text-slate-600">证据置信度</p>
+                <p className="mt-1 text-emerald-400">{Math.round(latestAssessment.overall_confidence * 100)}%</p>
+              </div>
+            </div>
+          )}
           <div className="flex items-center gap-3">
-            <button onClick={() => evaluateMutation.mutate()} disabled={evaluateMutation.isPending}
+            <button onClick={() => evaluateMutation.mutate()} disabled={evaluateMutation.isPending || !profile?.questionnaire}
               className="px-6 py-2.5 bg-purple-600 hover:bg-purple-700 disabled:bg-slate-700 text-white rounded-lg text-sm transition-colors">
               {evaluateMutation.isPending ? '评估中...' : '重新评估'}
             </button>
-            {profile?.front_photo_url && (
-              <span className="text-emerald-500/60 text-xs flex items-center gap-1">
-                <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full" />
-                已上传照片，四维度将被AI评估
-              </span>
-            )}
-            {!profile?.front_photo_url && profile?.questionnaire && (
+            {profile?.questionnaire && (
               <span className="text-blue-500/60 text-xs flex items-center gap-1">
                 <span className="w-1.5 h-1.5 bg-blue-500 rounded-full" />
-                已填写问卷，四维度将被AI评估
+                同一输入会复用一致结果
               </span>
             )}
-            {!profile?.front_photo_url && !profile?.questionnaire && (
-              <span className="text-amber-500/60 text-xs flex items-center gap-1">
-                <span className="w-1.5 h-1.5 bg-amber-500 rounded-full" />
-                未上传照片/问卷，评分默认50分
-              </span>
+            {!profile?.questionnaire && (
+              <button onClick={() => navigate('/onboarding')} className="text-xs text-amber-400 hover:text-amber-300">
+                去填写新版问卷 →
+              </button>
             )}
           </div>
         </motion.div>

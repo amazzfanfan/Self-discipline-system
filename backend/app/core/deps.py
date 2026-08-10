@@ -1,3 +1,5 @@
+import uuid
+
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,13 +14,17 @@ security = HTTPBearer()
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db, scope="function"),
 ) -> User:
     payload = decode_token(credentials.credentials)
     if not payload or payload.get("type") != "access":
         raise HTTPException(401, "Invalid token")
+    try:
+        user_id = uuid.UUID(str(payload["sub"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(401, "Invalid token") from exc
     result = await db.execute(
-        select(User).options(selectinload(User.profile)).where(User.id == payload["sub"])
+        select(User).options(selectinload(User.profile)).where(User.id == user_id)
     )
     user = result.scalar_one_or_none()
     if not user:

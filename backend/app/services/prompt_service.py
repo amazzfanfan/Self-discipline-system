@@ -73,105 +73,12 @@ dimension 只能是: exercise, diet, sleep, appearance
 {goal_context}
 返回JSON格式：{{"task": "任务标题"}}"""
     
-    # 评估提示词
-    EVALUATION_PROMPT = """根据用户的身体数据和问卷回答，评估四个维度的分数（0-100）：
-- exercise: 运动维度
-- diet: 饮食维度
-- sleep: 睡眠维度
-- appearance: 外貌维度
-
-身体数据：身高{height}cm，体重{weight}kg，BMI {bmi}，{age}岁，{gender_cn}
-
-问卷回答：
-- 运动：{exercise_answer}
-- 饮食：{diet_answer}
-- 睡眠：{sleep_answer}
-- 外貌：{appearance_answer}
-
-返回JSON格式：{{"exercise": 分数, "diet": 分数, "sleep": 分数, "appearance": 分数}}"""
-    
     # 维度指南
     DIMENSION_GUIDES = {
         "exercise": "运动类任务：体育锻炼、健身、跑步、跳绳、俯卧撑、深蹲、瑜伽、拉伸、散步、骑车、游泳等身体活动。不要包含学习、写作、阅读等非身体活动。",
         "diet": "饮食类任务：健康饮食、喝水、记录饮食、少吃零食、多吃蔬菜、控制热量、少油少盐等饮食相关。",
         "sleep": "睡眠类任务：早睡、放下手机、冥想、深呼吸、睡前放松、避免熬夜等睡眠相关。",
-        "appearance": "外貌类任务：护肤、防晒、清洁面部、使用眼霜、敷面膜、整理仪容等外貌护理相关。",
-    }
-
-    # 问卷评估提示词
-    QUESTIONNAIRE_PROMPT = """你是一个专业的健康评估AI。请根据以下信息，为用户评估四个维度的初始分数（0-100分）。
-
-【身体数据】
-- 身高：{height}cm
-- 体重：{weight}kg
-- BMI：{bmi:.1f}（{bmi_label}）
-- 年龄：{age}岁
-- 性别：{gender_cn}
-
-【用户自述】
-- 运动：{exercise_answer}
-- 饮食：{diet_answer}
-- 睡眠：{sleep_answer}
-- 外貌：{appearance_answer}
-
-【评分标准】
-- 根据用户自述内容合理评估，回答越详细、习惯越好，分数越高
-- BMI>25属于超重，运动/饮食评分应适当偏低
-
-请返回JSON：
-{{"exercise": 分数, "diet": 分数, "sleep": 分数, "appearance": 分数}}"""
-
-    # 综合评分模式提示词（图片 + 旷视 + 身体数据）
-    COMPREHENSIVE_PROMPT = """你是一个专业的健康评估AI。请根据以下信息，为用户评估四个维度的初始分数（0-100分）。
-
-【身体数据】
-- 身高：{height}cm
-- 体重：{weight}kg
-- BMI：{bmi:.1f}（{bmi_label}）
-- 年龄：{age}岁
-- 性别：{gender_cn}
-
-{skin_info}
-
-【评分标准】
-- 运动维度：BMI>25属于超重，运动评分应偏低；体态显示缺乏运动则更低
-- 饮食维度：BMI>25说明饮食可能不健康，评分应偏低
-- 睡眠维度：有黑眼圈、眼袋、疲惫迹象说明睡眠不足，评分应偏低
-- 外貌维度：肤质差、形象不整洁则评分偏低
-
-请根据图片和数据综合判断，返回JSON：
-{{"exercise": 分数, "diet": 分数, "sleep": 分数, "appearance": 分数}}"""
-
-    # 维度评分提示词（照片评估用，从 ai_service.py 迁移）
-    DIMENSION_PROMPTS = {
-        "exercise": (
-            "评估用户的运动能力和体能水平（0-100分）。\n"
-            "分析照片中的：体型、肌肉线条、体态、是否有运动痕迹。\n"
-            "结合身体数据：身高{height}cm，体重{weight}kg，BMI {bmi:.1f}，{age}岁，{gender_cn}。\n"
-            "评分标准：90-100运动员体格，70-89经常运动，50-69普通，30-49缺乏运动，0-29体能极差。\n"
-            '只返回JSON：{{"score": 数字}}'
-        ),
-        "diet": (
-            "评估用户的饮食健康程度（0-100分）。\n"
-            "分析照片中的：体脂率、皮肤光泽、面色、是否有营养不良或过剩迹象。\n"
-            "结合身体数据：身高{height}cm，体重{weight}kg，BMI {bmi:.1f}，{age}岁，{gender_cn}。\n"
-            "评分标准：90-100非常健康，70-89良好，50-69普通，30-49不健康，0-29严重问题。\n"
-            '只返回JSON：{{"score": 数字}}'
-        ),
-        "sleep": (
-            "评估用户的睡眠质量（0-100分）。\n"
-            "分析照片中的：黑眼圈、眼袋、肤质、精神状态、面色。\n"
-            "结合身体数据：身高{height}cm，体重{weight}kg，BMI {bmi:.1f}，{age}岁，{gender_cn}。\n"
-            "评分标准：90-100精神饱满，70-89状态良好，50-69一般，30-49明显疲惫，0-29严重睡眠不足。\n"
-            '只返回JSON：{{"score": 数字}}'
-        ),
-        "appearance": (
-            "评估用户的外在形象（0-100分）。\n"
-            "分析照片中的：整体形象、穿着打扮、气质、面部状态。\n"
-            "结合身体数据：身高{height}cm，体重{weight}kg，BMI {bmi:.1f}，{age}岁，{gender_cn}。\n"
-            "评分标准：90-100形象出众，70-89良好，50-69普通，30-49需要打理，0-29需大幅改善。\n"
-            '只返回JSON：{{"score": 数字}}'
-        ),
+        "appearance": "形象管理类任务：护肤、防晒、清洁面部、整理仪容等自我护理事项，不评价长相或气质。",
     }
 
     # 记忆判断提示词（从 memory_judge.py 迁移）
@@ -197,41 +104,23 @@ dimension 只能是: exercise, diet, sleep, appearance
 AI 的回复、分析、推荐一律不记住。问题和请求一律不记住。
 
 请以 JSON 格式返回分析结果：
-{
+{{
     "should_remember": true/false,
     "importance": 0.0-1.0 之间的浮点数,
     "memory_type": "fact/goal/preference/emotion/health/conversation" 中的一个,
     "reason": "简短的判断理由"
-}
+}}
 
 待判断内容：
 {text}
 
 请只返回 JSON，不要有其他内容。"""
 
-    # 肤质分析提示词（从 faceplus_service.py 迁移）
-    SKIN_ANALYSIS_PROMPT = """请分析这张面部照片的肤质状况，返回 JSON 格式：
-
-{
-  "skin_type": 0-3 (0=油性, 1=干性, 2=中性, 3=混合性),
-  "dark_circle": 0或1 (黑眼圈),
-  "eye_pouch": 0或1 (眼袋),
-  "acne": 0或1 (痘痘),
-  "blackhead": 0或1 (黑头),
-  "skin_spot": 0或1 (斑点),
-  "pores_forehead": 0或1 (额头毛孔粗大),
-  "pores_left_cheek": 0或1 (左脸颊毛孔粗大),
-  "pores_right_cheek": 0或1 (右脸颊毛孔粗大),
-  "skin_score": 0-100 (综合肤质评分)
-}
-
-只返回 JSON，不要其他内容。"""
-
     # 肤质护理建议提示词（从 faceplus_service.py 迁移）
     SKIN_SUGGESTION_PROMPT = (
         "用户肤质分析结果：皮肤类型为{skin_type_name}，检测到以下问题：{issues_str}。\n\n"
         "请针对每个问题给出具体、可操作的护理建议，返回JSON格式：\n"
-        '{"suggestions": ["建议1", "建议2", "建议3"]}\n\n'
+        '{{"suggestions": ["建议1", "建议2", "建议3"]}}\n\n'
         "要求：\n"
         "1. 每条建议要具体，包含具体的产品类型或操作方法\n"
         "2. 建议要结合用户的皮肤类型\n"
@@ -306,15 +195,6 @@ AI 的回复、分析、推荐一律不记住。问题和请求一律不记住�
         """
         return self.JUDGE_PROMPT.format(text=content)
 
-    def build_skin_analysis_prompt(self) -> str:
-        """
-        构建肤质分析提示词
-        
-        Returns:
-            肤质分析提示词
-        """
-        return self.SKIN_ANALYSIS_PROMPT
-
     def build_skin_suggestion_prompt(self, skin_type_name: str, issues_str: str) -> str:
         """
         构建肤质护理建议提示词
@@ -384,117 +264,5 @@ AI 的回复、分析、推荐一律不记住。问题和请求一律不记住�
             goal_context=goal_context
         )
     
-    def build_evaluation_prompt(
-        self,
-        height: float,
-        weight: float,
-        age: int,
-        gender: str,
-        questionnaire: dict
-    ) -> str:
-        """
-        构建评估提示词
-        
-        Args:
-            height: 身高
-            weight: 体重
-            age: 年龄
-            gender: 性别
-            questionnaire: 问卷答案
-            
-        Returns:
-            评估提示词
-        """
-        bmi = weight / (height / 100) ** 2
-        gender_cn = {"male": "男", "female": "女"}.get(gender, "其他")
-        
-        return self.EVALUATION_PROMPT.format(
-            height=height,
-            weight=weight,
-            bmi=f"{bmi:.1f}",
-            age=age,
-            gender_cn=gender_cn,
-            exercise_answer=questionnaire.get("exercise", "未回答"),
-            diet_answer=questionnaire.get("diet", "未回答"),
-            sleep_answer=questionnaire.get("sleep", "未回答"),
-            appearance_answer=questionnaire.get("appearance", "未回答")
-        )
-
-    def build_questionnaire_prompt(
-        self,
-        height: float,
-        weight: float,
-        age: int,
-        gender: str,
-        questionnaire: dict[str, str]
-    ) -> str:
-        """
-        构建问卷评估提示词（含 BMI 标签和评分标准）
-
-        Args:
-            height: 身高(cm)
-            weight: 体重(kg)
-            age: 年龄
-            gender: 性别
-            questionnaire: 问卷答案
-
-        Returns:
-            问卷评估提示词
-        """
-        bmi = weight / (height / 100) ** 2
-        gender_cn = {"male": "男", "female": "女"}.get(gender, "其他")
-        bmi_label = "偏瘦" if bmi < 18.5 else "正常" if bmi < 24 else "偏胖" if bmi < 28 else "肥胖"
-
-        def clean_answer(text: str) -> str:
-            return text.replace('"', '').replace("'", "").replace('\\', '/')
-
-        return self.QUESTIONNAIRE_PROMPT.format(
-            height=height, weight=weight, bmi=bmi, bmi_label=bmi_label,
-            age=age, gender_cn=gender_cn,
-            exercise_answer=clean_answer(questionnaire.get("exercise", "未回答")),
-            diet_answer=clean_answer(questionnaire.get("diet", "未回答")),
-            sleep_answer=clean_answer(questionnaire.get("sleep", "未回答")),
-            appearance_answer=clean_answer(questionnaire.get("appearance", "未回答")),
-        )
-
-    def build_comprehensive_prompt(
-        self,
-        height: float,
-        weight: float,
-        age: int,
-        gender: str,
-        skin_analysis: dict = None
-    ) -> str:
-        """
-        构建综合评估提示词（图片 + 旷视肤质 + 身体数据）
-
-        Args:
-            height: 身高(cm)
-            weight: 体重(kg)
-            age: 年龄
-            gender: 性别
-            skin_analysis: 旷视肤质分析结果
-
-        Returns:
-            综合评估提示词
-        """
-        bmi = weight / (height / 100) ** 2
-        gender_cn = {"male": "男", "female": "女"}.get(gender, "其他")
-        bmi_label = "偏瘦" if bmi < 18.5 else "正常" if bmi < 24 else "偏胖" if bmi < 28 else "肥胖"
-
-        skin_info = ""
-        if skin_analysis:
-            skin_info = f"""【肤质分析结果】
-- 皮肤类型：{skin_analysis.get('skin_type_name', '未知')}
-- 肤质评分：{skin_analysis.get('skin_score', 0)}/100
-- 存在问题：{', '.join(skin_analysis.get('issues', ['无']))}"""
-
-        return self.COMPREHENSIVE_PROMPT.format(
-            height=height, weight=weight, bmi=bmi,
-            bmi_label=bmi_label,
-            age=age, gender_cn=gender_cn, skin_info=skin_info
-        )
-
-
 # 全局实例
 prompt_service = PromptService()

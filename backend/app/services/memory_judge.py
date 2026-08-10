@@ -171,8 +171,9 @@ class LLMBasedJudge:
 
             return (should_remember, importance, memory_type)
 
-        except (json.JSONDecodeError, KeyError, ValueError) as e:
+        except Exception as e:
             # 解析失败时返回默认值
+            logger.warning(f"LLM memory judgment failed: {e}")
             return (False, 0.5, "conversation")
 
 

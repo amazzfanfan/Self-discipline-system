@@ -1,39 +1,18 @@
-import { useState, useEffect, createContext, useContext, ReactNode, useCallback } from 'react';
+import { useCallback, useState } from 'react';
+import type { ReactNode } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-
-interface Notification {
-  id: string;
-  type: 'success' | 'warning' | 'error' | 'info';
-  title: string;
-  message: string;
-  duration?: number;
-}
-
-interface NotificationContextType {
-  notifications: Notification[];
-  addNotification: (notification: Omit<Notification, 'id'>) => void;
-  removeNotification: (id: string) => void;
-}
-
-const NotificationContext = createContext<NotificationContextType | null>(null);
-
-export function useNotification() {
-  const context = useContext(NotificationContext);
-  if (!context) {
-    throw new Error('useNotification must be used within NotificationProvider');
-  }
-  return context;
-}
+import { NotificationContext } from './notification-context';
+import type { NotificationMessage } from './notification-context';
 
 export function NotificationProvider({ children }: { children: ReactNode }) {
-  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [notifications, setNotifications] = useState<NotificationMessage[]>([]);
 
   const removeNotification = useCallback((id: string) => {
     setNotifications(prev => prev.filter(n => n.id !== id));
   }, []);
 
-  const addNotification = useCallback((notification: Omit<Notification, 'id'>) => {
-    const id = Date.now().toString() + Math.random().toString(36).substr(2, 9);
+  const addNotification = useCallback((notification: Omit<NotificationMessage, 'id'>) => {
+    const id = crypto.randomUUID();
     const newNotification = { ...notification, id };
     setNotifications(prev => [...prev, newNotification]);
 
@@ -56,7 +35,7 @@ function NotificationContainer({
   notifications, 
   removeNotification 
 }: { 
-  notifications: Notification[];
+  notifications: NotificationMessage[];
   removeNotification: (id: string) => void;
 }) {
   return (
@@ -78,7 +57,7 @@ function NotificationItem({
   notification, 
   onClose 
 }: { 
-  notification: Notification;
+  notification: NotificationMessage;
   onClose: () => void;
 }) {
   const typeConfig = {

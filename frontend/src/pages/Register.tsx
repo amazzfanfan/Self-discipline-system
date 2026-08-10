@@ -15,12 +15,6 @@ export default function Register() {
     e.preventDefault();
     try {
       await register(email, password, nickname);
-      // Auto-login after register, then go to onboarding
-      const { default: api } = await import('../services/api');
-      const { data } = await api.post('/auth/login', { email, password });
-      localStorage.setItem('access_token', data.access_token);
-      localStorage.setItem('refresh_token', data.refresh_token);
-      useAuthStore.setState({ isAuthenticated: true });
       navigate('/onboarding');
     } catch {
       setError('注册失败，邮箱可能已被使用');
@@ -40,8 +34,8 @@ export default function Register() {
             className="w-full px-4 py-3 bg-slate-800 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500" required />
           <input type="email" placeholder="邮箱" value={email} onChange={(e) => setEmail(e.target.value)}
             className="w-full px-4 py-3 bg-slate-800 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500" required />
-          <input type="password" placeholder="密码（至少6位）" value={password} onChange={(e) => setPassword(e.target.value)}
-            minLength={6} className="w-full px-4 py-3 bg-slate-800 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500" required />
+          <input type="password" placeholder="密码（至少10位）" value={password} onChange={(e) => setPassword(e.target.value)}
+            minLength={10} maxLength={128} className="w-full px-4 py-3 bg-slate-800 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500" required />
           {error && <p className="text-red-400 text-sm">{error}</p>}
           <button type="submit" className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors">
             注册

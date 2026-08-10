@@ -21,6 +21,7 @@ class UserScore(Base):
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
     dimension = Column(SAEnum(DimensionEnum), nullable=False)
     score = Column(Numeric(4, 1), default=50.0)
+    baseline_score = Column(Numeric(4, 1), default=50.0, nullable=False)
     total_positive_count = Column(Integer, default=0)
     total_negative_count = Column(Integer, default=0)
     streak_days = Column(Integer, default=0)

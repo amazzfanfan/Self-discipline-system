@@ -12,11 +12,11 @@ class WeightRequest(BaseModel):
     weight_kg: float
 
 @router.post("")
-async def record_weight(req: WeightRequest, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def record_weight(req: WeightRequest, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db, scope="function")):
     return await record_weight_service(db, str(user.id), req.weight_kg)
 
 @router.get("/history")
-async def get_weight_history(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db), limit: int = 30):
+async def get_weight_history(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db, scope="function"), limit: int = 30):
     from sqlalchemy import select
     from app.models.weight import WeightRecord
     result = await db.execute(

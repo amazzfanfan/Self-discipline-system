@@ -23,7 +23,9 @@ class Memory(Base):
     role = Column(String(20), nullable=False)  # user, system
     
     # 向量嵌入
-    embedding = Column(Vector(1536))  # OpenAI ada-002 维度
+    # 向量由远程百炼 Embedding API 生成；本地 pgvector 只负责存储与检索。
+    embedding = Column(Vector(1536))
+    embedding_model = Column(String(100))
     
     # 元数据
     memory_type = Column(String(50), default="conversation")  # conversation, preference, fact
@@ -55,6 +57,7 @@ class Memory(Base):
             "content": self.content,
             "role": self.role,
             "memory_type": self.memory_type,
+            "embedding_model": self.embedding_model,
             "importance_score": self.importance_score,
             "access_count": self.access_count,
             "last_accessed": self.last_accessed.isoformat() if self.last_accessed else None,
