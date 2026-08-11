@@ -10,6 +10,7 @@ from app.core.time import app_timezone, local_now, local_today
 from app.models.task import Task, TaskStatusEnum
 from app.services.notification_service import create_notification
 from app.services.score_service import record_negative
+from app.services.task_event_service import record_task_event
 
 
 TaskScheduleMode = Literal["later", "reschedule", "excuse"]
@@ -39,6 +40,7 @@ async def maintain_task_states(db: AsyncSession, user_id=None) -> set[str]:
 
     for task in result.scalars().all():
         changed = False
+        previous_status = task.status
         if (
             task.status == TaskStatusEnum.deferred
             and task.disposition == "snoozed"
@@ -56,6 +58,16 @@ async def maintain_task_states(db: AsyncSession, user_id=None) -> set[str]:
                     task.dimension,
                     f"任务过期：{task.title}",
                     task.scheduled_date,
+                )
+                await record_task_event(
+                    db,
+                    task,
+                    "expired",
+                    actor="system",
+                    source="scheduler",
+                    reason=task.disposition_reason,
+                    from_status=previous_status,
+                    to_status=task.status,
                 )
             else:
                 task.status = TaskStatusEnum.pending
@@ -79,6 +91,16 @@ async def maintain_task_states(db: AsyncSession, user_id=None) -> set[str]:
                     },
                     setting_key="task_reminders",
                 )
+                await record_task_event(
+                    db,
+                    task,
+                    "snooze_elapsed",
+                    actor="system",
+                    source="scheduler",
+                    reason="稍后提醒时间到达",
+                    from_status=previous_status,
+                    to_status=task.status,
+                )
             changed = True
         elif (
             task.status in {TaskStatusEnum.pending, TaskStatusEnum.in_progress}
@@ -93,6 +115,16 @@ async def maintain_task_states(db: AsyncSession, user_id=None) -> set[str]:
                 task.dimension,
                 f"任务过期：{task.title}",
                 task.scheduled_date,
+            )
+            await record_task_event(
+                db,
+                task,
+                "expired",
+                actor="system",
+                source="scheduler",
+                reason=task.disposition_reason,
+                from_status=previous_status,
+                to_status=task.status,
             )
             changed = True
 
@@ -110,6 +142,8 @@ async def apply_task_schedule(
     deferred_until: datetime | None = None,
     target_date: date | None = None,
     reason: str | None = None,
+    actor: str = "user",
+    source: str = "api",
 ) -> dict:
     """Apply a user-selected schedule outcome to an unfinished task."""
     if task.status not in {
@@ -121,6 +155,7 @@ async def apply_task_schedule(
 
     today = local_today()
     clean_reason = reason.strip()[:200] if reason and reason.strip() else None
+    previous_status = task.status
 
     if mode == "later":
         if deferred_until is None:
@@ -139,6 +174,17 @@ async def apply_task_schedule(
         task.disposition_reason = clean_reason
         task.deferred_until = wake_at
         task.defer_count = (task.defer_count or 0) + 1
+        await record_task_event(
+            db,
+            task,
+            "snoozed",
+            actor=actor,
+            source=source,
+            reason=clean_reason,
+            from_status=previous_status,
+            to_status=task.status,
+            metadata={"deferred_until": wake_at.isoformat()},
+        )
         return {
             "success": True,
             "message": f"已稍后提醒：{task.title}",
@@ -156,6 +202,16 @@ async def apply_task_schedule(
         task.disposition_reason = clean_reason or "用户选择今日免做"
         task.deferred_until = None
         task.defer_count = (task.defer_count or 0) + 1
+        await record_task_event(
+            db,
+            task,
+            "excused",
+            actor=actor,
+            source=source,
+            reason=task.disposition_reason,
+            from_status=previous_status,
+            to_status=task.status,
+        )
         return {
             "success": True,
             "message": f"今日已免做：{task.title}",
@@ -186,6 +242,7 @@ async def apply_task_schedule(
             "message": "目标日期已有同维度任务，请选择其他日期",
         }
 
+    previous_date = task.scheduled_date
     if task.original_scheduled_date is None:
         task.original_scheduled_date = task.scheduled_date
     task.scheduled_date = target_date
@@ -194,6 +251,20 @@ async def apply_task_schedule(
     task.disposition_reason = clean_reason
     task.deferred_until = None
     task.defer_count = (task.defer_count or 0) + 1
+    await record_task_event(
+        db,
+        task,
+        "rescheduled",
+        actor=actor,
+        source=source,
+        reason=clean_reason,
+        from_status=previous_status,
+        to_status=task.status,
+        metadata={
+            "from_date": previous_date.isoformat(),
+            "to_date": target_date.isoformat(),
+        },
+    )
     return {
         "success": True,
         "message": f"任务已改期至 {target_date.isoformat()}：{task.title}",

@@ -18,6 +18,7 @@ from app.services.behavior_service import (
 )
 from app.services.cache_service import invalidate_tasks
 from app.services.task_state_service import maintain_task_states
+from app.services.task_event_service import record_task_event
 
 router = APIRouter(prefix="/api/behavior", tags=["behavior"])
 
@@ -79,12 +80,24 @@ async def upsert_today_checkin(
     else:
         desired_budget = configured_budget
     for task in pending_tasks[desired_budget:]:
+        previous_status = task.status
         task.status = TaskStatusEnum.deferred
         task.disposition = "excused"
         task.disposition_reason = "根据今日可用时间自动免除"
         task.deferred_until = None
         task.defer_count = (task.defer_count or 0) + 1
         task.rationale = "根据今日可用时间自动免除，不计入行为完成率"
+        await record_task_event(
+            db,
+            task,
+            "excused",
+            actor="system",
+            source="checkin",
+            reason=task.disposition_reason,
+            from_status=previous_status,
+            to_status=task.status,
+            metadata={"available_minutes": body.available_minutes},
+        )
     if body.energy <= 2:
         for task in pending_tasks[:desired_budget]:
             task.difficulty = DifficultyEnum.easy

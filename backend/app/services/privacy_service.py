@@ -10,7 +10,7 @@ from app.models.goal import Goal
 from app.models.memory import Memory
 from app.models.notification import UserNotification
 from app.models.score import ScoreHistory, UserScore
-from app.models.task import Task
+from app.models.task import Task, TaskEvent
 from app.models.user import User, UserProfile
 from app.models.weight import WeightRecord
 from app.services.cache_service import revoke_all_refresh_sessions
@@ -25,6 +25,7 @@ async def export_user_data(db, user: User) -> dict:
     profile = user.profile
     scores = await all_items(UserScore)
     tasks = await all_items(Task)
+    task_events = await all_items(TaskEvent)
     conversations = await all_items(Conversation)
     memories = await all_items(Memory)
     goals = await all_items(Goal)
@@ -73,6 +74,21 @@ async def export_user_data(db, user: User) -> dict:
                 "feedback": item.user_feedback,
             }
             for item in tasks
+        ],
+        "task_events": [
+            {
+                "id": str(item.id),
+                "task_id": str(item.task_id),
+                "event_type": item.event_type,
+                "from_status": item.from_status,
+                "to_status": item.to_status,
+                "reason": item.reason,
+                "actor": item.actor,
+                "source": item.source,
+                "metadata": item.event_metadata,
+                "created_at": item.created_at.isoformat(),
+            }
+            for item in task_events
         ],
         "conversations": [
             {"role": item.role.value, "content": item.content, "created_at": item.created_at.isoformat()}

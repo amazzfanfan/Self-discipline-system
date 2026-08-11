@@ -6,6 +6,7 @@ from app.models.score import DimensionEnum
 from app.services.score_service import record_task_completion, record_negative
 from app.core.time import local_today
 from app.services.task_state_service import apply_task_schedule, maintain_task_states
+from app.services.task_event_service import record_task_event
 
 
 async def complete_task_by_dimension(db: AsyncSession, user_id: str, dimension: str) -> dict:
@@ -29,6 +30,7 @@ async def complete_task_by_dimension(db: AsyncSession, user_id: str, dimension: 
     if not task:
         return {"success": False, "message": "该维度今日无待完成任务"}
 
+    previous_status = task.status
     task.status = TaskStatusEnum.completed
     task.completed_at = datetime.now(timezone.utc)
     task.disposition = None
@@ -36,6 +38,15 @@ async def complete_task_by_dimension(db: AsyncSession, user_id: str, dimension: 
     task.deferred_until = None
 
     score_change = await record_task_completion(db, user_id, dim_enum, task.scheduled_date)
+    await record_task_event(
+        db,
+        task,
+        "completed",
+        actor="user",
+        source="chat",
+        from_status=previous_status,
+        to_status=task.status,
+    )
     return {
         "success": True,
         "message": f"任务已完成：{task.title}",
@@ -65,6 +76,7 @@ async def skip_task_by_dimension(db: AsyncSession, user_id: str, dimension: str)
     if not task:
         return {"success": False, "message": "该维度今日无待完成任务"}
 
+    previous_status = task.status
     task.status = TaskStatusEnum.failed
     task.disposition = "skipped"
     task.disposition_reason = "用户明确跳过任务"
@@ -76,6 +88,16 @@ async def skip_task_by_dimension(db: AsyncSession, user_id: str, dimension: str)
         dim_enum,
         f"跳过任务：{task.title}",
         task.scheduled_date,
+    )
+    await record_task_event(
+        db,
+        task,
+        "skipped",
+        actor="user",
+        source="chat",
+        reason=task.disposition_reason,
+        from_status=previous_status,
+        to_status=task.status,
     )
     return {
         "success": True,
@@ -113,6 +135,7 @@ async def replace_task_by_dimension(
         return {"success": False, "message": "该维度今日没有可修改的未完成任务"}
 
     old_title = task.title
+    previous_status = task.status
     task.title = title.strip()[:200]
     task.description = ""
     task.rationale = (reason or "用户通过对话调整了今日任务")[:500]
@@ -125,6 +148,17 @@ async def replace_task_by_dimension(
     task.disposition = None
     task.disposition_reason = None
     task.deferred_until = None
+    await record_task_event(
+        db,
+        task,
+        "replaced",
+        actor="user",
+        source="chat",
+        reason=reason,
+        from_status=previous_status,
+        to_status=task.status,
+        metadata={"old_title": old_title, "new_title": task.title},
+    )
     return {
         "success": True,
         "message": f"任务已更新：{task.title}",
@@ -170,6 +204,8 @@ async def defer_task_by_dimension(
         deferred_until=deferred_until,
         target_date=target_date,
         reason=reason,
+        actor="user",
+        source="chat",
     )
 
 
@@ -189,10 +225,20 @@ async def resume_task_by_dimension(db: AsyncSession, user_id: str, dimension: st
     task = result.scalars().first()
     if not task:
         return {"success": False, "message": "该维度今日没有已暂缓任务"}
+    previous_status = task.status
     task.status = TaskStatusEnum.pending
     task.disposition = None
     task.disposition_reason = None
     task.deferred_until = None
+    await record_task_event(
+        db,
+        task,
+        "resumed",
+        actor="user",
+        source="chat",
+        from_status=previous_status,
+        to_status=task.status,
+    )
     return {
         "success": True,
         "message": f"任务已恢复为待完成：{task.title}",

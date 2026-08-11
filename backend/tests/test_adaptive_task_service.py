@@ -9,12 +9,22 @@ from app.services.adaptive_task_service import (
 )
 
 
-def _task(status, feedback=None, defer_count=0, disposition=None):
+def _task(status, feedback=None, defer_count=0, disposition=None, task_id=None):
     return SimpleNamespace(
+        id=task_id or object(),
         status=status,
         user_feedback=feedback,
         defer_count=defer_count,
         disposition=disposition,
+    )
+
+
+def _event(task_id, event_type, *, actor, source):
+    return SimpleNamespace(
+        task_id=task_id,
+        event_type=event_type,
+        actor=actor,
+        source=source,
     )
 
 
@@ -72,3 +82,35 @@ def test_budget_and_dimension_priority_use_checkin_and_goals():
         has_goal=False,
         signals=signals,
     )
+
+
+def test_system_checkin_excuse_is_not_treated_as_user_adjustment():
+    task_id = "task-1"
+    history = [
+        _task(
+            TaskStatusEnum.deferred,
+            defer_count=1,
+            disposition="excused",
+            task_id=task_id,
+        )
+    ]
+    events = [_event(task_id, "excused", actor="system", source="checkin")]
+
+    signals = analyze_history(history, events)
+
+    assert signals.total_adjustments == 0
+    assert signals.adjustment_rate == 0
+
+
+def test_user_snooze_is_counted_from_event_log():
+    task_id = "task-1"
+    history = [_task(TaskStatusEnum.completed, defer_count=3, task_id=task_id)]
+    events = [
+        _event(task_id, "created", actor="system", source="scheduler"),
+        _event(task_id, "snoozed", actor="user", source="api"),
+    ]
+
+    signals = analyze_history(history, events)
+
+    assert signals.total_adjustments == 1
+    assert signals.adjustment_rate == 1

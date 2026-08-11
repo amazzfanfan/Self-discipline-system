@@ -36,7 +36,7 @@ class AdaptiveDecision:
     metadata: dict
 
 
-def analyze_history(tasks: list) -> HistorySignals:
+def analyze_history(tasks: list, events: list | None = None) -> HistorySignals:
     decided = [
         task
         for task in tasks
@@ -50,20 +50,41 @@ def analyze_history(tasks: list) -> HistorySignals:
         for task in decided
     )
     adherence = completed / len(decided) if decided else 0.6
-    adjusted_tasks = [
+    user_adjustment_types = {"snoozed", "rescheduled", "excused"}
+    user_adjustments = [
+        event
+        for event in (events or [])
+        if getattr(event, "event_type", None) in user_adjustment_types
+        and getattr(event, "actor", None) in {"user", "agent"}
+    ]
+    observed_task_ids = {
+        getattr(event, "task_id", None)
+        for event in (events or [])
+        if getattr(event, "event_type", None) != "legacy_snapshot"
+    }
+    legacy_adjusted_tasks = [
         task
         for task in tasks
-        if (_value(getattr(task, "disposition", None)) in {"excused", "rescheduled"})
-        or (getattr(task, "defer_count", 0) or 0) > 0
+        if getattr(task, "id", None) not in observed_task_ids
+        and (
+            _value(getattr(task, "disposition", None)) in {"excused", "rescheduled"}
+            or (getattr(task, "defer_count", 0) or 0) > 0
+        )
     ]
+    adjusted_task_ids = {
+        getattr(event, "task_id", None) for event in user_adjustments
+    } | {getattr(task, "id", id(task)) for task in legacy_adjusted_tasks}
+    total_adjustments = len(user_adjustments) + sum(
+        getattr(task, "defer_count", 0) or 0 for task in legacy_adjusted_tasks
+    )
     feedback = [getattr(task, "user_feedback", None) for task in tasks]
     recent_decided = decided[:3]
     return HistorySignals(
         history_count=len(tasks),
         decided_count=len(decided),
         adherence=round(adherence, 3),
-        total_adjustments=sum(getattr(task, "defer_count", 0) or 0 for task in tasks),
-        adjustment_rate=round(len(adjusted_tasks) / len(tasks), 3) if tasks else 0.0,
+        total_adjustments=total_adjustments,
+        adjustment_rate=round(len(adjusted_task_ids) / len(tasks), 3) if tasks else 0.0,
         too_easy=feedback.count("too_easy"),
         too_hard=feedback.count("too_hard"),
         not_suitable=feedback.count("not_suitable"),

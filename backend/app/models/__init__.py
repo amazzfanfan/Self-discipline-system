@@ -1,6 +1,6 @@
 from app.models.user import User, UserProfile, GenderEnum
 from app.models.score import UserScore, ScoreHistory, DimensionEnum
-from app.models.task import Task, TaskStatusEnum, DifficultyEnum
+from app.models.task import Task, TaskEvent, TaskStatusEnum, DifficultyEnum
 from app.models.conversation import Conversation, RoleEnum
 from app.models.weight import WeightRecord
 from app.models.memory import Memory
@@ -13,7 +13,7 @@ from app.models.notification import UserNotification
 __all__ = [
     "User", "UserProfile", "GenderEnum",
     "UserScore", "ScoreHistory", "DimensionEnum",
-    "Task", "TaskStatusEnum", "DifficultyEnum",
+    "Task", "TaskEvent", "TaskStatusEnum", "DifficultyEnum",
     "Conversation", "RoleEnum",
     "WeightRecord",
     "Memory",

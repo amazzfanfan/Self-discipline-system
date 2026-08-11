@@ -8,11 +8,12 @@ from sqlalchemy import select, and_
 from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.models.user import User
-from app.models.task import Task, TaskStatusEnum
+from app.models.task import Task, TaskEvent, TaskStatusEnum
 from app.models.assessment import AssessmentRun
 from app.services.cache_service import get_cached_tasks, set_cached_tasks, invalidate_tasks, invalidate_scores
 from app.core.time import local_today
 from app.services.task_state_service import apply_task_schedule, maintain_task_states
+from app.services.task_event_service import record_task_event
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
@@ -117,6 +118,7 @@ async def complete_task(task_id: str, user: User = Depends(get_current_user), db
     if task.status not in {TaskStatusEnum.pending, TaskStatusEnum.in_progress, TaskStatusEnum.deferred}:
         raise HTTPException(409, "Task is no longer completable")
 
+    previous_status = task.status
     task.status = TaskStatusEnum.completed
     task.completed_at = datetime.now(timezone.utc)
     task.disposition = None
@@ -125,6 +127,15 @@ async def complete_task(task_id: str, user: User = Depends(get_current_user), db
 
     from app.services.score_service import record_task_completion
     score_change = await record_task_completion(db, user.id, task.dimension, task.scheduled_date)
+    await record_task_event(
+        db,
+        task,
+        "completed",
+        actor="user",
+        source="api",
+        from_status=previous_status,
+        to_status=task.status,
+    )
 
     # 清除缓存
     await invalidate_tasks(str(user.id))
@@ -148,6 +159,14 @@ async def save_task_feedback(
     if not task:
         raise HTTPException(404, "Task not found")
     task.user_feedback = body.feedback
+    await record_task_event(
+        db,
+        task,
+        "feedback_recorded",
+        actor="user",
+        source="api",
+        metadata={"feedback": body.feedback},
+    )
     return {"message": "反馈已记录", "feedback": body.feedback}
 
 
@@ -207,12 +226,56 @@ async def resume_task(
         raise HTTPException(409, "Only deferred tasks can be resumed")
     if task.scheduled_date != local_today():
         raise HTTPException(409, "Only today's deferred task can be resumed")
+    previous_status = task.status
     task.status = TaskStatusEnum.pending
     task.disposition = None
     task.disposition_reason = None
     task.deferred_until = None
+    await record_task_event(
+        db,
+        task,
+        "resumed",
+        actor="user",
+        source="api",
+        from_status=previous_status,
+        to_status=task.status,
+    )
     await invalidate_tasks(str(user.id))
     return {"message": "任务已恢复为待完成"}
+
+
+@router.get("/{task_id}/events")
+async def get_task_events(
+    task_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    task = await db.scalar(
+        select(Task).where(and_(Task.id == task_id, Task.user_id == user.id))
+    )
+    if not task:
+        raise HTTPException(404, "Task not found")
+    events = (
+        await db.execute(
+            select(TaskEvent)
+            .where(TaskEvent.task_id == task.id)
+            .order_by(TaskEvent.created_at.asc())
+        )
+    ).scalars().all()
+    return [
+        {
+            "id": str(event.id),
+            "event_type": event.event_type,
+            "from_status": event.from_status,
+            "to_status": event.to_status,
+            "reason": event.reason,
+            "actor": event.actor,
+            "source": event.source,
+            "metadata": event.event_metadata or {},
+            "created_at": event.created_at.isoformat(),
+        }
+        for event in events
+    ]
 
 
 @router.get("")

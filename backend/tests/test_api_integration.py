@@ -15,7 +15,7 @@ from app.main import app
 from app.models.assessment import AssessmentRun
 from app.models.notification import UserNotification
 from app.models.score import DimensionEnum, UserScore
-from app.models.task import DifficultyEnum, Task, TaskStatusEnum
+from app.models.task import DifficultyEnum, Task, TaskEvent, TaskStatusEnum
 from app.models.user import User, UserProfile
 
 
@@ -126,6 +126,15 @@ async def _exercise_api_contracts(monkeypatch):
                 )
                 assert exercise_score.streak_days == 1
                 assert exercise_score.last_completed_date == local_today()
+                task_events = (
+                    await session.execute(
+                        select(TaskEvent).where(TaskEvent.task_id == task.id)
+                    )
+                ).scalars().all()
+                assert [event.event_type for event in task_events] == ["completed"]
+                timeline_response = await client.get(f"/api/tasks/{task.id}/events")
+                assert timeline_response.status_code == 200
+                assert timeline_response.json()[0]["source"] == "api"
 
                 metrics_response = await client.get("/api/behavior/metrics")
                 assert metrics_response.status_code == 200

@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, DateTime, Date, ForeignKey, Text, Integer, JSON, Enum as SAEnum, UniqueConstraint
+from sqlalchemy import Column, String, DateTime, Date, ForeignKey, Text, Integer, JSON, Enum as SAEnum, UniqueConstraint, Index
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.core.database import Base
@@ -56,3 +56,30 @@ class Task(Base):
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     user = relationship("User", back_populates="tasks")
+    events = relationship("TaskEvent", back_populates="task", cascade="all, delete-orphan")
+
+
+class TaskEvent(Base):
+    __tablename__ = "task_events"
+    __table_args__ = (
+        Index("ix_task_events_task_created", "task_id", "created_at"),
+        Index("ix_task_events_user_created", "user_id", "created_at"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("tasks.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    event_type = Column(String(32), nullable=False)
+    from_status = Column(String(24))
+    to_status = Column(String(24))
+    reason = Column(String(200))
+    actor = Column(String(20), nullable=False, default="system")
+    source = Column(String(30), nullable=False, default="system")
+    event_metadata = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+    task = relationship("Task", back_populates="events")

@@ -9,7 +9,7 @@ from app.core.database import async_session
 from app.core.time import local_now, local_today
 from app.models.user import User, UserProfile
 from app.models.score import UserScore, DimensionEnum
-from app.models.task import Task, TaskStatusEnum
+from app.models.task import Task, TaskEvent, TaskStatusEnum
 from app.models.conversation import Conversation, RoleEnum
 from app.models.goal import GoalStatus
 from app.models.behavior import DailyCheckIn
@@ -19,6 +19,7 @@ from app.services.goal_service import goal_service
 from app.services.cache_service import acquire_lock, invalidate_tasks, release_lock
 from app.services.task_state_service import maintain_task_states
 from app.services.notification_service import create_notification
+from app.services.task_event_service import record_task_event
 from app.services.adaptive_task_service import (
     ADAPTATION_VERSION,
     analyze_history,
@@ -82,6 +83,23 @@ async def generate_tasks_for_user(
             ).order_by(Task.scheduled_date.desc())
         )
         recent_tasks = recent_result.scalars().all()
+        recent_task_ids = [task.id for task in recent_tasks]
+        if recent_task_ids:
+            event_result = await session.execute(
+                select(TaskEvent).where(TaskEvent.task_id.in_(recent_task_ids))
+            )
+            recent_events = event_result.scalars().all()
+        else:
+            recent_events = []
+        dimension_by_task_id = {task.id: task.dimension for task in recent_tasks}
+        events_by_dimension = {
+            dim: [
+                event
+                for event in recent_events
+                if dimension_by_task_id.get(event.task_id) == dim
+            ]
+            for dim in TASKS_PER_DIMENSION
+        }
         checkin_result = await session.execute(
             select(DailyCheckIn).where(
                 DailyCheckIn.user_id == user_id,
@@ -114,7 +132,10 @@ async def generate_tasks_for_user(
             for dim in TASKS_PER_DIMENSION
         }
         signals_by_dimension = {
-            dim: analyze_history(history_by_dimension[dim])
+            dim: analyze_history(
+                history_by_dimension[dim],
+                events_by_dimension[dim],
+            )
             for dim in TASKS_PER_DIMENSION
         }
         ordered_dimensions = sorted(
@@ -147,6 +168,17 @@ async def generate_tasks_for_user(
                     task.estimated_minutes = adaptation.estimated_minutes
                     task.rationale = adaptation.rationale
                     task.adaptation_metadata = adaptation.metadata
+                    await record_task_event(
+                        session,
+                        task,
+                        "adapted",
+                        actor="system",
+                        source="scheduler",
+                        reason=adaptation.rationale,
+                        from_status=task.status,
+                        to_status=task.status,
+                        metadata={"version": ADAPTATION_VERSION},
+                    )
             return
 
         task_specs = []
@@ -236,11 +268,27 @@ async def generate_tasks_for_user(
             estimated_minutes = adaptation.estimated_minutes
             task = spec["existing_task"]
             if task:
+                previous_title = task.title
                 task.title = task_title
                 task.rationale = rationale
                 task.estimated_minutes = estimated_minutes
                 task.difficulty = difficulty
                 task.adaptation_metadata = adaptation.metadata
+                await record_task_event(
+                    session,
+                    task,
+                    "regenerated",
+                    actor="system",
+                    source="scheduler",
+                    reason=rationale,
+                    from_status=task.status,
+                    to_status=task.status,
+                    metadata={
+                        "old_title": previous_title,
+                        "new_title": task_title,
+                        "version": ADAPTATION_VERSION,
+                    },
+                )
             else:
                 task = Task(
                     user_id=user_id,
@@ -254,6 +302,16 @@ async def generate_tasks_for_user(
                     adaptation_metadata=adaptation.metadata,
                 )
                 session.add(task)
+                await session.flush()
+                await record_task_event(
+                    session,
+                    task,
+                    "created",
+                    actor="system",
+                    source="scheduler",
+                    to_status=task.status or TaskStatusEnum.pending,
+                    metadata={"version": ADAPTATION_VERSION},
+                )
             generated_tasks.append((dim, task_title, difficulty))
 
         # Send system chat message announcing the tasks
