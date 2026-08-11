@@ -68,6 +68,7 @@ dimension 只能是: exercise, diet, sleep, appearance
     TASK_PROMPT = """请为用户生成1个{dimension}维度的今日任务。
 难度：{difficulty}，当前评分：{score}分，最近做过的：{recent}（避免重复）。
 要求：具体可执行，有明确完成标准。
+{adaptation_context}
 
 重要：{dim_guide}
 {goal_context}
@@ -231,7 +232,8 @@ AI 的回复、分析、推荐一律不记住。问题和请求一律不记住�
         score: float,
         difficulty: str,
         recent_tasks: list[str],
-        goal_content: str = None
+        goal_content: str = None,
+        adaptation_context: str | None = None,
     ) -> str:
         """
         构建任务生成提示词
@@ -261,7 +263,8 @@ AI 的回复、分析、推荐一律不记住。问题和请求一律不记住�
             score=score,
             recent=recent,
             dim_guide=dim_guide,
-            goal_context=goal_context
+            goal_context=goal_context,
+            adaptation_context=adaptation_context or "",
         )
     
 # 全局实例

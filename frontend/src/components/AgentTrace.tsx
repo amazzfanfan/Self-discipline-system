@@ -17,12 +17,19 @@ const traceStyle: Record<AgentTraceEvent['type'], { icon: string; color: string;
   error: { icon: '×', color: 'text-rose-300', ring: 'bg-rose-400/15 border-rose-400/25' },
 };
 
+function formatDuration(durationMs: number) {
+  if (durationMs < 1) return '<1ms';
+  if (durationMs < 1000) return `${Math.round(durationMs)}ms`;
+  return `${(durationMs / 1000).toFixed(1)}s`;
+}
+
 export default function AgentTrace({ trace, metrics, live = false }: AgentTraceProps) {
   const [expanded, setExpanded] = useState(live);
   if (!trace.length) return null;
 
   const toolCount = metrics?.tool_calls ?? trace.filter((item) => item.type === 'tool_call').length;
   const duration = (metrics?.planning_duration_ms ?? 0) + (metrics?.response_duration_ms ?? 0);
+  const hasDuration = metrics?.planning_duration_ms != null || metrics?.response_duration_ms != null;
 
   return (
     <div className="mb-3 overflow-hidden rounded-xl border border-white/8 bg-slate-950/45">
@@ -45,7 +52,11 @@ export default function AgentTrace({ trace, metrics, live = false }: AgentTraceP
         </div>
         <div className="flex flex-shrink-0 items-center gap-2 text-[10px] text-slate-500">
           {toolCount > 0 && <span>{toolCount} 次工具</span>}
-          {duration > 0 && <span>{(duration / 1000).toFixed(1)}s</span>}
+          {hasDuration && (
+            <span title="从 Agent 开始规划到回复生成完成，不含网络传输和前端渲染">
+              Agent 后端耗时 {formatDuration(duration)}
+            </span>
+          )}
           <motion.span animate={{ rotate: expanded ? 180 : 0 }} className="text-slate-600">⌄</motion.span>
         </div>
       </button>
@@ -82,8 +93,8 @@ export default function AgentTrace({ trace, metrics, live = false }: AgentTraceP
                       <div className="flex flex-wrap items-center gap-2">
                         <span className={`text-[11px] font-medium ${style.color}`}>{item.title}</span>
                         {item.tool && <code className="rounded bg-white/5 px-1.5 py-0.5 text-[9px] text-slate-500">{item.tool}</code>}
-                        {item.duration_ms != null && item.duration_ms > 0 && (
-                          <span className="text-[9px] text-slate-600">{item.duration_ms}ms</span>
+                        {item.duration_ms != null && (
+                          <span className="text-[9px] text-slate-600">工具耗时 {formatDuration(item.duration_ms)}</span>
                         )}
                       </div>
                       {item.detail && <p className="mt-1 break-words text-[10px] leading-relaxed text-slate-500">{item.detail}</p>}

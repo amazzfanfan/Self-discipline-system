@@ -43,6 +43,27 @@ export default function Settings() {
   };
 
   const notificationSettings = profile?.notification_settings ?? {};
+  const notificationEnabled = (key: string) => key === 'task_reminders'
+    ? notificationSettings[key] !== false
+    : Boolean(notificationSettings[key]);
+
+  const toggleNotification = async (key: string) => {
+    const nextEnabled = !notificationEnabled(key);
+    if (key === 'browser_notifications' && nextEnabled) {
+      if (!('Notification' in window)) {
+        addNotification({ type: 'warning', title: '浏览器不支持', message: '当前浏览器无法显示系统级通知，站内提醒仍可正常使用。' });
+        return;
+      }
+      const permission = await window.Notification.requestPermission();
+      if (permission !== 'granted') {
+        addNotification({ type: 'warning', title: '未获得通知权限', message: '请在浏览器地址栏的网站权限中允许通知。' });
+        return;
+      }
+    }
+    await savePreferences({
+      notification_settings: { ...notificationSettings, [key]: nextEnabled },
+    });
+  };
 
   const exportData = async () => {
     try {
@@ -125,12 +146,18 @@ export default function Settings() {
         <motion.section initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.06 }}
           className="mb-5 rounded-2xl border border-slate-800 bg-slate-900 p-6">
           <h2 className="mb-4 text-base font-semibold text-slate-200">通知设置</h2>
-          {[['daily_tasks', '每日任务提醒'], ['weekly_review', '每周复盘提醒']].map(([key, label]) => (
+          {[
+            ['task_reminders', '稍后任务到点提醒', '任务恢复为待完成时生成站内提醒'],
+            ['daily_tasks', '每日任务提醒', '每天 08:00 汇总当天待办'],
+            ['weekly_review', '每周复盘提醒', '每周一 09:00 提醒查看复盘'],
+            ['browser_notifications', '浏览器系统通知', '页面打开时同步显示系统级通知'],
+          ].map(([key, label, description]) => (
             <div key={key} className="flex items-center justify-between border-b border-white/5 py-3 last:border-0">
-              <span className="text-sm text-slate-400">{label}</span>
-              <Toggle enabled={Boolean(notificationSettings[key])} onClick={() => void savePreferences({
-                notification_settings: { ...notificationSettings, [key]: !notificationSettings[key] },
-              })} />
+              <span>
+                <span className="block text-sm text-slate-400">{label}</span>
+                <span className="mt-1 block text-[10px] text-slate-600">{description}</span>
+              </span>
+              <Toggle enabled={notificationEnabled(key)} onClick={() => void toggleNotification(key)} />
             </div>
           ))}
         </motion.section>

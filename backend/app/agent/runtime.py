@@ -6,6 +6,7 @@ import logging
 import re
 import time
 import uuid
+from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +19,7 @@ from app.agent.types import (
     ToolObservation,
 )
 from app.models.user import User
+from app.core.time import local_now
 from app.services.context_builder import ContextBuilder
 from app.services.llm_service import chat_completion_with_fallback
 from app.services.agent_audit_service import (
@@ -39,7 +41,7 @@ PLANNER_SYSTEM_PROMPT = """你是“系统”的任务编排器。你只负责�
 6. reason 只写一句可展示的动作理由，不输出隐含思维链。
 7. 用户只说“想修改任务/目标”但没有给出新内容或约束时选择 respond 并追问，禁止自行编造修改内容。
 8. 明确的“每天/每周计划”应调用 create_goal；明确要求改成某项任务时应调用 replace_today_task。
-9. “今日暂缓/延后”调用 defer_today_task，不等于 skip_task；恢复暂缓任务调用 resume_today_task。
+9. 任务调整必须区分三种语义：今天具体时间再提醒用 later；改到明天或未来日期用 reschedule；明确今天不做但不希望受罚用 excuse。信息不足时追问，不得猜测。
 
 只返回 JSON：
 {"action":"tool|respond","tool":"工具名或null","arguments":{},"reason":"一句话理由"}
@@ -259,7 +261,7 @@ class AgentRuntime:
         # Clear state-changing intents are routed locally. This removes one
         # unnecessary planner-model round trip and makes persistence reliable.
         deterministic = self._fallback_decision(user_message, observations)
-        if deterministic.action == "tool":
+        if deterministic.action == "tool" or deterministic.reason.startswith("需要先明确任务调整方式"):
             return deterministic
 
         prompt_payload = {
@@ -408,12 +410,70 @@ class AgentRuntime:
                 arguments={"dimension": dimension},
                 reason="恢复今日暂缓任务",
             )
-        if dimension and re.search(r"(?:延后|暂缓|稍后再做|晚点再做).{0,10}(?:任务)?|(?:任务).{0,8}(?:延后|暂缓)", text):
+
+        if dimension and re.search(r"(?:今日|今天).{0,6}(?:免做|不做|不安排|先不做)", text):
             return PlannerDecision(
                 action="tool",
                 tool="defer_today_task",
-                arguments={"dimension": dimension},
-                reason="将任务设为今日暂缓",
+                arguments={"dimension": dimension, "mode": "excuse"},
+                reason="将任务设为今日免做且不计入完成率",
+            )
+        if dimension and re.search(r"(?:改到|推迟到|挪到).{0,8}(?:明天|后天|\d{4}-\d{1,2}-\d{1,2})", text):
+            now = local_now()
+            if "后天" in text:
+                target_date = now.date() + timedelta(days=2)
+            elif "明天" in text:
+                target_date = now.date() + timedelta(days=1)
+            else:
+                date_match = re.search(r"(\d{4}-\d{1,2}-\d{1,2})", text)
+                target_date = datetime.strptime(date_match.group(1), "%Y-%m-%d").date()
+            return PlannerDecision(
+                action="tool",
+                tool="defer_today_task",
+                arguments={
+                    "dimension": dimension,
+                    "mode": "reschedule",
+                    "target_date": target_date.isoformat(),
+                },
+                reason="将今日任务改期到用户指定日期",
+            )
+        if dimension and re.search(r"(?:一|1)\s*小时后", text):
+            wake_at = local_now() + timedelta(hours=1)
+            if wake_at.date() != local_now().date():
+                return PlannerDecision(
+                    action="respond",
+                    reason="需要先明确任务调整方式：一小时后将跨日，请改为选择未来日期",
+                )
+            return PlannerDecision(
+                action="tool",
+                tool="defer_today_task",
+                arguments={
+                    "dimension": dimension,
+                    "mode": "later",
+                    "deferred_until": wake_at.isoformat(),
+                },
+                reason="按用户指定的一小时后重新提醒",
+            )
+        if dimension and re.search(r"(?:今晚|今天).{0,4}\d{1,2}(?:点|:\d{2})", text):
+            now = local_now()
+            time_match = re.search(r"(\d{1,2})(?:点|:(\d{2}))", text)
+            hour = int(time_match.group(1))
+            minute = int(time_match.group(2) or 0)
+            wake_at = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            return PlannerDecision(
+                action="tool",
+                tool="defer_today_task",
+                arguments={
+                    "dimension": dimension,
+                    "mode": "later",
+                    "deferred_until": wake_at.isoformat(),
+                },
+                reason="按用户指定的今天时间重新提醒",
+            )
+        if dimension and re.search(r"(?:延后|暂缓|稍后再做|晚点再做).{0,10}(?:任务)?|(?:任务).{0,8}(?:延后|暂缓)", text):
+            return PlannerDecision(
+                action="respond",
+                reason="需要先明确任务调整方式：今天几点提醒、改到哪天，还是今日免做",
             )
         if dimension and re.search(r"(?:跳过|放弃).{0,12}(?:任务)?|(?:任务).{0,8}(?:跳过|放弃)", text):
             return PlannerDecision(

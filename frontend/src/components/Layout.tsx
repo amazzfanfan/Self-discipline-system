@@ -3,6 +3,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuthStore } from '../stores/authStore';
 import PrivateImage from './PrivateImage';
+import NotificationInbox from './NotificationInbox';
 
 const navItems = [
   {
@@ -219,6 +220,8 @@ export default function Layout() {
           </button>
         </div>
       </motion.aside>
+
+      <NotificationInbox />
 
       {/* Main content */}
       <AnimatePresence mode="wait" initial={false}>

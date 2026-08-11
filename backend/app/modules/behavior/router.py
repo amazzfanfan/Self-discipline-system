@@ -11,6 +11,7 @@ from app.models.task import DifficultyEnum, Task, TaskStatusEnum
 from app.schemas.behavior import CheckInRequest, WeeklyPlanRequest
 from app.services.behavior_service import build_weekly_review, calculate_behavior_metrics, current_week_start
 from app.services.cache_service import invalidate_tasks
+from app.services.task_state_service import maintain_task_states
 
 router = APIRouter(prefix="/api/behavior", tags=["behavior"])
 
@@ -73,7 +74,11 @@ async def upsert_today_checkin(
         desired_budget = configured_budget
     for task in pending_tasks[desired_budget:]:
         task.status = TaskStatusEnum.deferred
-        task.rationale = "根据今日可用时间自动延后，不影响画像基线"
+        task.disposition = "excused"
+        task.disposition_reason = "根据今日可用时间自动免除"
+        task.deferred_until = None
+        task.defer_count = (task.defer_count or 0) + 1
+        task.rationale = "根据今日可用时间自动免除，不计入行为完成率"
     if body.energy <= 2:
         for task in pending_tasks[:desired_budget]:
             task.difficulty = DifficultyEnum.easy
@@ -86,11 +91,13 @@ async def upsert_today_checkin(
 
 @router.get("/metrics")
 async def get_behavior_metrics(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db, scope="function")):
+    await maintain_task_states(db, user.id)
     return await calculate_behavior_metrics(db, user.id)
 
 
 @router.get("/weekly-review")
 async def get_weekly_review(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db, scope="function")):
+    await maintain_task_states(db, user.id)
     review = await build_weekly_review(db, user.id)
     return {
         "id": str(review.id),

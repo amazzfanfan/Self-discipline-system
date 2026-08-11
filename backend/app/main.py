@@ -22,6 +22,7 @@ from app.modules.score.router import router as score_router
 from app.modules.task.router import router as task_router
 from app.modules.user.router import router as user_router
 from app.modules.weight.router import router as weight_router
+from app.modules.notification.router import router as notification_router
 from app.services.cache_service import cache_is_ready
 from app.services.scheduler_service import scheduler, start_scheduler
 
@@ -76,6 +77,7 @@ app.include_router(task_router)
 app.include_router(chat_router)
 app.include_router(weight_router)
 app.include_router(goals_router)
+app.include_router(notification_router)
 @app.get("/health", tags=["health"])
 async def health():
     return {"status": "ok"}

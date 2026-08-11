@@ -18,6 +18,7 @@ async def generate_task(
     difficulty: str,
     recent_tasks: list[str],
     goal_content: str | None = None,
+    adaptation_context: str | None = None,
 ) -> str:
     """Generate a daily task title with AI or raise an explicit error."""
     prompt = prompt_service.build_task_prompt(
@@ -26,6 +27,7 @@ async def generate_task(
         difficulty=difficulty,
         recent_tasks=recent_tasks,
         goal_content=goal_content,
+        adaptation_context=adaptation_context,
     )
     content = await chat_completion_with_fallback(
         messages=[{"role": "user", "content": prompt}],

@@ -136,9 +136,16 @@ def test_defer_and_resume_are_distinct_from_skip():
     runtime = make_runtime()
 
     defer = runtime._fallback_decision("今天暂缓睡眠任务", [])
+    excuse = runtime._fallback_decision("今天睡眠任务免做", [])
+    reschedule = runtime._fallback_decision("把睡眠任务改到明天", [])
     resume = runtime._fallback_decision("恢复睡眠任务", [])
 
-    assert defer.tool == "defer_today_task"
+    assert defer.action == "respond"
+    assert "明确任务调整方式" in defer.reason
+    assert excuse.tool == "defer_today_task"
+    assert excuse.arguments["mode"] == "excuse"
+    assert reschedule.tool == "defer_today_task"
+    assert reschedule.arguments["mode"] == "reschedule"
     assert resume.tool == "resume_today_task"
 
 

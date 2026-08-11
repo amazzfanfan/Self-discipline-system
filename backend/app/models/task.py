@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, DateTime, Date, ForeignKey, Text, Enum as SAEnum, UniqueConstraint
+from sqlalchemy import Column, String, DateTime, Date, ForeignKey, Text, Integer, JSON, Enum as SAEnum, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.core.database import Base
@@ -46,6 +46,12 @@ class Task(Base):
     estimated_minutes = Column(String(20))
     user_feedback = Column(String(30))
     source = Column(String(30), default="adaptive")
+    disposition = Column(String(20))
+    disposition_reason = Column(String(200))
+    deferred_until = Column(DateTime(timezone=True))
+    defer_count = Column(Integer, nullable=False, default=0)
+    original_scheduled_date = Column(Date)
+    adaptation_metadata = Column(JSON, nullable=False, default=dict)
     completed_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 

@@ -30,3 +30,6 @@ def test_task_payload_has_same_fields_for_today_and_history_views():
     assert payload["scheduled_date"] == "2026-08-11"
     assert payload["completed_at"] == completed_at.isoformat()
     assert payload["user_feedback"] == "just_right"
+    assert payload["disposition"] is None
+    assert payload["deferred_until"] is None
+    assert payload["defer_count"] == 0

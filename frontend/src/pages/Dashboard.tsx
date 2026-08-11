@@ -28,8 +28,17 @@ const TASK_STATUS: Record<Task['status'], { label: string; badge: string; dot: s
   in_progress: { label: '进行中', badge: 'bg-blue-900/60 text-blue-300', dot: 'bg-blue-400' },
   completed: { label: '已完成', badge: 'bg-emerald-900/60 text-emerald-400', dot: 'bg-emerald-400' },
   failed: { label: '已跳过', badge: 'bg-rose-900/60 text-rose-300', dot: 'bg-rose-400' },
-  deferred: { label: '今日暂缓', badge: 'bg-amber-900/60 text-amber-300', dot: 'bg-amber-400' },
+  deferred: { label: '已调整', badge: 'bg-amber-900/60 text-amber-300', dot: 'bg-amber-400' },
 };
+
+function getTaskStatus(task: Task) {
+  if (task.disposition === 'snoozed') return { label: '稍后再做', badge: 'bg-cyan-900/60 text-cyan-300', dot: 'bg-cyan-400' };
+  if (task.disposition === 'excused') return { label: '今日免做', badge: 'bg-amber-900/60 text-amber-300', dot: 'bg-amber-400' };
+  if (task.disposition === 'rescheduled') return { label: '已改期', badge: 'bg-violet-900/60 text-violet-300', dot: 'bg-violet-400' };
+  if (task.disposition === 'expired') return { label: '已过期', badge: 'bg-rose-900/60 text-rose-300', dot: 'bg-rose-400' };
+  if (task.disposition === 'skipped') return { label: '已跳过', badge: 'bg-rose-900/60 text-rose-300', dot: 'bg-rose-400' };
+  return TASK_STATUS[task.status];
+}
 
 const DIFFICULTY_LABELS: Record<Task['difficulty'], string> = {
   easy: '简单',
@@ -98,7 +107,7 @@ export default function Dashboard() {
   const avgScore = scores?.length ? scores.reduce((total, score) => total + score.score, 0) / scores.length : 0;
   const momentum = behaviorMetrics?.overall.momentum ?? 0;
   const completedCount = tasks?.filter((task) => task.status === 'completed').length || 0;
-  const totalCount = tasks?.length || 0;
+  const totalCount = tasks?.filter((task) => task.disposition !== 'excused').length || 0;
   const maxStreak = scores ? Math.max(...scores.map((score) => score.streak_days), 0) : 0;
 
   return (
@@ -182,7 +191,7 @@ export default function Dashboard() {
             )}
             <div className="space-y-2">
               {tasks?.map((t) => {
-                const status = TASK_STATUS[t.status];
+                const status = getTaskStatus(t);
                 return (
                 <div key={t.id} className="bg-slate-800/60 rounded-lg p-3 flex items-start gap-3">
                   <div className={`mt-1.5 h-2 w-2 flex-shrink-0 rounded-full ${status.dot}`} />
@@ -240,6 +249,11 @@ export default function Dashboard() {
                 <p className="mt-2 text-xs text-slate-500">
                   完成 {weeklyReview.summary.completed_tasks}/{weeklyReview.summary.planned_tasks} 项 · Check-in {weeklyReview.summary.checkin_days} 天
                 </p>
+                {(weeklyReview.summary.excused_tasks || weeklyReview.summary.rescheduled_tasks) ? (
+                  <p className="mt-1 text-[10px] text-slate-600">
+                    今日免做 {weeklyReview.summary.excused_tasks || 0} 项 · 改期 {weeklyReview.summary.rescheduled_tasks || 0} 项
+                  </p>
+                ) : null}
               </div>
               <div className="text-right text-xs text-slate-500">
                 {weeklyReview.summary.suggested_focus

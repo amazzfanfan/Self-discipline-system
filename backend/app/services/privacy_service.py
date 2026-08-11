@@ -8,6 +8,7 @@ from app.models.behavior import DailyCheckIn, WeeklyReview
 from app.models.conversation import Conversation
 from app.models.goal import Goal
 from app.models.memory import Memory
+from app.models.notification import UserNotification
 from app.models.score import ScoreHistory, UserScore
 from app.models.task import Task
 from app.models.user import User, UserProfile
@@ -32,6 +33,7 @@ async def export_user_data(db, user: User) -> dict:
     checkins = await all_items(DailyCheckIn)
     reviews = await all_items(WeeklyReview)
     runs = await all_items(AgentRun)
+    notifications = await all_items(UserNotification)
     return {
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "account": {
@@ -106,6 +108,16 @@ async def export_user_data(db, user: User) -> dict:
             {"run_id": item.run_id, "status": item.status, "metrics": item.metrics, "created_at": item.created_at.isoformat()}
             for item in runs
         ],
+        "notifications": [
+            {
+                "kind": item.kind,
+                "title": item.title,
+                "message": item.message,
+                "read_at": item.read_at.isoformat() if item.read_at else None,
+                "created_at": item.created_at.isoformat(),
+            }
+            for item in notifications
+        ],
     }
 
 
@@ -136,6 +148,7 @@ async def delete_user_account(db, user: User) -> None:
         WeightRecord,
         DailyCheckIn,
         WeeklyReview,
+        UserNotification,
         UserScore,
         UserProfile,
     ):

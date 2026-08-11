@@ -66,6 +66,27 @@ export interface Task {
   rationale?: string | null;
   estimated_minutes?: string | null;
   user_feedback?: 'too_easy' | 'just_right' | 'too_hard' | 'not_suitable' | null;
+  disposition?: 'snoozed' | 'excused' | 'rescheduled' | 'skipped' | 'expired' | null;
+  disposition_reason?: string | null;
+  deferred_until?: string | null;
+  defer_count?: number;
+  original_scheduled_date?: string | null;
+  adaptation_metadata?: Record<string, unknown>;
+}
+
+export interface UserNotification {
+  id: string;
+  kind: 'task_reminder' | 'daily_tasks' | 'weekly_review' | 'system';
+  title: string;
+  message: string;
+  payload: { link?: string; task_id?: string; [key: string]: unknown };
+  read_at: string | null;
+  created_at: string;
+}
+
+export interface NotificationInboxResponse {
+  items: UserNotification[];
+  unread_count: number;
 }
 
 export interface BehaviorDimensionMetric {
@@ -98,6 +119,10 @@ export interface WeeklyReview {
   summary: {
     completed_tasks: number;
     planned_tasks: number;
+    excused_tasks?: number;
+    rescheduled_tasks?: number;
+    expired_tasks?: number;
+    skipped_tasks?: number;
     dimension_adherence: Partial<Record<Dimension, number>>;
     checkin_days: number;
     average_energy: number | null;

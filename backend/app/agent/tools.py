@@ -5,6 +5,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Any, Awaitable, Callable, Literal
 
 from pydantic import BaseModel, Field, ValidationError
@@ -88,6 +89,15 @@ class TaskReplaceArgs(BaseModel):
     )
     title: str = Field(min_length=2, max_length=200, description="用户明确要求的新任务内容")
     reason: str | None = Field(default=None, max_length=500, description="修改原因")
+
+
+class TaskScheduleArgs(DimensionArgs):
+    mode: Literal["later", "reschedule", "excuse"] = Field(
+        description="later=今天稍后提醒；reschedule=改到未来日期；excuse=今日免做"
+    )
+    deferred_until: datetime | None = Field(default=None, description="稍后提醒的具体时间")
+    target_date: date | None = Field(default=None, description="改期后的日期")
+    reason: str | None = Field(default=None, max_length=200, description="调整原因")
 
 
 class GoalSelectorArgs(BaseModel):
@@ -203,8 +213,16 @@ class ToolRegistry:
                 await invalidate_tasks(self.user_id)
             return result
 
-        async def defer_task(args: DimensionArgs) -> dict[str, Any]:
-            result = await defer_task_by_dimension(self.db, self.user_id, args.dimension)
+        async def defer_task(args: TaskScheduleArgs) -> dict[str, Any]:
+            result = await defer_task_by_dimension(
+                self.db,
+                self.user_id,
+                args.dimension,
+                mode=args.mode,
+                deferred_until=args.deferred_until,
+                target_date=args.target_date,
+                reason=args.reason,
+            )
             if result.get("success"):
                 await self.db.commit()
                 await invalidate_tasks(self.user_id)
@@ -360,8 +378,8 @@ class ToolRegistry:
             ),
             AgentTool(
                 "defer_today_task",
-                "将指定维度任务设为今日暂缓；不算完成、不算跳过、不扣分，可恢复",
-                DimensionArgs,
+                "调整今日任务：可在今天稍后提醒、改期到未来日期，或设为今日免做。必须明确 mode；later 还需 deferred_until，reschedule 还需 target_date",
+                TaskScheduleArgs,
                 defer_task,
                 "write",
             ),
@@ -422,6 +440,17 @@ class ToolRegistry:
             r"(?:改成|改为|换成|换为|替换为|调整为)", text
         ):
             return False, "请先说明希望把该任务改成什么，再执行修改。", "clarification_required"
+        if tool.name == "defer_today_task" and not re.search(
+            r"(?:今日|今天).{0,8}(?:免做|不做|不安排|先不做)"
+            r"|(?:改到|推迟到|挪到).{0,10}(?:明天|后天|\d{4}-\d{1,2}-\d{1,2})"
+            r"|(?:一|1)\s*小时后|(?:今晚|今天).{0,4}\d{1,2}(?:点|:\d{2})",
+            text,
+        ):
+            return (
+                False,
+                "请说明是今天几点再提醒、改到哪一天，还是设为今日免做。",
+                "clarification_required",
+            )
         if tool.name == "complete_task" and not has_explicit_completion(text):
             return False, "你还没有明确表示任务已经完成，因此本次没有打卡。", "clarification_required"
         if tool.name == "record_weight" and (

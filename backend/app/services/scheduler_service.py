@@ -9,7 +9,7 @@ from app.core.database import async_session
 from app.core.time import local_now, local_today
 from app.models.user import User, UserProfile
 from app.models.score import UserScore, DimensionEnum
-from app.models.task import Task, DifficultyEnum, TaskStatusEnum
+from app.models.task import Task, TaskStatusEnum
 from app.models.conversation import Conversation, RoleEnum
 from app.models.goal import GoalStatus
 from app.models.behavior import DailyCheckIn
@@ -17,6 +17,15 @@ from app.services.ai_service import generate_task
 from app.services.faceplus_service import generate_skin_task_ai
 from app.services.goal_service import goal_service
 from app.services.cache_service import acquire_lock, invalidate_tasks, release_lock
+from app.services.task_state_service import maintain_task_states
+from app.services.notification_service import create_notification
+from app.services.adaptive_task_service import (
+    ADAPTATION_VERSION,
+    analyze_history,
+    choose_task_budget,
+    decide_adaptation,
+    dimension_priority,
+)
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -46,6 +55,7 @@ async def generate_tasks_for_user(
 ):
     """Generate AI-authored tasks concurrently for a single user."""
     async def _generate(session):
+        await maintain_task_states(session, user_id)
         today = local_today()
         existing_result = await session.execute(
             select(Task).where(
@@ -97,21 +107,45 @@ async def generate_tasks_for_user(
             print(f"[任务生成] 获取用户目标失败: {e}")
 
         configured_budget = int(profile.daily_task_budget if profile else 3)
-        if checkin and checkin.available_minutes <= 20:
-            task_budget = 1
-        elif checkin and checkin.available_minutes <= 45:
-            task_budget = min(2, configured_budget)
-        else:
-            task_budget = min(max(configured_budget, 1), 4)
+        task_budget = choose_task_budget(configured_budget, checkin)
+        history_by_dimension = {
+            dim: [task for task in recent_tasks if task.dimension == dim]
+            for dim in TASKS_PER_DIMENSION
+        }
+        signals_by_dimension = {
+            dim: analyze_history(history_by_dimension[dim])
+            for dim in TASKS_PER_DIMENSION
+        }
         ordered_dimensions = sorted(
             TASKS_PER_DIMENSION,
-            key=lambda dim: (
-                0 if dim.value in goals_by_type else 1,
-                float(scores[dim].baseline_score) if dim in scores else 100.0,
+            key=lambda dim: dimension_priority(
+                baseline=float(scores[dim].baseline_score) if dim in scores else 100.0,
+                has_goal=dim.value in goals_by_type,
+                signals=signals_by_dimension[dim],
             ),
+            reverse=True,
         )
         target_dimensions = set(ordered_dimensions[:task_budget])
         if not regenerate_pending and target_dimensions.issubset(existing_dimensions):
+            for dim in target_dimensions:
+                task = existing_by_dimension[dim]
+                if (
+                    task.status in {TaskStatusEnum.pending, TaskStatusEnum.in_progress}
+                    and (task.adaptation_metadata or {}).get("version") != ADAPTATION_VERSION
+                ):
+                    score_record = scores.get(dim)
+                    if not score_record:
+                        continue
+                    adaptation = decide_adaptation(
+                        baseline=float(score_record.baseline_score),
+                        signals=signals_by_dimension[dim],
+                        checkin=checkin,
+                        task_budget=task_budget,
+                    )
+                    task.difficulty = adaptation.difficulty
+                    task.estimated_minutes = adaptation.estimated_minutes
+                    task.rationale = adaptation.rationale
+                    task.adaptation_metadata = adaptation.metadata
             return
 
         task_specs = []
@@ -128,18 +162,14 @@ async def generate_tasks_for_user(
                 continue
 
             score_val = float(score_record.baseline_score)
-            dimension_history = [task for task in recent_tasks if task.dimension == dim]
-            decided = [task for task in dimension_history if task.status.value in {"completed", "failed"}]
-            adherence = (
-                sum(task.status.value == "completed" for task in decided) / len(decided)
-                if decided else 0.6
+            dimension_history = history_by_dimension[dim]
+            adaptation = decide_adaptation(
+                baseline=score_val,
+                signals=signals_by_dimension[dim],
+                checkin=checkin,
+                task_budget=task_budget,
             )
-            if (checkin and checkin.energy <= 2) or adherence < 0.5:
-                difficulty = DifficultyEnum.easy
-            elif adherence >= 0.8 and score_val >= 70:
-                difficulty = DifficultyEnum.hard
-            else:
-                difficulty = DifficultyEnum.medium
+            difficulty = adaptation.difficulty
 
             goal_content = goals_by_type.get(dim.value)
             if goal_content:
@@ -156,6 +186,7 @@ async def generate_tasks_for_user(
                 "recent_titles": [task.title for task in dimension_history[:6]],
                 "goal_content": goal_content,
                 "existing_task": existing_task,
+                "adaptation": adaptation,
             })
 
         async def _generate_title(spec: dict) -> str:
@@ -166,6 +197,18 @@ async def generate_tasks_for_user(
                 and skin_analysis.get("source") == "faceplusplus"
             ):
                 return await _generate_skin_based_task(skin_analysis)
+            adaptation = spec["adaptation"]
+            signals = adaptation.metadata["signals"]
+            adaptation_notes = (
+                f"自适应要求：任务预计 {adaptation.estimated_minutes} 分钟；"
+                f"{adaptation.rationale}。"
+            )
+            if signals.get("not_suitable", 0) > 0:
+                adaptation_notes += "用户曾反馈任务不适合，必须更换行动形式，不能只改数字。"
+            elif signals.get("too_hard", 0) > 0:
+                adaptation_notes += "用户曾反馈太难，应减少步骤、强度或准备成本。"
+            elif signals.get("too_easy", 0) > 0:
+                adaptation_notes += "用户曾反馈太简单，应增加一个可量化挑战。"
             return await generate_task(
                 nickname=nickname,
                 dimension=dimension.value,
@@ -173,6 +216,7 @@ async def generate_tasks_for_user(
                 difficulty=spec["difficulty"].value,
                 recent_tasks=spec["recent_titles"],
                 goal_content=spec["goal_content"],
+                adaptation_context=adaptation_notes,
             )
 
         # These calls are independent. Running them concurrently avoids making
@@ -185,23 +229,17 @@ async def generate_tasks_for_user(
         for spec, generated_title in zip(task_specs, task_titles, strict=True):
             dim = spec["dimension"]
             difficulty = spec["difficulty"]
+            adaptation = spec["adaptation"]
             task_title = generated_title[:200]
-            rationale = (
-                "根据今日精力与近期完成率降低难度"
-                if difficulty == DifficultyEnum.easy
-                else "结合画像基线、目标和近期完成情况由 AI 生成"
-            )
-            estimated_minutes = {
-                DifficultyEnum.easy: "10-20",
-                DifficultyEnum.medium: "20-40",
-                DifficultyEnum.hard: "40-60",
-            }[difficulty]
+            rationale = adaptation.rationale
+            estimated_minutes = adaptation.estimated_minutes
             task = spec["existing_task"]
             if task:
                 task.title = task_title
                 task.rationale = rationale
                 task.estimated_minutes = estimated_minutes
                 task.difficulty = difficulty
+                task.adaptation_metadata = adaptation.metadata
             else:
                 task = Task(
                     user_id=user_id,
@@ -212,6 +250,7 @@ async def generate_tasks_for_user(
                     estimated_minutes=estimated_minutes,
                     difficulty=difficulty,
                     scheduled_date=today,
+                    adaptation_metadata=adaptation.metadata,
                 )
                 session.add(task)
             generated_tasks.append((dim, task_title, difficulty))
@@ -299,6 +338,9 @@ async def daily_task_generation():
         return
     try:
         async with async_session() as db:
+            changed_users = await maintain_task_states(db)
+            for changed_user_id in changed_users:
+                await invalidate_tasks(changed_user_id)
             result = await db.execute(select(User))
             users = result.scalars().all()
 
@@ -314,6 +356,64 @@ async def daily_task_generation():
             await release_lock(lock_name, token)
 
 
+async def task_state_maintenance():
+    """Wake due snoozes and settle overdue unfinished tasks."""
+    async with async_session() as db:
+        changed_users = await maintain_task_states(db)
+        await db.commit()
+    for user_id in changed_users:
+        await invalidate_tasks(user_id)
+
+
+async def daily_task_reminders():
+    """Publish a durable morning reminder for users who enabled it."""
+    today = local_today()
+    async with async_session() as db:
+        users_result = await db.execute(select(User))
+        for user in users_result.scalars().all():
+            task_result = await db.execute(
+                select(Task).where(Task.user_id == user.id, Task.scheduled_date == today)
+            )
+            tasks = [
+                task
+                for task in task_result.scalars().all()
+                if task.status in {TaskStatusEnum.pending, TaskStatusEnum.in_progress}
+                or (task.status == TaskStatusEnum.deferred and task.disposition == "snoozed")
+            ]
+            if not tasks:
+                continue
+            await create_notification(
+                db,
+                user_id=user.id,
+                kind="daily_tasks",
+                title="今日任务已准备",
+                message=f"今天有 {len(tasks)} 项任务待推进，点击查看安排。",
+                dedupe_key=f"daily-tasks:{today.isoformat()}",
+                payload={"link": "/tasks", "task_count": len(tasks)},
+                setting_key="daily_tasks",
+            )
+        await db.commit()
+
+
+async def weekly_review_reminders():
+    """Publish the weekly review entry point for users who enabled it."""
+    week_key = local_today().isoformat()
+    async with async_session() as db:
+        users_result = await db.execute(select(User))
+        for user in users_result.scalars().all():
+            await create_notification(
+                db,
+                user_id=user.id,
+                kind="weekly_review",
+                title="本周复盘已准备",
+                message="回顾完成率、任务调整与成长动量，为下周设置更合适的节奏。",
+                dedupe_key=f"weekly-review:{week_key}",
+                payload={"link": "/"},
+                setting_key="weekly_review",
+            )
+        await db.commit()
+
+
 def start_scheduler():
     # 每天凌晨 0:00（北京时间）为所有用户生成任务
     # 注意：如果服务器此时未运行，任务会在用户首次查询时自动生成（见 task router）
@@ -325,6 +425,31 @@ def start_scheduler():
         hour=0,
         minute=0,
         id="daily_tasks",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        task_state_maintenance,
+        "interval",
+        minutes=1,
+        id="task_state_maintenance",
+        replace_existing=True,
+        max_instances=1,
+    )
+    scheduler.add_job(
+        daily_task_reminders,
+        "cron",
+        hour=8,
+        minute=0,
+        id="daily_task_reminders",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        weekly_review_reminders,
+        "cron",
+        day_of_week="mon",
+        hour=9,
+        minute=0,
+        id="weekly_review_reminders",
         replace_existing=True,
     )
     scheduler.start()

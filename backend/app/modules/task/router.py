@@ -1,3 +1,4 @@
+from datetime import date, datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -10,12 +11,20 @@ from app.models.user import User
 from app.models.task import Task, TaskStatusEnum
 from app.services.cache_service import get_cached_tasks, set_cached_tasks, invalidate_tasks, invalidate_scores
 from app.core.time import local_today
+from app.services.task_state_service import apply_task_schedule, maintain_task_states
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
 
 class TaskFeedbackRequest(BaseModel):
     feedback: Literal["too_easy", "just_right", "too_hard", "not_suitable"]
+
+
+class TaskScheduleRequest(BaseModel):
+    mode: Literal["later", "reschedule", "excuse"]
+    deferred_until: datetime | None = None
+    target_date: date | None = None
+    reason: str | None = None
 
 
 def _task_payload(task: Task) -> dict:
@@ -31,11 +40,26 @@ def _task_payload(task: Task) -> dict:
         "rationale": task.rationale,
         "estimated_minutes": task.estimated_minutes,
         "user_feedback": task.user_feedback,
+        "disposition": getattr(task, "disposition", None),
+        "disposition_reason": getattr(task, "disposition_reason", None),
+        "deferred_until": (
+            task.deferred_until.isoformat() if getattr(task, "deferred_until", None) else None
+        ),
+        "defer_count": getattr(task, "defer_count", 0) or 0,
+        "original_scheduled_date": (
+            task.original_scheduled_date.isoformat()
+            if getattr(task, "original_scheduled_date", None)
+            else None
+        ),
+        "adaptation_metadata": getattr(task, "adaptation_metadata", None) or {},
     }
 
 
 @router.get("/today")
 async def get_today_tasks(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db, scope="function")):
+    changed_users = await maintain_task_states(db, user.id)
+    if str(user.id) in changed_users:
+        await invalidate_tasks(str(user.id))
     # 先查缓存
     cached = await get_cached_tasks(str(user.id))
     if cached is not None:
@@ -84,9 +108,11 @@ async def complete_task(task_id: str, user: User = Depends(get_current_user), db
     if task.status not in {TaskStatusEnum.pending, TaskStatusEnum.in_progress, TaskStatusEnum.deferred}:
         raise HTTPException(409, "Task is no longer completable")
 
-    from datetime import datetime, timezone
     task.status = TaskStatusEnum.completed
     task.completed_at = datetime.now(timezone.utc)
+    task.disposition = None
+    task.disposition_reason = None
+    task.deferred_until = None
 
     from app.services.score_service import record_task_completion
     score_change = await record_task_completion(db, user.id, task.dimension)
@@ -126,13 +152,36 @@ async def defer_task(
     task = result.scalar_one_or_none()
     if not task:
         raise HTTPException(404, "Task not found")
-    if task.status not in {TaskStatusEnum.pending, TaskStatusEnum.in_progress}:
-        raise HTTPException(409, "Task cannot be deferred")
-    task.status = TaskStatusEnum.deferred
+    scheduled = await apply_task_schedule(db, task, mode="excuse")
+    if not scheduled["success"]:
+        raise HTTPException(409, scheduled["message"])
     await invalidate_tasks(str(user.id))
-    return {
-        "message": "任务已设为今日暂缓；不算完成或跳过、不扣分，也不会自动移到明天，可随时恢复"
-    }
+    return scheduled
+
+
+@router.post("/{task_id}/schedule")
+async def schedule_task(
+    task_id: str,
+    body: TaskScheduleRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    result = await db.execute(select(Task).where(and_(Task.id == task_id, Task.user_id == user.id)))
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(404, "Task not found")
+    scheduled = await apply_task_schedule(
+        db,
+        task,
+        mode=body.mode,
+        deferred_until=body.deferred_until,
+        target_date=body.target_date,
+        reason=body.reason,
+    )
+    if not scheduled["success"]:
+        raise HTTPException(409, scheduled["message"])
+    await invalidate_tasks(str(user.id))
+    return scheduled
 
 
 @router.post("/{task_id}/resume")
@@ -147,7 +196,12 @@ async def resume_task(
         raise HTTPException(404, "Task not found")
     if task.status != TaskStatusEnum.deferred:
         raise HTTPException(409, "Only deferred tasks can be resumed")
+    if task.scheduled_date != local_today():
+        raise HTTPException(409, "Only today's deferred task can be resumed")
     task.status = TaskStatusEnum.pending
+    task.disposition = None
+    task.disposition_reason = None
+    task.deferred_until = None
     await invalidate_tasks(str(user.id))
     return {"message": "任务已恢复为待完成"}
 
@@ -160,6 +214,9 @@ async def list_tasks(
     status: Literal["pending", "in_progress", "completed", "failed", "deferred"] | None = None,
     limit: int = Query(default=20, ge=1, le=100),
 ):
+    changed_users = await maintain_task_states(db, user.id)
+    if str(user.id) in changed_users:
+        await invalidate_tasks(str(user.id))
     query = select(Task).where(Task.user_id == user.id)
     if dimension:
         query = query.where(Task.dimension == dimension)

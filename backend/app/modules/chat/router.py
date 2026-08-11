@@ -136,18 +136,31 @@ def _direct_operation_reply(run: AgentRunResult) -> str | None:
             "in_progress": "进行中",
             "completed": "已完成",
             "failed": "已跳过",
-            "deferred": "今日暂缓",
+            "deferred": "已调整",
         }
+        def task_status_label(task: dict) -> str:
+            disposition_labels = {
+                "snoozed": "稍后再做",
+                "excused": "今日免做",
+                "rescheduled": "已改期",
+                "skipped": "已跳过",
+                "expired": "已过期",
+            }
+            return disposition_labels.get(
+                task.get("disposition"),
+                status_labels.get(task.get("status"), task.get("status", "未知状态")),
+            )
         lines = [
             f"- **{dimension_labels.get(task.get('dimension'), task.get('dimension', '任务'))}** · "
-            f"{status_labels.get(task.get('status'), task.get('status', '未知状态'))}\n  {task.get('title', '')}"
+            f"{task_status_label(task)}\n  {task.get('title', '')}"
             for task in tasks
         ]
         actionable = sum(task.get("status") in {"pending", "in_progress"} for task in tasks)
         completed = sum(task.get("status") == "completed" for task in tasks)
-        deferred = sum(task.get("status") == "deferred" for task in tasks)
-        skipped = sum(task.get("status") == "failed" for task in tasks)
-        summary = f"待完成 {actionable} · 已完成 {completed} · 今日暂缓 {deferred} · 已跳过 {skipped}"
+        snoozed = sum(task.get("disposition") == "snoozed" for task in tasks)
+        excused = sum(task.get("disposition") == "excused" for task in tasks)
+        skipped = sum(task.get("disposition") in {"skipped", "expired"} for task in tasks)
+        summary = f"待完成 {actionable} · 已完成 {completed} · 稍后再做 {snoozed} · 今日免做 {excused} · 未完成 {skipped}"
         return "**今日任务**\n\n" + "\n\n".join(lines) + f"\n\n{summary}。"
     if observation.tool == "create_goal":
         goal = result.get("goal") or {}
