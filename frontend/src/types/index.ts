@@ -13,6 +13,7 @@ export interface UserProfile {
   age: number | null;
   gender: 'male' | 'female' | 'other' | null;
   body_fat_pct: number | null;
+  avatar_url: string | null;
   front_photo_url: string | null;
   side_photo_url: string | null;
   daily_task_budget?: number;
@@ -117,6 +118,7 @@ export interface Goal {
   deadline: string | null;
   milestones: Array<{ title?: string; completed?: boolean }>;
   status: 'active' | 'completed' | 'paused';
+  source: 'manual' | 'chat';
   created_at: string;
 }
 
@@ -127,6 +129,13 @@ export interface Conversation {
   created_at: string;
   metadata?: {
     agent_run?: AgentRunMetadata;
+    message_type?: 'profile_assessment' | 'daily_tasks' | 'skin_analysis';
+    assessment?: Record<string, unknown>;
+    skin_analysis?: Record<string, unknown> | null;
+    care_suggestions?: string[];
+    greeting?: string;
+    scheduled_date?: string;
+    tasks?: Array<Record<string, unknown>>;
     [key: string]: unknown;
   };
 }

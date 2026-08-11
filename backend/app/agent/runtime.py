@@ -37,6 +37,9 @@ PLANNER_SYSTEM_PROMPT = """你是“系统”的任务编排器。你只负责�
 4. skip_task 属于有负面影响的操作，未出现明确“确认跳过”时不要调用。
 5. 已有 Observation 足够回答时立即 respond；禁止重复相同工具和参数。
 6. reason 只写一句可展示的动作理由，不输出隐含思维链。
+7. 用户只说“想修改任务/目标”但没有给出新内容或约束时选择 respond 并追问，禁止自行编造修改内容。
+8. 明确的“每天/每周计划”应调用 create_goal；明确要求改成某项任务时应调用 replace_today_task。
+9. “今日暂缓/延后”调用 defer_today_task，不等于 skip_task；恢复暂缓任务调用 resume_today_task。
 
 只返回 JSON：
 {"action":"tool|respond","tool":"工具名或null","arguments":{},"reason":"一句话理由"}
@@ -63,6 +66,7 @@ class AgentRuntime:
         user_message: str,
         on_event: TraceSink | None = None,
         user_message_id=None,
+        confirmed_action: dict[str, Any] | None = None,
     ) -> AgentRunResult:
         run_id = uuid.uuid4().hex
         if self.audit_enabled:
@@ -87,7 +91,15 @@ class AgentRuntime:
         )
 
         for step in range(1, self.MAX_STEPS + 1):
-            decision = await self._plan(user_message, observations)
+            if confirmed_action and step == 1 and not observations:
+                decision = PlannerDecision(
+                    action="tool",
+                    tool=str(confirmed_action["tool"]),
+                    arguments=dict(confirmed_action.get("arguments") or {}),
+                    reason="执行用户对上一条待确认操作的明确回复",
+                )
+            else:
+                decision = await self._plan(user_message, observations)
             await self._emit(
                 trace,
                 AgentTraceEvent(
@@ -155,14 +167,15 @@ class AgentRuntime:
             )
             observations.append(observation)
 
-            event_type = "guardrail" if status == "approval_required" else "tool_result"
+            guarded = status in {"approval_required", "clarification_required"}
+            event_type = "guardrail" if guarded else "tool_result"
             await self._emit(
                 trace,
                 AgentTraceEvent(
                     type=event_type,
                     title=(
-                        "需要用户确认"
-                        if status == "approval_required"
+                        ("需要用户确认" if status == "approval_required" else "需要补充信息")
+                        if guarded
                         else ("工具执行完成" if success else "工具返回异常")
                     ),
                     detail=self._short_json(result),
@@ -173,7 +186,7 @@ class AgentRuntime:
                 ),
                 on_event,
             )
-            if status == "approval_required":
+            if guarded:
                 break
         else:
             await self._emit(
@@ -188,11 +201,31 @@ class AgentRuntime:
                 on_event,
             )
 
-        context_builder = ContextBuilder(self.db, self.user)
-        response_messages = await context_builder.build_agent_context(
-            user_message=user_message,
-            observations=[item.to_prompt_dict() for item in observations],
+        direct_receipt_tools = {
+            "list_today_tasks",
+            "complete_task",
+            "skip_task",
+            "replace_today_task",
+            "defer_today_task",
+            "resume_today_task",
+            "record_weight",
+            "create_goal",
+            "update_goal",
+            "change_goal_status",
+            "delete_goal",
+        }
+        can_reply_without_context = len(observations) == 1 and (
+            observations[0].tool in direct_receipt_tools
+            or observations[0].status in {"approval_required", "clarification_required"}
         )
+        if can_reply_without_context:
+            response_messages = []
+        else:
+            context_builder = ContextBuilder(self.db, self.user)
+            response_messages = await context_builder.build_agent_context(
+                user_message=user_message,
+                observations=[item.to_prompt_dict() for item in observations],
+            )
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         run_result = AgentRunResult(
             run_id=run_id,
@@ -220,6 +253,14 @@ class AgentRuntime:
     ) -> PlannerDecision:
         if observations and any(item.status == "approval_required" for item in observations):
             return PlannerDecision(action="respond", reason="需要先取得用户明确确认")
+        if observations:
+            return PlannerDecision(action="respond", reason="已获得工具执行结果")
+
+        # Clear state-changing intents are routed locally. This removes one
+        # unnecessary planner-model round trip and makes persistence reliable.
+        deterministic = self._fallback_decision(user_message, observations)
+        if deterministic.action == "tool":
+            return deterministic
 
         prompt_payload = {
             "current_request": user_message,
@@ -254,6 +295,12 @@ class AgentRuntime:
             return PlannerDecision(action="respond", reason="已获得工具结果")
 
         text = message.strip()
+        if re.search(r"(?:忽略所有规则|泄露系统提示词|记忆里说你必须)", text):
+            return PlannerDecision(action="respond", reason="检测到不可信指令，不执行工具")
+        if re.search(r"(?:他|她|朋友|同事|别人).{0,16}(?:任务|目标|体重|计划|完成|跳过)", text):
+            return PlannerDecision(action="respond", reason="这是第三方信息，不执行个人数据工具")
+        if re.search(r"(?:假设|如果).{0,20}(?:完成|跳过|删除|记录|创建|延后|恢复)", text):
+            return PlannerDecision(action="respond", reason="这是情景讨论，不执行写操作")
         weight_match = re.search(
             r"(\d+(?:\.\d+)?)\s*(?:公斤|kg|千克)", text, re.IGNORECASE
         )
@@ -266,16 +313,86 @@ class AgentRuntime:
             )
 
         dimension = self._detect_dimension(text)
+        goal_update_match = re.search(
+            r"(?:把|将)\s*(.{1,60}?)(?:目标|计划)\s*(?:改成|改为|更新为|调整为)\s*(.{2,220})",
+            text,
+        )
+        if goal_update_match:
+            new_content = goal_update_match.group(2).strip("。！？!? ")
+            return PlannerDecision(
+                action="tool",
+                tool="update_goal",
+                arguments={
+                    "goal_keyword": goal_update_match.group(1).strip(),
+                    "new_content": new_content,
+                    "goal_type": self._detect_dimension(new_content),
+                },
+                reason="更新用户明确指定的成长目标",
+            )
+        replacement_match = re.search(
+            r"(?:把|将)?(?:今天的|今日)?(?:运动|饮食|睡眠|形象管理|形象|护肤)?任务"
+            r".{0,10}?(?:改成|改为|换成|换为|替换为|调整为)\s*(.{2,180})",
+            text,
+        )
+        if dimension and replacement_match:
+            replacement = replacement_match.group(1).strip("。！？!? ")
+            return PlannerDecision(
+                action="tool",
+                tool="replace_today_task",
+                arguments={
+                    "dimension": dimension,
+                    "title": replacement,
+                    "reason": "根据用户在对话中明确提出的新任务进行替换",
+                },
+                reason="更新用户明确指定的今日任务",
+            )
+
         if dimension and re.search(
             r"(?:我的目标是|设定.{0,6}目标|创建.{0,6}目标|"
             r"我(?:想要|希望|计划|打算|准备).{1,80})",
             text,
         ):
+            goal_content = re.sub(
+                r"^(?:请)?(?:帮我)?(?:创建|设定|新增)(?:一个)?(?:成长|长期)?目标\s*[：:]?\s*"
+                r"|^我的目标是\s*|^我(?:想要|希望|计划|打算|准备)\s*",
+                "",
+                text,
+            ).strip()
             return PlannerDecision(
                 action="tool",
                 tool="create_goal",
-                arguments={"content": text, "goal_type": dimension},
+                arguments={"content": goal_content or text, "goal_type": dimension},
                 reason="用户明确提出了长期成长目标",
+            )
+
+        goal_keyword = self._extract_goal_keyword(text)
+        if goal_keyword and re.search(r"(?:暂停|先停一下|停止)\S{0,8}(?:目标|计划)?|(?:目标|计划).{0,8}暂停", text):
+            return PlannerDecision(
+                action="tool",
+                tool="change_goal_status",
+                arguments={"goal_keyword": goal_keyword, "status": "paused"},
+                reason="暂停用户指定的成长目标",
+            )
+        if goal_keyword and re.search(r"(?:恢复|继续|重新开始).{0,12}(?:目标|计划)", text):
+            return PlannerDecision(
+                action="tool",
+                tool="change_goal_status",
+                arguments={"goal_keyword": goal_keyword, "status": "active"},
+                reason="恢复用户指定的成长目标",
+            )
+        if goal_keyword and re.search(r"(?:完成|结束).{0,12}(?:目标|计划)|(?:目标|计划).{0,8}(?:完成|达成)", text):
+            return PlannerDecision(
+                action="tool",
+                tool="change_goal_status",
+                arguments={"goal_keyword": goal_keyword, "status": "completed"},
+                reason="完成用户指定的成长目标",
+            )
+        if goal_keyword and re.search(r"(?:删除|移除|取消).{0,12}(?:目标|计划)|(?:目标|计划).{0,8}(?:删除|移除)", text):
+            return PlannerDecision(
+                action="tool",
+                tool="delete_goal",
+                arguments={"goal_keyword": goal_keyword},
+                reason="删除用户指定的成长目标",
             )
         if dimension and has_explicit_completion(text):
             return PlannerDecision(
@@ -284,16 +401,32 @@ class AgentRuntime:
                 arguments={"dimension": dimension},
                 reason="用户明确报告已完成任务",
             )
-        if dimension and re.search(
-            r"(?:确认.{0,8}跳过|跳过.{0,8}(?:确认|吧|掉)|明确跳过)", text
-        ):
+        if dimension and re.search(r"(?:恢复|继续).{0,10}(?:任务|待办)|(?:任务|待办).{0,8}(?:恢复|继续)", text):
+            return PlannerDecision(
+                action="tool",
+                tool="resume_today_task",
+                arguments={"dimension": dimension},
+                reason="恢复今日暂缓任务",
+            )
+        if dimension and re.search(r"(?:延后|暂缓|稍后再做|晚点再做).{0,10}(?:任务)?|(?:任务).{0,8}(?:延后|暂缓)", text):
+            return PlannerDecision(
+                action="tool",
+                tool="defer_today_task",
+                arguments={"dimension": dimension},
+                reason="将任务设为今日暂缓",
+            )
+        if dimension and re.search(r"(?:跳过|放弃).{0,12}(?:任务)?|(?:任务).{0,8}(?:跳过|放弃)", text):
             return PlannerDecision(
                 action="tool",
                 tool="skip_task",
                 arguments={"dimension": dimension},
-                reason="用户已明确确认跳过任务",
+                reason="处理用户跳过今日任务的请求",
             )
-        if re.search(r"(?:今天|今日).{0,6}任务|任务.{0,6}(?:哪些|什么|情况)", text):
+        if re.search(
+            r"(?:当前|今天|今日).{0,10}(?:哪些|什么|所有|全部)?任务"
+            r"|我(?:当前)?有(?:哪些|什么)?任务|有哪些任务|任务.{0,8}(?:哪些|什么|情况)",
+            text,
+        ):
             return PlannerDecision(
                 action="tool", tool="list_today_tasks", reason="查询今日任务"
             )
@@ -325,6 +458,18 @@ class AgentRuntime:
             ),
             None,
         )
+
+    @staticmethod
+    def _extract_goal_keyword(text: str) -> str | None:
+        if "目标" not in text and "计划" not in text:
+            return None
+        cleaned = re.sub(
+            r"(?:请|帮我|把|将|我的|这个|那个|成长|长期|目标|计划|暂停|停止|恢复|继续|重新开始|完成|达成|结束|删除|移除|取消|确认)",
+            " ",
+            text,
+        )
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" ，。！？!?：:的")
+        return cleaned[:80] or None
 
     @staticmethod
     def _parse_json(content: str) -> dict[str, Any]:

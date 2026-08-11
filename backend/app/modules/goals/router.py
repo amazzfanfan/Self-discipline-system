@@ -6,7 +6,7 @@ Goals Router - 目标管理 API
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from datetime import date
-from typing import Optional
+from typing import Literal, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -21,24 +21,30 @@ router = APIRouter(prefix="/api/goals", tags=["goals"])
 
 class GoalCreateRequest(BaseModel):
     content: str = Field(..., min_length=1, max_length=2000, description="目标内容")
-    goal_type: str = Field(default="exercise", description="目标类型: exercise/diet/sleep/appearance")
+    goal_type: Literal["exercise", "diet", "sleep", "appearance"] = Field(
+        default="exercise", description="目标类型: exercise/diet/sleep/appearance"
+    )
     structured_data: Optional[dict] = Field(default=None, description="结构化数据")
     target_metric: Optional[str] = Field(default=None, max_length=100)
-    target_value: Optional[float] = None
-    current_value: Optional[float] = None
+    target_value: Optional[float] = Field(default=None, gt=0)
+    current_value: Optional[float] = Field(default=None, ge=0)
     deadline: Optional[date] = None
     milestones: list[dict] = Field(default_factory=list, max_length=20)
 
 
 class GoalUpdateRequest(BaseModel):
-    content: Optional[str] = Field(default=None, max_length=2000, description="目标内容")
-    goal_type: Optional[str] = Field(default=None, description="目标类型")
-    status: Optional[str] = Field(default=None, description="目标状态: active/completed/paused")
+    content: Optional[str] = Field(default=None, min_length=1, max_length=2000, description="目标内容")
+    goal_type: Optional[Literal["exercise", "diet", "sleep", "appearance"]] = Field(
+        default=None, description="目标类型"
+    )
+    status: Optional[Literal["active", "completed", "paused"]] = Field(
+        default=None, description="目标状态: active/completed/paused"
+    )
     importance_score: Optional[float] = Field(default=None, ge=0, le=1, description="重要性评分")
     structured_data: Optional[dict] = Field(default=None, description="结构化数据")
     target_metric: Optional[str] = Field(default=None, max_length=100)
-    target_value: Optional[float] = None
-    current_value: Optional[float] = None
+    target_value: Optional[float] = Field(default=None, gt=0)
+    current_value: Optional[float] = Field(default=None, ge=0)
     deadline: Optional[date] = None
     milestones: Optional[list[dict]] = Field(default=None, max_length=20)
 
@@ -88,8 +94,8 @@ async def create_goal(
 
 @router.get("")
 async def list_goals(
-    status: Optional[str] = Query(default=None, description="按状态过滤"),
-    goal_type: Optional[str] = Query(default=None, description="按类型过滤"),
+    status: Optional[Literal["active", "completed", "paused"]] = Query(default=None, description="按状态过滤"),
+    goal_type: Optional[Literal["exercise", "diet", "sleep", "appearance"]] = Query(default=None, description="按类型过滤"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db, scope="function"),
 ):
@@ -107,7 +113,7 @@ async def list_goals(
 async def search_goals(
     query: str = Query(..., min_length=1, description="搜索关键词"),
     top_k: int = Query(default=5, ge=1, le=20, description="返回数量"),
-    status: Optional[str] = Query(default=None, description="按状态过滤"),
+    status: Optional[Literal["active", "completed", "paused"]] = Query(default=None, description="按状态过滤"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db, scope="function"),
 ):
@@ -130,9 +136,11 @@ async def update_goal(
     db: AsyncSession = Depends(get_db, scope="function"),
 ):
     """更新目标"""
-    updates = body.model_dump(exclude_none=True)
+    updates = body.model_dump(exclude_unset=True)
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
+    if any(updates.get(field) is None for field in ("content", "goal_type", "status") if field in updates):
+        raise HTTPException(status_code=422, detail="content, goal_type and status cannot be null")
 
     goal = await goal_service.update_goal(
         db=db,

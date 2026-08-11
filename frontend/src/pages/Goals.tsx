@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
 import api from '../services/api';
@@ -8,82 +8,311 @@ const labels: Record<Dimension, string> = {
   exercise: '运动', diet: '饮食', sleep: '睡眠', appearance: '形象管理',
 };
 
+const icons: Record<Dimension, string> = {
+  exercise: '↗', diet: '◒', sleep: '☾', appearance: '✦',
+};
+
+const statusMeta: Record<Goal['status'], { label: string; className: string }> = {
+  active: { label: '进行中', className: 'border-cyan-300/15 bg-cyan-400/[0.08] text-cyan-200' },
+  paused: { label: '已暂停', className: 'border-amber-300/15 bg-amber-400/[0.08] text-amber-200' },
+  completed: { label: '已完成', className: 'border-emerald-300/15 bg-emerald-400/[0.08] text-emerald-200' },
+};
+
+type StatusFilter = 'all' | Goal['status'];
+
+type GoalDraft = {
+  content: string;
+  goalType: Dimension;
+  metric: string;
+  target: string;
+  current: string;
+  deadline: string;
+};
+
+const draftFromGoal = (goal: Goal): GoalDraft => ({
+  content: goal.content,
+  goalType: goal.goal_type,
+  metric: goal.target_metric ?? '',
+  target: goal.target_value == null ? '' : String(goal.target_value),
+  current: goal.current_value == null ? '' : String(goal.current_value),
+  deadline: goal.deadline ?? '',
+});
+
 export default function Goals() {
   const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [content, setContent] = useState('');
   const [goalType, setGoalType] = useState<Dimension>('exercise');
   const [metric, setMetric] = useState('');
   const [target, setTarget] = useState('');
   const [deadline, setDeadline] = useState('');
-  const { data: goals } = useQuery<Goal[]>({
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [editingGoal, setEditingGoal] = useState<Goal | null>(null);
+  const [editDraft, setEditDraft] = useState<GoalDraft | null>(null);
+  const [deleteCandidate, setDeleteCandidate] = useState<Goal | null>(null);
+  const [notice, setNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const { data: goals = [], isLoading } = useQuery<Goal[]>({
     queryKey: ['goals'],
-    queryFn: () => api.get('/goals', { params: { status: 'active' } }).then((response) => response.data),
+    queryFn: () => api.get('/goals').then((response) => response.data),
   });
 
+  const visibleGoals = useMemo(
+    () => statusFilter === 'all' ? goals : goals.filter((goal) => goal.status === statusFilter),
+    [goals, statusFilter],
+  );
+
+  const counts = useMemo(() => ({
+    all: goals.length,
+    active: goals.filter((goal) => goal.status === 'active').length,
+    paused: goals.filter((goal) => goal.status === 'paused').length,
+    completed: goals.filter((goal) => goal.status === 'completed').length,
+  }), [goals]);
+
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ['goals'] });
+
   const createGoal = async () => {
-    await api.post('/goals', {
-      content,
-      goal_type: goalType,
-      target_metric: metric || null,
-      target_value: target ? Number(target) : null,
-      current_value: 0,
-      deadline: deadline || null,
-      milestones: [],
-    });
-    setContent(''); setMetric(''); setTarget(''); setDeadline(''); setCreating(false);
-    await queryClient.invalidateQueries({ queryKey: ['goals'] });
+    setNotice(null);
+    try {
+      await api.post('/goals', {
+        content: content.trim(),
+        goal_type: goalType,
+        target_metric: metric.trim() || null,
+        target_value: target ? Number(target) : null,
+        current_value: 0,
+        deadline: deadline || null,
+        milestones: [],
+      });
+      setContent(''); setMetric(''); setTarget(''); setDeadline(''); setCreating(false);
+      setNotice({ type: 'success', text: '目标已创建，并会参与后续任务规划。' });
+      await refresh();
+    } catch {
+      setNotice({ type: 'error', text: '目标创建失败，请检查填写内容后重试。' });
+    }
   };
 
-  const updateGoal = async (goal: Goal, updates: Record<string, unknown>) => {
-    await api.put(`/goals/${goal.id}`, updates);
-    await queryClient.invalidateQueries({ queryKey: ['goals'] });
+  const updateGoal = async (goal: Goal, updates: Record<string, unknown>, successText = '目标状态已更新。') => {
+    setBusyId(goal.id);
+    setNotice(null);
+    try {
+      await api.put(`/goals/${goal.id}`, updates);
+      await refresh();
+      setNotice({ type: 'success', text: successText });
+      return true;
+    } catch {
+      setNotice({ type: 'error', text: '目标更新失败，请稍后重试。' });
+      return false;
+    } finally {
+      setBusyId(null);
+    }
   };
+
+  const editGoal = (goal: Goal) => {
+    setNotice(null);
+    setEditingGoal(goal);
+    setEditDraft(draftFromGoal(goal));
+  };
+
+  const saveGoalEdit = async () => {
+    if (!editingGoal || !editDraft?.content.trim()) return;
+    const saved = await updateGoal(editingGoal, {
+      content: editDraft.content.trim(),
+      goal_type: editDraft.goalType,
+      target_metric: editDraft.metric.trim() || null,
+      target_value: editDraft.target ? Number(editDraft.target) : null,
+      current_value: editDraft.current ? Number(editDraft.current) : 0,
+      deadline: editDraft.deadline || null,
+    }, '目标内容和进度已保存。');
+    if (saved) {
+      setEditingGoal(null);
+      setEditDraft(null);
+    }
+  };
+
+  const deleteGoal = async (goal: Goal) => {
+    setBusyId(goal.id);
+    setNotice(null);
+    try {
+      await api.delete(`/goals/${goal.id}`);
+      await refresh();
+      setDeleteCandidate(null);
+      setNotice({ type: 'success', text: '目标已永久删除。' });
+    } catch {
+      setNotice({ type: 'error', text: '目标删除失败，请稍后重试。' });
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const tabs: Array<{ value: StatusFilter; label: string }> = [
+    { value: 'all', label: '全部' },
+    { value: 'active', label: '进行中' },
+    { value: 'paused', label: '已暂停' },
+    { value: 'completed', label: '已完成' },
+  ];
+
+  const editIsValid = Boolean(
+    editDraft?.content.trim()
+    && (!editDraft.target || (Number.isFinite(Number(editDraft.target)) && Number(editDraft.target) > 0))
+    && (!editDraft.current || (Number.isFinite(Number(editDraft.current)) && Number(editDraft.current) >= 0)),
+  );
 
   return (
-    <div className="h-full overflow-y-auto p-6">
-      <div className="mx-auto max-w-4xl">
-        <div className="mb-6 flex items-center justify-between">
-          <div><h1 className="text-2xl font-bold text-white">成长目标</h1><p className="mt-1 text-sm text-slate-500">目标会影响每日任务优先级</p></div>
-          <button type="button" onClick={() => setCreating((value) => !value)} className="rounded-xl bg-cyan-400 px-4 py-2 text-xs font-semibold text-slate-950">新建目标</button>
+    <div className="relative h-full overflow-y-auto bg-[#050816] p-5 md:p-8">
+      <div className="pointer-events-none absolute right-0 top-0 h-80 w-80 rounded-full bg-violet-500/[0.06] blur-[100px]" />
+      <div className="relative mx-auto max-w-5xl">
+        <div className="mb-7 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.24em] text-cyan-300/60">Growth roadmap</p>
+            <h1 className="mt-1 text-2xl font-bold text-white">成长目标</h1>
+            <p className="mt-1.5 text-sm text-slate-500">目标会影响每日任务优先级，也可以直接在 Agent 对话中管理。</p>
+          </div>
+          <motion.button whileHover={{ y: -2 }} whileTap={{ scale: 0.97 }} type="button" onClick={() => setCreating((value) => !value)} className="rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 px-4 py-2.5 text-xs font-semibold text-slate-950 shadow-[0_12px_30px_rgba(34,211,238,.15)]">
+            {creating ? '收起表单' : '＋ 新建目标'}
+          </motion.button>
         </div>
 
         <AnimatePresence>
-          {creating && <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}
-            className="mb-5 overflow-hidden rounded-2xl border border-cyan-400/15 bg-slate-900 p-5">
-            <div className="grid gap-3 md:grid-cols-2">
-              <input value={content} onChange={(event) => setContent(event.target.value)} placeholder="例如：12 周内完成 5 公里慢跑"
-                className="rounded-xl bg-slate-800 px-3 py-2.5 text-sm text-white outline-none md:col-span-2" />
-              <select value={goalType} onChange={(event) => setGoalType(event.target.value as Dimension)} className="rounded-xl bg-slate-800 px-3 py-2.5 text-sm text-white outline-none">
-                {Object.entries(labels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-              </select>
-              <input value={metric} onChange={(event) => setMetric(event.target.value)} placeholder="目标指标，如每周跑步次数" className="rounded-xl bg-slate-800 px-3 py-2.5 text-sm text-white outline-none" />
-              <input value={target} onChange={(event) => setTarget(event.target.value)} type="number" placeholder="目标值" className="rounded-xl bg-slate-800 px-3 py-2.5 text-sm text-white outline-none" />
-              <input value={deadline} onChange={(event) => setDeadline(event.target.value)} type="date" className="rounded-xl bg-slate-800 px-3 py-2.5 text-sm text-white outline-none" />
-            </div>
-            <button disabled={!content.trim()} type="button" onClick={() => void createGoal()} className="mt-4 rounded-xl bg-cyan-400 px-4 py-2 text-xs font-semibold text-slate-950 disabled:opacity-40">创建并纳入计划</button>
-          </motion.div>}
+          {notice && (
+            <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}
+              className={`mb-5 rounded-xl border px-4 py-3 text-xs ${notice.type === 'success' ? 'border-emerald-400/15 bg-emerald-400/[0.06] text-emerald-300' : 'border-rose-400/15 bg-rose-400/[0.06] text-rose-300'}`}>
+              {notice.text}
+            </motion.div>
+          )}
         </AnimatePresence>
 
-        <div className="grid gap-4 md:grid-cols-2">
-          {goals?.map((goal, index) => {
-            const progress = goal.target_value ? Math.min(100, 100 * (goal.current_value ?? 0) / goal.target_value) : 0;
-            return <motion.article key={goal.id} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.05 }}
-              className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
-              <div className="flex items-start justify-between gap-3"><span className="rounded-lg bg-cyan-400/10 px-2 py-1 text-[10px] text-cyan-300">{labels[goal.goal_type]}</span><span className="text-[10px] text-slate-600">{goal.deadline ?? '长期目标'}</span></div>
-              <h2 className="mt-4 text-base font-medium leading-6 text-white">{goal.content}</h2>
-              {goal.target_value != null && <div className="mt-4"><div className="flex justify-between text-xs text-slate-500"><span>{goal.target_metric || '进度'}</span><span>{goal.current_value ?? 0}/{goal.target_value}</span></div><div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-800"><div className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-violet-500" style={{ width: `${progress}%` }} /></div></div>}
-              <div className="mt-4 flex gap-2">
-                {goal.target_value != null && <button type="button" onClick={() => {
-                  const next = window.prompt('更新当前进度', String(goal.current_value ?? 0));
-                  if (next != null) void updateGoal(goal, { current_value: Number(next) });
-                }} className="rounded-lg bg-white/5 px-3 py-1.5 text-[11px] text-slate-400">更新进度</button>}
-                <button type="button" onClick={() => void updateGoal(goal, { status: 'paused' })} className="rounded-lg bg-amber-400/5 px-3 py-1.5 text-[11px] text-amber-400">暂停</button>
-                <button type="button" onClick={() => void updateGoal(goal, { status: 'completed' })} className="rounded-lg bg-emerald-400/5 px-3 py-1.5 text-[11px] text-emerald-400">完成</button>
+        <AnimatePresence>
+          {creating && (
+            <motion.div initial={{ opacity: 0, height: 0, y: -8 }} animate={{ opacity: 1, height: 'auto', y: 0 }} exit={{ opacity: 0, height: 0, y: -8 }} className="mb-6 overflow-hidden rounded-[24px] border border-cyan-300/15 bg-slate-900/75 shadow-2xl backdrop-blur-xl">
+              <div className="border-b border-white/[0.06] px-5 py-4"><h2 className="text-sm font-medium text-white">创建可追踪目标</h2><p className="mt-1 text-[10px] text-slate-600">也可以在对话中说：“创建目标：每天晚上 8 点爬坡走 40 分钟”。</p></div>
+              <div className="grid gap-3 p-5 md:grid-cols-2">
+                <input value={content} onChange={(event) => setContent(event.target.value)} placeholder="例如：每天晚上 8 点在跑步机爬坡走 40 分钟" className="rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none transition-colors focus:border-cyan-400/30 md:col-span-2" />
+                <select value={goalType} onChange={(event) => setGoalType(event.target.value as Dimension)} className="rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30">
+                  {Object.entries(labels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                </select>
+                <input value={metric} onChange={(event) => setMetric(event.target.value)} placeholder="目标指标，如每周训练次数" className="rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
+                <input value={target} onChange={(event) => setTarget(event.target.value)} type="number" placeholder="目标值（可选）" className="rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
+                <input value={deadline} onChange={(event) => setDeadline(event.target.value)} type="date" className="rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
+                <div className="md:col-span-2"><button disabled={!content.trim()} type="button" onClick={() => void createGoal()} className="rounded-xl bg-cyan-400 px-4 py-2.5 text-xs font-semibold text-slate-950 disabled:opacity-40">创建并纳入计划</button></div>
               </div>
-            </motion.article>;
-          })}
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {editingGoal && editDraft && (
+            <motion.div role="dialog" aria-modal="true" aria-label="编辑成长目标" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm"
+              onMouseDown={(event) => { if (event.target === event.currentTarget) { setEditingGoal(null); setEditDraft(null); } }}>
+              <motion.div initial={{ opacity: 0, y: 18, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 12, scale: 0.98 }}
+                className="w-full max-w-xl overflow-hidden rounded-[24px] border border-cyan-300/15 bg-slate-900 shadow-2xl">
+                <div className="border-b border-white/[0.06] px-5 py-4">
+                  <p className="text-[10px] uppercase tracking-[0.2em] text-cyan-300/60">Goal editor</p>
+                  <h2 className="mt-1 text-base font-semibold text-white">编辑成长目标</h2>
+                  <p className="mt-1 text-[11px] text-slate-500">保存后会同步影响 Agent 的目标检索和每日任务规划。</p>
+                </div>
+                <div className="grid gap-3 p-5 md:grid-cols-2">
+                  <label className="md:col-span-2">
+                    <span className="mb-1.5 block text-[10px] text-slate-500">目标内容</span>
+                    <textarea aria-label="目标内容" rows={3} value={editDraft.content} onChange={(event) => setEditDraft({ ...editDraft, content: event.target.value })}
+                      className="w-full resize-none rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
+                  </label>
+                  <label>
+                    <span className="mb-1.5 block text-[10px] text-slate-500">目标维度</span>
+                    <select aria-label="目标维度" value={editDraft.goalType} onChange={(event) => setEditDraft({ ...editDraft, goalType: event.target.value as Dimension })}
+                      className="w-full rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30">
+                      {Object.entries(labels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                    </select>
+                  </label>
+                  <label>
+                    <span className="mb-1.5 block text-[10px] text-slate-500">目标指标（可选）</span>
+                    <input aria-label="目标指标" value={editDraft.metric} onChange={(event) => setEditDraft({ ...editDraft, metric: event.target.value })}
+                      placeholder="例如：每周训练次数" className="w-full rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
+                  </label>
+                  <label>
+                    <span className="mb-1.5 block text-[10px] text-slate-500">当前进度</span>
+                    <input aria-label="当前进度" type="number" min="0" value={editDraft.current} onChange={(event) => setEditDraft({ ...editDraft, current: event.target.value })}
+                      className="w-full rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
+                  </label>
+                  <label>
+                    <span className="mb-1.5 block text-[10px] text-slate-500">目标值（可选）</span>
+                    <input aria-label="目标值" type="number" min="0.01" step="any" value={editDraft.target} onChange={(event) => setEditDraft({ ...editDraft, target: event.target.value })}
+                      className="w-full rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
+                  </label>
+                  <label className="md:col-span-2">
+                    <span className="mb-1.5 block text-[10px] text-slate-500">截止日期（可选）</span>
+                    <input aria-label="截止日期" type="date" value={editDraft.deadline} onChange={(event) => setEditDraft({ ...editDraft, deadline: event.target.value })}
+                      className="w-full rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
+                  </label>
+                </div>
+                <div className="flex justify-end gap-2 border-t border-white/[0.06] px-5 py-4">
+                  <button type="button" onClick={() => { setEditingGoal(null); setEditDraft(null); }} className="rounded-xl border border-white/[0.08] px-4 py-2.5 text-xs text-slate-400 hover:text-white">取消</button>
+                  <button type="button" disabled={!editIsValid || busyId === editingGoal.id} onClick={() => void saveGoalEdit()}
+                    className="rounded-xl bg-cyan-400 px-4 py-2.5 text-xs font-semibold text-slate-950 disabled:opacity-40">{busyId === editingGoal.id ? '保存中…' : '保存修改'}</button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {deleteCandidate && (
+            <motion.div role="dialog" aria-modal="true" aria-label="删除成长目标" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm">
+              <motion.div initial={{ opacity: 0, y: 14, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 10, scale: 0.98 }}
+                className="w-full max-w-md rounded-[22px] border border-rose-400/15 bg-slate-900 p-5 shadow-2xl">
+                <h2 className="text-base font-semibold text-white">永久删除这个目标？</h2>
+                <p className="mt-2 text-sm leading-6 text-slate-400">“{deleteCandidate.content}”将从目标规划中移除，此操作无法恢复。</p>
+                <div className="mt-5 flex justify-end gap-2">
+                  <button type="button" onClick={() => setDeleteCandidate(null)} className="rounded-xl border border-white/[0.08] px-4 py-2.5 text-xs text-slate-400 hover:text-white">取消</button>
+                  <button type="button" disabled={busyId === deleteCandidate.id} onClick={() => void deleteGoal(deleteCandidate)} className="rounded-xl bg-rose-500/15 px-4 py-2.5 text-xs font-medium text-rose-300 disabled:opacity-40">确认删除</button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <div className="mb-5 flex max-w-full gap-1 overflow-x-auto rounded-2xl border border-white/[0.06] bg-white/[0.025] p-1.5">
+          {tabs.map((tab) => <button key={tab.value} type="button" onClick={() => setStatusFilter(tab.value)} className={`relative flex-shrink-0 rounded-xl px-3.5 py-2 text-[11px] transition-colors ${statusFilter === tab.value ? 'text-white' : 'text-slate-500 hover:text-slate-300'}`}>{statusFilter === tab.value && <motion.div layoutId="goal-status-tab" className="absolute inset-0 rounded-xl border border-cyan-300/15 bg-cyan-400/[0.08]" />}<span className="relative">{tab.label} <span className="ml-1 text-[9px] opacity-60">{counts[tab.value]}</span></span></button>)}
         </div>
+
+        {isLoading ? (
+          <div className="py-20 text-center text-sm text-slate-600">正在加载目标…</div>
+        ) : visibleGoals.length === 0 ? (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="rounded-[24px] border border-dashed border-white/[0.08] bg-white/[0.02] py-16 text-center">
+            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-white/[0.04] text-xl text-slate-500">◎</div>
+            <p className="mt-4 text-sm text-slate-400">这个分类还没有目标</p>
+            <p className="mt-1 text-[10px] text-slate-600">暂停的目标会保留在“全部”和“已暂停”中，不会被删除。</p>
+          </motion.div>
+        ) : (
+          <div className="grid gap-4 md:grid-cols-2">
+            {visibleGoals.map((goal, index) => {
+              const progress = goal.target_value ? Math.min(100, 100 * (goal.current_value ?? 0) / goal.target_value) : 0;
+              const status = statusMeta[goal.status];
+              return (
+                <motion.article key={goal.id} layout initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.04 }} className="group relative overflow-hidden rounded-[22px] border border-white/[0.07] bg-slate-900/70 p-5 shadow-xl backdrop-blur-xl transition-colors hover:border-cyan-300/15">
+                  <div className="absolute -right-8 -top-10 h-28 w-28 rounded-full bg-cyan-400/[0.05] blur-3xl" />
+                  <div className="relative flex items-start justify-between gap-3">
+                    <div className="flex items-center gap-2"><span className="flex h-8 w-8 items-center justify-center rounded-xl bg-cyan-400/10 text-sm text-cyan-200">{icons[goal.goal_type]}</span><span className="text-[10px] text-slate-400">{labels[goal.goal_type]}</span></div>
+                    <span className={`rounded-full border px-2.5 py-1 text-[9px] ${status.className}`}>{status.label}</span>
+                  </div>
+                  <h2 className="relative mt-4 min-h-12 text-[15px] font-medium leading-6 text-white">{goal.content}</h2>
+                  <div className="relative mt-2 flex items-center justify-between text-[9px] text-slate-600"><span>{goal.source === 'chat' ? '来自 Agent 对话' : '手动创建'}</span><span>{goal.deadline ?? '长期目标'}</span></div>
+                  {goal.target_value != null && <div className="relative mt-4"><div className="flex justify-between text-[10px] text-slate-500"><span>{goal.target_metric || '目标进度'}</span><span>{goal.current_value ?? 0} / {goal.target_value}</span></div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800"><motion.div initial={{ width: 0 }} animate={{ width: `${progress}%` }} className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-violet-500" /></div></div>}
+                  <div className="relative mt-5 flex flex-wrap gap-2 border-t border-white/[0.055] pt-4">
+                    <button disabled={busyId === goal.id} type="button" onClick={() => editGoal(goal)} className="rounded-lg bg-white/[0.045] px-2.5 py-1.5 text-[10px] text-slate-400 hover:text-white">编辑</button>
+                    {goal.status === 'active' && <button disabled={busyId === goal.id} type="button" onClick={() => void updateGoal(goal, { status: 'paused' })} className="rounded-lg bg-amber-400/[0.07] px-2.5 py-1.5 text-[10px] text-amber-300">暂停</button>}
+                    {goal.status === 'paused' && <button disabled={busyId === goal.id} type="button" onClick={() => void updateGoal(goal, { status: 'active' })} className="rounded-lg bg-cyan-400/[0.07] px-2.5 py-1.5 text-[10px] text-cyan-300">恢复</button>}
+                    {goal.status !== 'completed' && <button disabled={busyId === goal.id} type="button" onClick={() => void updateGoal(goal, { status: 'completed' })} className="rounded-lg bg-emerald-400/[0.07] px-2.5 py-1.5 text-[10px] text-emerald-300">完成</button>}
+                    {goal.status === 'completed' && <button disabled={busyId === goal.id} type="button" onClick={() => void updateGoal(goal, { status: 'active' })} className="rounded-lg bg-cyan-400/[0.07] px-2.5 py-1.5 text-[10px] text-cyan-300">重新开始</button>}
+                    <button disabled={busyId === goal.id} type="button" onClick={() => setDeleteCandidate(goal)} className="ml-auto rounded-lg px-2.5 py-1.5 text-[10px] text-slate-600 hover:bg-rose-400/[0.07] hover:text-rose-300">删除</button>
+                  </div>
+                </motion.article>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

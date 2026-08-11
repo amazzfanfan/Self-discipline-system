@@ -90,7 +90,15 @@ def _profile_report(nickname: str, assessment: dict, skin_analysis: dict | None)
 
 @router.get("/me", response_model=UserResponse)
 async def get_me(user: User = Depends(get_current_user)):
-    return user
+    # Older onboarding records stored the avatar on UserProfile only. Keep the
+    # public user payload compatible with those records while new uploads sync
+    # both fields below.
+    return {
+        "id": user.id,
+        "email": user.email,
+        "nickname": user.nickname,
+        "avatar_url": user.avatar_url or (user.profile.avatar_url if user.profile else None),
+    }
 
 
 @router.get("/me/profile", response_model=ProfileResponse)
@@ -236,9 +244,10 @@ async def upload_photos(
     
     # 保存头像
     if avatar:
-        previous = profile.avatar_url
+        previous = profile.avatar_url or user.avatar_url
         saved = await save_image_upload(avatar, f"{user_id}_avatar")
         profile.avatar_url = saved.url
+        user.avatar_url = saved.url
         uploaded["avatar_url"] = profile.avatar_url
         uploaded["avatar_quality"] = saved.quality
         await delete_saved_image(previous)
@@ -476,7 +485,31 @@ async def evaluate(
                 f"{index}. {suggestion}"
                 for index, suggestion in enumerate(skin_suggestions[:3], 1)
             )
-        db.add(Conversation(user_id=user_id, role=RoleEnum.system, content=analysis))
+        focus_dimension = min(scores, key=scores.get)
+        db.add(
+            Conversation(
+                user_id=user_id,
+                role=RoleEnum.system,
+                content=analysis,
+                extra_metadata={
+                    "message_type": "profile_assessment",
+                    "assessment": {
+                        "scores": scores,
+                        "focus_dimension": focus_dimension,
+                        "overall_confidence": float(assessment.overall_confidence),
+                    },
+                    "skin_analysis": {
+                        "skin_type_name": skin_analysis.get("skin_type_name"),
+                        "skin_score": skin_analysis.get("skin_score"),
+                        "issues": list(skin_analysis.get("issues") or []),
+                        "source": skin_analysis.get("source"),
+                    }
+                    if skin_analysis
+                    else None,
+                    "care_suggestions": skin_suggestions[:3],
+                },
+            )
+        )
         await db.flush()
 
     try:

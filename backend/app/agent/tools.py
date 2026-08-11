@@ -11,13 +11,17 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.goal import Goal
 from app.models.score import UserScore
 from app.services.cache_service import invalidate_scores, invalidate_tasks
 from app.services.goal_service import goal_service
 from app.services.memory_service import MemoryService
 from app.services.task_service import (
     complete_task_by_dimension,
+    defer_task_by_dimension,
     get_today_tasks_dict,
+    replace_task_by_dimension,
+    resume_task_by_dimension,
     skip_task_by_dimension,
 )
 from app.services.weight_service import record_weight
@@ -78,6 +82,27 @@ class GoalCreateArgs(BaseModel):
     )
 
 
+class TaskReplaceArgs(BaseModel):
+    dimension: Literal["exercise", "diet", "sleep", "appearance"] = Field(
+        description="要修改的今日任务维度"
+    )
+    title: str = Field(min_length=2, max_length=200, description="用户明确要求的新任务内容")
+    reason: str | None = Field(default=None, max_length=500, description="修改原因")
+
+
+class GoalSelectorArgs(BaseModel):
+    goal_keyword: str = Field(min_length=1, max_length=100, description="用于定位目标的关键词")
+
+
+class GoalStatusArgs(GoalSelectorArgs):
+    status: Literal["active", "completed", "paused"] = Field(description="目标的新状态")
+
+
+class GoalUpdateArgs(GoalSelectorArgs):
+    new_content: str = Field(min_length=2, max_length=500, description="修改后的完整目标内容")
+    goal_type: Literal["exercise", "diet", "sleep", "appearance"] | None = None
+
+
 class MemorySearchArgs(BaseModel):
     query: str = Field(min_length=1, max_length=300)
     top_k: int = Field(default=3, ge=1, le=5)
@@ -122,6 +147,29 @@ class ToolRegistry:
         return name in self._tools
 
     def _register_defaults(self) -> None:
+        async def resolve_goal(keyword: str) -> tuple[Goal | None, dict[str, Any] | None]:
+            result = await self.db.execute(
+                select(Goal)
+                .where(Goal.user_id == self.user_id)
+                .order_by(Goal.updated_at.desc(), Goal.created_at.desc())
+            )
+            goals = list(result.scalars().all())
+            normalized = re.sub(r"\s+", "", keyword).lower()
+            matches = [
+                goal
+                for goal in goals
+                if normalized in re.sub(r"\s+", "", goal.content).lower()
+            ]
+            if not matches:
+                return None, {"success": False, "message": f"没有找到包含“{keyword}”的目标"}
+            if len(matches) > 1:
+                return None, {
+                    "success": False,
+                    "message": "匹配到多个目标，请提供更具体的关键词",
+                    "candidates": [goal.content for goal in matches[:5]],
+                }
+            return matches[0], None
+
         async def list_today(_: EmptyArgs) -> dict[str, Any]:
             tasks = await get_today_tasks_dict(self.db, self.user_id)
             return {"tasks": tasks, "count": len(tasks)}
@@ -140,6 +188,33 @@ class ToolRegistry:
                 await self.db.commit()
                 await invalidate_tasks(self.user_id)
                 await invalidate_scores(self.user_id)
+            return result
+
+        async def replace_task(args: TaskReplaceArgs) -> dict[str, Any]:
+            result = await replace_task_by_dimension(
+                self.db,
+                self.user_id,
+                args.dimension,
+                args.title,
+                args.reason,
+            )
+            if result.get("success"):
+                await self.db.commit()
+                await invalidate_tasks(self.user_id)
+            return result
+
+        async def defer_task(args: DimensionArgs) -> dict[str, Any]:
+            result = await defer_task_by_dimension(self.db, self.user_id, args.dimension)
+            if result.get("success"):
+                await self.db.commit()
+                await invalidate_tasks(self.user_id)
+            return result
+
+        async def resume_task(args: DimensionArgs) -> dict[str, Any]:
+            result = await resume_task_by_dimension(self.db, self.user_id, args.dimension)
+            if result.get("success"):
+                await self.db.commit()
+                await invalidate_tasks(self.user_id)
             return result
 
         async def save_weight(args: WeightArgs) -> dict[str, Any]:
@@ -171,6 +246,62 @@ class ToolRegistry:
                 source="chat",
             )
             return {"success": True, "goal": goal.to_dict()}
+
+        async def update_goal(args: GoalUpdateArgs) -> dict[str, Any]:
+            goal, error = await resolve_goal(args.goal_keyword)
+            if error:
+                return error
+            old_content = goal.content
+            updates: dict[str, Any] = {"content": args.new_content}
+            if args.goal_type:
+                updates["goal_type"] = args.goal_type
+            updated = await goal_service.update_goal(
+                db=self.db,
+                goal_id=str(goal.id),
+                user_id=self.user_id,
+                updates=updates,
+            )
+            return {
+                "success": bool(updated),
+                "message": "目标已更新" if updated else "目标更新失败",
+                "old_content": old_content,
+                "goal": updated.to_dict() if updated else None,
+            }
+
+        async def change_goal_status(args: GoalStatusArgs) -> dict[str, Any]:
+            goal, error = await resolve_goal(args.goal_keyword)
+            if error:
+                return error
+            old_status = goal.status
+            updated = await goal_service.update_goal(
+                db=self.db,
+                goal_id=str(goal.id),
+                user_id=self.user_id,
+                updates={"status": args.status},
+            )
+            return {
+                "success": bool(updated),
+                "message": "目标状态已更新" if updated else "目标状态更新失败",
+                "content": goal.content,
+                "old_status": old_status,
+                "new_status": args.status,
+            }
+
+        async def delete_goal(args: GoalSelectorArgs) -> dict[str, Any]:
+            goal, error = await resolve_goal(args.goal_keyword)
+            if error:
+                return error
+            content = goal.content
+            deleted = await goal_service.delete_goal(
+                db=self.db,
+                goal_id=str(goal.id),
+                user_id=self.user_id,
+            )
+            return {
+                "success": deleted,
+                "message": "目标已删除" if deleted else "目标删除失败",
+                "content": content,
+            }
 
         async def score_overview(_: EmptyArgs) -> dict[str, Any]:
             result = await self.db.execute(
@@ -220,6 +351,27 @@ class ToolRegistry:
                 skip,
                 "destructive",
             ),
+            AgentTool(
+                "replace_today_task",
+                "当用户明确给出替代内容时，修改指定维度的今日未完成任务并真实写入数据库",
+                TaskReplaceArgs,
+                replace_task,
+                "write",
+            ),
+            AgentTool(
+                "defer_today_task",
+                "将指定维度任务设为今日暂缓；不算完成、不算跳过、不扣分，可恢复",
+                DimensionArgs,
+                defer_task,
+                "write",
+            ),
+            AgentTool(
+                "resume_today_task",
+                "把今日暂缓的指定维度任务恢复为待完成",
+                DimensionArgs,
+                resume_task,
+                "write",
+            ),
             AgentTool("record_weight", "记录用户明确提供的当前体重", WeightArgs, save_weight, "write"),
             AgentTool("list_goals", "查询用户目标", GoalListArgs, list_goals),
             AgentTool(
@@ -229,30 +381,59 @@ class ToolRegistry:
                 create_goal,
                 "write",
             ),
+            AgentTool(
+                "update_goal",
+                "根据关键词定位并修改一个已有成长目标；必须有修改后的完整内容",
+                GoalUpdateArgs,
+                update_goal,
+                "write",
+            ),
+            AgentTool(
+                "change_goal_status",
+                "暂停、恢复或完成一个已有成长目标",
+                GoalStatusArgs,
+                change_goal_status,
+                "write",
+            ),
+            AgentTool(
+                "delete_goal",
+                "永久删除一个已有成长目标；必须取得用户明确确认",
+                GoalSelectorArgs,
+                delete_goal,
+                "destructive",
+            ),
             AgentTool("get_score_overview", "查询四个成长维度的当前评分", EmptyArgs, score_overview),
             AgentTool("search_memory", "检索与当前问题相关的历史偏好和事实", MemorySearchArgs, search_memory),
         ]
         for definition in definitions:
             self._register(definition)
 
-    def _guard(self, tool: AgentTool, user_message: str) -> tuple[bool, str]:
+    def _guard(self, tool: AgentTool, user_message: str) -> tuple[bool, str, str]:
         text = user_message.strip()
         if tool.name == "skip_task" and not re.search(
             r"(?:确认.{0,8}跳过|跳过.{0,8}(?:确认|吧|掉)|明确跳过)", text
         ):
-            return False, "跳过任务会影响评分，请用户明确回复“确认跳过XX任务”后再执行。"
+            return False, "跳过任务会影响评分，请用户明确回复“确认跳过XX任务”后再执行。", "approval_required"
+        if tool.name == "delete_goal" and not re.search(
+            r"(?:确认.{0,8}(?:删除|移除)|(?:删除|移除).{0,8}(?:确认|吧|掉)|确认删除目标)", text
+        ):
+            return False, "删除目标不可撤销，请明确确认后再执行。", "approval_required"
+        if tool.name == "replace_today_task" and not re.search(
+            r"(?:改成|改为|换成|换为|替换为|调整为)", text
+        ):
+            return False, "请先说明希望把该任务改成什么，再执行修改。", "clarification_required"
         if tool.name == "complete_task" and not has_explicit_completion(text):
-            return False, "用户没有明确表示任务已经完成，禁止代替用户完成打卡。"
+            return False, "你还没有明确表示任务已经完成，因此本次没有打卡。", "clarification_required"
         if tool.name == "record_weight" and (
             not re.search(r"\d+(?:\.\d+)?", text)
             or not has_explicit_weight_record_intent(text)
         ):
-            return False, "用户没有明确要求记录自己的体重。"
+            return False, "请明确提供要记录的体重数值。", "clarification_required"
         if tool.name == "create_goal" and not re.search(
             r"(?:目标|计划|打算|想要|希望|准备)", text
         ):
-            return False, "用户没有明确表达创建目标的意图。"
-        return True, ""
+            return False, "请明确说明希望创建的成长目标。", "clarification_required"
+        return True, "", ""
 
     async def execute(
         self, name: str, arguments: dict[str, Any], user_message: str
@@ -262,9 +443,13 @@ class ToolRegistry:
         if not tool:
             return {"error": f"未知工具: {name}"}, False, "error", 0
 
-        allowed, reason = self._guard(tool, user_message)
+        allowed, reason, guard_status = self._guard(tool, user_message)
         if not allowed:
-            return {"message": reason, "requires_confirmation": True}, False, "approval_required", 0
+            return {
+                "message": reason,
+                "requires_confirmation": guard_status == "approval_required",
+                "requires_clarification": guard_status == "clarification_required",
+            }, False, guard_status, 0
 
         try:
             parsed = tool.args_model.model_validate(arguments)

@@ -13,5 +13,6 @@ venv/
 .venv/
 *.egg-info/
 uploads/
+logs/
 .claude/
 .gstack/

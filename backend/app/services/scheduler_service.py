@@ -245,6 +245,19 @@ async def generate_tasks_for_user(
                 user_id=user_id,
                 role=RoleEnum.system,
                 content=content,
+                extra_metadata={
+                    "message_type": "daily_tasks",
+                    "greeting": greeting,
+                    "scheduled_date": today.isoformat(),
+                    "tasks": [
+                        {
+                            "dimension": dim.value,
+                            "title": title,
+                            "difficulty": diff.value,
+                        }
+                        for dim, title, diff in generated_tasks
+                    ],
+                },
             )
             session.add(msg)
 

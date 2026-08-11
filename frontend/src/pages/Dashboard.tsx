@@ -23,6 +23,27 @@ const DIM_LABELS: Record<string, string> = {
   appearance: '形象管理',
 };
 
+const TASK_STATUS: Record<Task['status'], { label: string; badge: string; dot: string }> = {
+  pending: { label: '待完成', badge: 'bg-slate-700/60 text-slate-400', dot: 'bg-slate-500' },
+  in_progress: { label: '进行中', badge: 'bg-blue-900/60 text-blue-300', dot: 'bg-blue-400' },
+  completed: { label: '已完成', badge: 'bg-emerald-900/60 text-emerald-400', dot: 'bg-emerald-400' },
+  failed: { label: '已跳过', badge: 'bg-rose-900/60 text-rose-300', dot: 'bg-rose-400' },
+  deferred: { label: '今日暂缓', badge: 'bg-amber-900/60 text-amber-300', dot: 'bg-amber-400' },
+};
+
+const DIFFICULTY_LABELS: Record<Task['difficulty'], string> = {
+  easy: '简单',
+  medium: '适中',
+  hard: '较难',
+};
+
+function localDateKey(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const { addNotification } = useNotification();
@@ -33,7 +54,7 @@ export default function Dashboard() {
     queryFn: () => api.get('/scores').then((r) => r.data),
   });
 
-  const { data: tasks } = useQuery<Task[]>({
+  const { data: tasks, isLoading: tasksLoading } = useQuery<Task[]>({
     queryKey: ['today-tasks'],
     queryFn: () => api.get('/tasks/today').then((r) => r.data),
   });
@@ -57,11 +78,9 @@ export default function Dashboard() {
   // 检测任务发布（只在当天首次加载时通知）
   useEffect(() => {
     if (tasks && tasks.length > 0 && !hasNotifiedRef.current) {
-      const today = new Date().toISOString().split('T')[0];
+      const today = localDateKey(new Date());
       const lastNotified = localStorage.getItem('lastTaskNotified');
-      
-      console.log('[通知调试]', { today, lastNotified, shouldNotify: lastNotified !== today });
-      
+
       // 如果今天还没有通知过，就显示通知
       if (lastNotified !== today) {
         hasNotifiedRef.current = true;
@@ -72,7 +91,6 @@ export default function Dashboard() {
           duration: 6000,
         });
         localStorage.setItem('lastTaskNotified', today);
-        console.log('[通知调试] 已保存:', today);
       }
     }
   }, [tasks, addNotification]);
@@ -122,7 +140,7 @@ export default function Dashboard() {
             className="flex flex-col gap-4">
             <div className="bg-slate-900 rounded-2xl p-5 border border-slate-800 flex-1">
               <div className="text-slate-500 text-xs mb-1">今日完成</div>
-              <div className="text-3xl font-bold text-white">{completedCount}<span className="text-lg text-slate-500">/{totalCount}</span></div>
+              <div className="text-3xl font-bold text-white">{tasksLoading ? '—' : completedCount}<span className="text-lg text-slate-500">/{tasksLoading ? '—' : totalCount}</span></div>
               <div className="mt-2 h-1.5 bg-slate-800 rounded-full overflow-hidden">
                 <div className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400 rounded-full transition-all duration-500"
                   style={{ width: totalCount > 0 ? `${(completedCount / totalCount) * 100}%` : '0%' }} />
@@ -156,26 +174,27 @@ export default function Dashboard() {
               <button onClick={() => navigate('/tasks')}
                 className="text-xs text-slate-500 hover:text-slate-400 transition-colors">查看全部 →</button>
             </div>
-            {tasks?.length === 0 && (
+            {tasksLoading && (
+              <p className="py-4 text-center text-sm text-slate-600">正在同步今日任务…</p>
+            )}
+            {!tasksLoading && tasks?.length === 0 && (
               <p className="text-slate-600 text-sm py-4 text-center">暂无任务，等待系统发布...</p>
             )}
             <div className="space-y-2">
-              {tasks?.map((t) => (
+              {tasks?.map((t) => {
+                const status = TASK_STATUS[t.status];
+                return (
                 <div key={t.id} className="bg-slate-800/60 rounded-lg p-3 flex items-start gap-3">
-                  <div className={`w-2 h-2 rounded-full flex-shrink-0 mt-1.5 ${
-                    t.status === 'completed' ? 'bg-emerald-400' : 'bg-slate-600'
-                  }`} />
+                  <div className={`mt-1.5 h-2 w-2 flex-shrink-0 rounded-full ${status.dot}`} />
                   <div className="min-w-0 flex-1">
                     <div className="text-white text-sm">{t.title}</div>
-                    <div className="text-slate-500 text-xs mt-0.5">{t.difficulty}</div>
+                    <div className="text-slate-500 text-xs mt-0.5">{DIFFICULTY_LABELS[t.difficulty]}</div>
                   </div>
-                  <span className={`text-xs px-2 py-0.5 rounded whitespace-nowrap flex-shrink-0 mt-0.5 ${
-                    t.status === 'completed' ? 'bg-emerald-900/60 text-emerald-400' : 'bg-slate-700/60 text-slate-400'
-                  }`}>
-                    {t.status === 'completed' ? '已完成' : '待完成'}
+                  <span className={`mt-0.5 flex-shrink-0 whitespace-nowrap rounded px-2 py-0.5 text-xs ${status.badge}`}>
+                    {status.label}
                   </span>
                 </div>
-              ))}
+              );})}
             </div>
           </motion.div>
 

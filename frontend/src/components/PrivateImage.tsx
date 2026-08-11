@@ -6,7 +6,7 @@ interface Props extends Omit<React.ImgHTMLAttributes<HTMLImageElement>, 'src'> {
 }
 
 export default function PrivateImage({ src, alt = '', ...props }: Props) {
-  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const [imageState, setImageState] = useState<{ source: string; url: string } | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -16,9 +16,9 @@ export default function PrivateImage({ src, alt = '', ...props }: Props) {
     void api.get(apiPath, { responseType: 'blob' }).then((response) => {
       if (!active) return;
       createdUrl = URL.createObjectURL(response.data);
-      setObjectUrl(createdUrl);
+      setImageState({ source: src, url: createdUrl });
     }).catch(() => {
-      if (active) setObjectUrl(null);
+      if (active) setImageState(null);
     });
     return () => {
       active = false;
@@ -26,6 +26,6 @@ export default function PrivateImage({ src, alt = '', ...props }: Props) {
     };
   }, [src]);
 
-  if (!objectUrl) return null;
-  return <img src={objectUrl} alt={alt} {...props} />;
+  if (!src || imageState?.source !== src) return null;
+  return <img src={imageState.url} alt={alt} {...props} />;
 }

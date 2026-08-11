@@ -3,7 +3,10 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
+import ConfirmDialog from '../components/ConfirmDialog';
 import PrivateImage from '../components/PrivateImage';
+import { useNotification } from '../components/notification-context';
+import { useAuthStore } from '../stores/authStore';
 import type { AssessmentRun } from '../types';
 
 const goalTypeIcons: Record<string, string> = {
@@ -53,6 +56,10 @@ interface GoalData {
   content: string;
   goal_type: string;
   structured_data?: GoalStructuredData | null;
+  target_metric: string | null;
+  target_value: number | null;
+  current_value: number | null;
+  deadline: string | null;
   status: string;
 }
 
@@ -60,6 +67,10 @@ interface GoalPayload {
   content: string;
   goal_type: string;
   structured_data: GoalStructuredData;
+  target_metric: string | null;
+  target_value: number | null;
+  current_value?: number;
+  deadline: string | null;
 }
 
 interface GoalForm {
@@ -83,6 +94,8 @@ const emptyGoalForm: GoalForm = {
 export default function Profile() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { addNotification } = useNotification();
+  const fetchUser = useAuthStore((state) => state.fetchUser);
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({ height_cm: '', weight_kg: '', age: '', gender: 'male' });
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
@@ -92,7 +105,7 @@ export default function Profile() {
   const [showGoalForm, setShowGoalForm] = useState(false);
   const [goalForm, setGoalForm] = useState<GoalForm>(emptyGoalForm);
   const [editingGoalId, setEditingGoalId] = useState<string | null>(null);
-  const [deletingGoalId, setDeletingGoalId] = useState<string | null>(null);
+  const [deleteCandidate, setDeleteCandidate] = useState<GoalData | null>(null);
 
   const { data: profile } = useQuery<ProfileData>({
     queryKey: ['profile'],
@@ -126,6 +139,7 @@ export default function Profile() {
       queryClient.invalidateQueries({ queryKey: ['profile'] });
       setEditing(false);
     },
+    onError: () => addNotification({ type: 'error', title: '保存失败', message: '身体数据未更新，请检查输入后重试。' }),
   });
 
   const evaluateMutation = useMutation({
@@ -140,26 +154,27 @@ export default function Profile() {
       queryClient.invalidateQueries({ queryKey: ['scores'] });
       queryClient.invalidateQueries({ queryKey: ['profile'] });
       queryClient.invalidateQueries({ queryKey: ['latest-assessment'] });
-      alert('规则评估完成，状态基线已更新');
+      addNotification({ type: 'success', title: '评估完成', message: '状态基线已按固定规则更新。' });
     },
-    onError: () => alert('请先重新填写结构化问卷，再进行评估'),
+    onError: () => addNotification({ type: 'error', title: '无法重新评估', message: '请先重新填写结构化问卷，再进行评估。' }),
   });
 
   const photoMutation = useMutation({
     mutationFn: async (file: File) => {
       const formData = new FormData();
-      formData.append('front_photo', file);
+      formData.append('avatar', file);
       return api.post('/users/me/photos/upload', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['profile'] });
+      void fetchUser();
       setUploadingPhoto(false);
     },
     onError: () => {
       setUploadingPhoto(false);
-      alert('照片上传失败，请重试');
+      addNotification({ type: 'error', title: '照片上传失败', message: '请检查图片格式和大小后重试。' });
     },
   });
 
@@ -170,7 +185,9 @@ export default function Profile() {
       queryClient.invalidateQueries({ queryKey: ['goals'] });
       setShowGoalForm(false);
       setGoalForm(emptyGoalForm);
+      addNotification({ type: 'success', title: '目标已创建', message: '可以在“成长目标”页面继续管理。' });
     },
+    onError: () => addNotification({ type: 'error', title: '目标创建失败', message: '请检查填写内容后重试。' }),
   });
 
   const updateGoalMutation = useMutation({
@@ -180,15 +197,19 @@ export default function Profile() {
       setEditingGoalId(null);
       setShowGoalForm(false);
       setGoalForm(emptyGoalForm);
+      addNotification({ type: 'success', title: '目标已更新', message: '目标数据已经同步。' });
     },
+    onError: () => addNotification({ type: 'error', title: '目标更新失败', message: '目标数据未改变，请稍后重试。' }),
   });
 
   const deleteGoalMutation = useMutation({
     mutationFn: (id: string) => api.delete(`/goals/${id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['goals'] });
-      setDeletingGoalId(null);
+      setDeleteCandidate(null);
+      addNotification({ type: 'success', title: '目标已删除', message: '该目标已从规划中移除。' });
     },
+    onError: () => addNotification({ type: 'error', title: '删除失败', message: '目标仍然保留，请稍后重试。' }),
   });
 
   const handlePhotoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -209,20 +230,21 @@ export default function Profile() {
 
   const handleGoalSubmit = () => {
     const payload: GoalPayload = {
-      content: goalForm.title,
+      content: goalForm.title.trim(),
       goal_type: goalForm.goal_type,
       structured_data: {
         description: goalForm.description || undefined,
-        target_value: goalForm.target_value ? parseFloat(goalForm.target_value) : undefined,
         target_unit: goalForm.target_unit || undefined,
-        deadline: goalForm.deadline || undefined,
       },
+      target_metric: goalForm.target_unit ? `目标（${goalForm.target_unit}）` : null,
+      target_value: goalForm.target_value ? parseFloat(goalForm.target_value) : null,
+      deadline: goalForm.deadline || null,
     };
 
     if (editingGoalId !== null) {
       updateGoalMutation.mutate({ id: editingGoalId, data: payload });
     } else {
-      createGoalMutation.mutate(payload);
+      createGoalMutation.mutate({ ...payload, current_value: 0 });
     }
   };
 
@@ -233,9 +255,9 @@ export default function Profile() {
       title: goal.content || '',
       description: details.description || '',
       goal_type: goal.goal_type || 'exercise',
-      target_value: details.target_value?.toString() || '',
+      target_value: goal.target_value?.toString() || '',
       target_unit: details.target_unit || '',
-      deadline: details.deadline || '',
+      deadline: goal.deadline || '',
     });
     setShowGoalForm(true);
   };
@@ -246,11 +268,7 @@ export default function Profile() {
     setGoalForm(emptyGoalForm);
   };
 
-  const handleDeleteGoal = (id: string) => {
-    if (confirm('确定要删除这个目标吗？')) {
-      deleteGoalMutation.mutate(id);
-    }
-  };
+  const handleDeleteGoal = (goal: GoalData) => setDeleteCandidate(goal);
 
   const genderLabel: Record<string, string> = { male: '男', female: '女', other: '其他' };
 
@@ -265,10 +283,10 @@ export default function Profile() {
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
             className="bg-slate-900 rounded-2xl p-5 border border-slate-800 flex flex-col items-center">
             <div className="w-full aspect-square rounded-xl overflow-hidden bg-slate-800 mb-3 relative group">
-              {profile?.front_photo_url ? (
+              {profile?.avatar_url ? (
                 <PrivateImage
-                  src={profile.front_photo_url}
-                  alt="个人照片"
+                  src={profile.avatar_url}
+                  alt="个人头像"
                   className="w-full h-full object-cover"
                 />
               ) : (
@@ -282,7 +300,7 @@ export default function Profile() {
               )}
               {/* Hover overlay */}
               <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                <span className="text-white text-sm">{profile?.front_photo_url ? '更换照片' : '上传照片'}</span>
+                <span className="text-white text-sm">{profile?.avatar_url ? '更换头像' : '上传头像'}</span>
               </div>
               <button onClick={() => fileInputRef.current?.click()}
                 className="absolute inset-0 cursor-pointer" />
@@ -292,9 +310,9 @@ export default function Profile() {
             <button onClick={() => fileInputRef.current?.click()}
               disabled={uploadingPhoto}
               className="w-full py-2 text-sm text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors disabled:opacity-50">
-              {uploadingPhoto ? '上传中...' : profile?.front_photo_url ? '更换照片' : '上传照片'}
+              {uploadingPhoto ? '上传中...' : profile?.avatar_url ? '更换头像' : '上传头像'}
             </button>
-            <p className="text-slate-600 text-xs mt-2 text-center">正面照仅用于 Face++ 肤质观察</p>
+            <p className="text-slate-600 text-xs mt-2 text-center">头像仅用于个人资料与聊天展示</p>
           </motion.div>
 
           {/* Body data card */}
@@ -521,19 +539,19 @@ export default function Profile() {
                       <p className="text-slate-500 text-xs mt-0.5 truncate">{goal.structured_data.description}</p>
                     )}
                     <div className="flex items-center gap-3 mt-1">
-                      {goal.structured_data?.target_value && (
+                      {goal.target_value != null && (
                         <span className="text-slate-600 text-xs">
-                          目标: {goal.structured_data.target_value} {goal.structured_data.target_unit || ''}
+                          目标: {goal.target_value} {goal.structured_data?.target_unit || ''}
                         </span>
                       )}
-                      {goal.structured_data?.deadline && (
+                      {goal.deadline && (
                         <span className="text-slate-600 text-xs">
-                          截止: {goal.structured_data.deadline}
+                          截止: {goal.deadline}
                         </span>
                       )}
-                      {goal.structured_data?.current_value !== undefined && goal.structured_data.target_value && (
+                      {goal.current_value != null && goal.target_value != null && (
                         <span className="text-emerald-500/60 text-xs">
-                          进度: {goal.structured_data.current_value}/{goal.structured_data.target_value} {goal.structured_data.target_unit || ''}
+                          进度: {goal.current_value}/{goal.target_value} {goal.structured_data?.target_unit || ''}
                         </span>
                       )}
                     </div>
@@ -550,12 +568,12 @@ export default function Profile() {
                       </svg>
                     </button>
                     <button
-                      onClick={() => handleDeleteGoal(goal.id)}
-                      disabled={deletingGoalId === goal.id}
+                      onClick={() => handleDeleteGoal(goal)}
+                      disabled={deleteGoalMutation.isPending && deleteCandidate?.id === goal.id}
                       className="p-2 text-slate-400 hover:text-red-400 hover:bg-slate-700 rounded-lg transition-colors"
                       title="删除"
                     >
-                      {deletingGoalId === goal.id ? (
+                      {deleteGoalMutation.isPending && deleteCandidate?.id === goal.id ? (
                         <span className="text-xs">...</span>
                       ) : (
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -609,6 +627,15 @@ export default function Profile() {
           </div>
         </motion.div>
       </div>
+      <ConfirmDialog
+        open={Boolean(deleteCandidate)}
+        title="永久删除这个目标？"
+        description={deleteCandidate ? `“${deleteCandidate.content}”将从目标规划中移除，此操作无法恢复。` : ''}
+        confirmLabel="确认删除"
+        busy={deleteGoalMutation.isPending}
+        onCancel={() => setDeleteCandidate(null)}
+        onConfirm={() => { if (deleteCandidate) deleteGoalMutation.mutate(deleteCandidate.id); }}
+      />
     </div>
   );
 }

@@ -16,7 +16,11 @@ async def complete_task_by_dimension(db: AsyncSession, user_id: str, dimension: 
                 Task.user_id == user_id,
                 Task.scheduled_date == local_today(),
                 Task.dimension == dim_enum,
-                Task.status == TaskStatusEnum.pending,
+                Task.status.in_([
+                    TaskStatusEnum.pending,
+                    TaskStatusEnum.in_progress,
+                    TaskStatusEnum.deferred,
+                ]),
             )
         )
     )
@@ -45,7 +49,11 @@ async def skip_task_by_dimension(db: AsyncSession, user_id: str, dimension: str)
                 Task.user_id == user_id,
                 Task.scheduled_date == local_today(),
                 Task.dimension == dim_enum,
-                Task.status == TaskStatusEnum.pending,
+                Task.status.in_([
+                    TaskStatusEnum.pending,
+                    TaskStatusEnum.in_progress,
+                    TaskStatusEnum.deferred,
+                ]),
             )
         )
     )
@@ -61,6 +69,97 @@ async def skip_task_by_dimension(db: AsyncSession, user_id: str, dimension: str)
         "message": f"已跳过任务：{task.title}",
         "task_title": task.title,
         "score_change": score_change,
+    }
+
+
+async def replace_task_by_dimension(
+    db: AsyncSession,
+    user_id: str,
+    dimension: str,
+    title: str,
+    reason: str | None = None,
+) -> dict:
+    """Replace today's unfinished task and return an auditable before/after result."""
+    dim_enum = DimensionEnum(dimension)
+    result = await db.execute(
+        select(Task).where(
+            and_(
+                Task.user_id == user_id,
+                Task.scheduled_date == local_today(),
+                Task.dimension == dim_enum,
+                Task.status.in_([
+                    TaskStatusEnum.pending,
+                    TaskStatusEnum.in_progress,
+                    TaskStatusEnum.deferred,
+                ]),
+            )
+        )
+    )
+    task = result.scalars().first()
+    if not task:
+        return {"success": False, "message": "该维度今日没有可修改的未完成任务"}
+
+    old_title = task.title
+    task.title = title.strip()[:200]
+    task.description = ""
+    task.rationale = (reason or "用户通过对话调整了今日任务")[:500]
+    task.source = "chat_modified"
+    return {
+        "success": True,
+        "message": f"任务已更新：{task.title}",
+        "dimension": dimension,
+        "old_title": old_title,
+        "new_title": task.title,
+    }
+
+
+async def defer_task_by_dimension(db: AsyncSession, user_id: str, dimension: str) -> dict:
+    """Temporarily remove a task from today's actionable queue without a penalty."""
+    dim_enum = DimensionEnum(dimension)
+    result = await db.execute(
+        select(Task).where(
+            and_(
+                Task.user_id == user_id,
+                Task.scheduled_date == local_today(),
+                Task.dimension == dim_enum,
+                Task.status.in_([TaskStatusEnum.pending, TaskStatusEnum.in_progress]),
+            )
+        )
+    )
+    task = result.scalars().first()
+    if not task:
+        return {"success": False, "message": "该维度今日没有可暂缓的任务"}
+    task.status = TaskStatusEnum.deferred
+    return {
+        "success": True,
+        "message": f"任务已设为今日暂缓：{task.title}",
+        "task_title": task.title,
+        "status": "deferred",
+    }
+
+
+async def resume_task_by_dimension(db: AsyncSession, user_id: str, dimension: str) -> dict:
+    """Return a deferred task to today's actionable queue."""
+    dim_enum = DimensionEnum(dimension)
+    result = await db.execute(
+        select(Task).where(
+            and_(
+                Task.user_id == user_id,
+                Task.scheduled_date == local_today(),
+                Task.dimension == dim_enum,
+                Task.status == TaskStatusEnum.deferred,
+            )
+        )
+    )
+    task = result.scalars().first()
+    if not task:
+        return {"success": False, "message": "该维度今日没有已暂缓任务"}
+    task.status = TaskStatusEnum.pending
+    return {
+        "success": True,
+        "message": f"任务已恢复为待完成：{task.title}",
+        "task_title": task.title,
+        "status": "pending",
     }
 
 

@@ -13,6 +13,7 @@ import logging
 import re
 import traceback
 from app.services.llm_service import get_embedding
+from app.services.cache_service import enqueue_background_job
 from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -54,14 +55,6 @@ class GoalService:
             Goal 对象
         """
         try:
-            # 生成向量嵌入
-            embedding = None
-            try:
-                embedding = await get_embedding(content)
-                logger.info(f"Generated embedding for goal: dim={len(embedding)}")
-            except Exception as e:
-                logger.warning(f"Failed to generate embedding, storing without it: {e}")
-
             # 创建目标记录
             goal = Goal(
                 user_id=user_id,
@@ -73,14 +66,21 @@ class GoalService:
                 current_value=current_value,
                 deadline=deadline,
                 milestones=milestones or [],
-                embedding=embedding,
-                embedding_model=settings.EMBEDDING_MODEL if embedding else None,
+                embedding=None,
+                embedding_model=None,
                 source=source,
                 status=GoalStatus.active.value,
             )
 
             db.add(goal)
             await db.commit()
+
+            queued = await enqueue_background_job(
+                "index_goal",
+                {"goal_id": str(goal.id), "user_id": str(user_id)},
+            )
+            if not queued:
+                logger.warning("Goal %s saved without deferred embedding; keyword search remains available", goal.id)
 
             logger.info(f"Created goal for user {user_id}: {content[:50]}...")
             return goal
@@ -125,24 +125,26 @@ class GoalService:
             content_changed = False
             for key, value in updates.items():
                 if hasattr(goal, key):
-                    setattr(goal, key, value)
-                    if key == "content":
+                    if key == "content" and value != goal.content:
                         content_changed = True
+                    setattr(goal, key, value)
 
-            # 如果内容变化，更新向量嵌入
+            # 内容变化时先完成业务写入，向量在本地 Redis worker 中异步更新，
+            # 避免一次远程 embedding 调用阻塞用户对话。
             if content_changed and goal.content:
                 goal.embedding = None
                 goal.embedding_model = None
-                try:
-                    embedding = await get_embedding(goal.content)
-                    goal.embedding = embedding
-                    goal.embedding_model = settings.EMBEDDING_MODEL
-                    logger.info(f"Updated embedding for goal {goal_id}")
-                except Exception as e:
-                    logger.warning(f"Failed to update embedding for goal {goal_id}: {e}")
 
             goal.updated_at = datetime.now(timezone.utc)
             await db.commit()
+
+            if content_changed:
+                queued = await enqueue_background_job(
+                    "index_goal",
+                    {"goal_id": str(goal.id), "user_id": str(user_id)},
+                )
+                if not queued:
+                    logger.warning("Updated goal %s remains available through keyword search", goal.id)
 
             logger.info(f"Updated goal {goal_id}")
             return goal
@@ -151,6 +153,28 @@ class GoalService:
             logger.error(f"Failed to update goal {goal_id}: {e}")
             await db.rollback()
             raise
+
+    async def index_goal_embedding(
+        self,
+        db: AsyncSession,
+        goal_id: str,
+        user_id: str,
+    ) -> bool:
+        """Populate a goal vector from the remote embedding API in the background."""
+        result = await db.execute(
+            select(Goal)
+            .where(Goal.id == goal_id)
+            .where(Goal.user_id == user_id)
+        )
+        goal = result.scalar_one_or_none()
+        if not goal:
+            return False
+        embedding = await get_embedding(goal.content)
+        goal.embedding = embedding
+        goal.embedding_model = settings.EMBEDDING_MODEL
+        await db.commit()
+        logger.info("Indexed goal embedding: %s", goal_id)
+        return True
 
     async def delete_goal(
         self,

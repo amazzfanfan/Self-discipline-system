@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuthStore } from '../stores/authStore';
+import PrivateImage from './PrivateImage';
 
 const navItems = [
   {
@@ -66,6 +67,7 @@ const navItems = [
 export default function Layout() {
   const [expanded, setExpanded] = useState(false);
   const logout = useAuthStore((s) => s.logout);
+  const user = useAuthStore((s) => s.user);
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -157,6 +159,24 @@ export default function Layout() {
 
         {/* Bottom section */}
         <div className="p-2 border-t border-slate-800/50 space-y-1">
+          <button
+            type="button"
+            onClick={() => navigate('/profile')}
+            className="mb-1 flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition-colors hover:bg-white/[0.04]"
+          >
+            <div className="relative h-7 w-7 flex-shrink-0 overflow-hidden rounded-lg border border-cyan-300/15 bg-gradient-to-br from-cyan-500 to-violet-500">
+              <div className="absolute inset-0 flex items-center justify-center text-[10px] font-semibold text-white">{user?.nickname?.slice(0, 1) ?? '我'}</div>
+              <PrivateImage src={user?.avatar_url} alt={user?.nickname ?? '个人头像'} className="absolute inset-0 h-full w-full object-cover" />
+            </div>
+            <AnimatePresence>
+              {expanded && (
+                <motion.div initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -8 }} className="min-w-0">
+                  <p className="truncate text-xs font-medium text-slate-200">{user?.nickname ?? '个人中心'}</p>
+                  <p className="truncate text-[9px] text-slate-600">查看头像与画像</p>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </button>
           {/* Toggle button */}
           <button onClick={() => setExpanded(!expanded)}
             className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-slate-500 hover:text-slate-300 hover:bg-slate-800/50 transition-all">

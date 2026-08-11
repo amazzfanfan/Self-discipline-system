@@ -54,6 +54,94 @@ def test_explicit_goal_is_created_before_completion_keyword_is_considered():
     assert decision.arguments["goal_type"] == "exercise"
 
 
+def test_explicit_task_replacement_uses_persistent_tool():
+    runtime = make_runtime()
+
+    decision = runtime._fallback_decision(
+        "请把形象任务改为晚间温和洁面并冷敷5分钟", []
+    )
+
+    assert decision.tool == "replace_today_task"
+    assert decision.arguments["dimension"] == "appearance"
+    assert decision.arguments["title"] == "晚间温和洁面并冷敷5分钟"
+
+
+def test_task_replacement_accepts_huan_wei_expression():
+    runtime = make_runtime()
+
+    decision = runtime._fallback_decision("形象任务改一下，换为抹洗面奶", [])
+
+    assert decision.tool == "replace_today_task"
+    assert decision.arguments["title"] == "抹洗面奶"
+
+
+def test_generic_task_edit_request_does_not_invent_replacement():
+    runtime = make_runtime()
+
+    decision = runtime._fallback_decision("我要修改形象任务", [])
+
+    assert decision.action == "respond"
+
+
+def test_clear_daily_plan_is_persisted_as_goal():
+    runtime = make_runtime()
+
+    decision = runtime._fallback_decision(
+        "我计划每天晚上8点在跑步机上爬坡走40分钟", []
+    )
+
+    assert decision.tool == "create_goal"
+    assert decision.arguments["goal_type"] == "exercise"
+
+
+def test_goal_pause_routes_to_status_tool():
+    runtime = make_runtime()
+
+    decision = runtime._fallback_decision("暂停我的跑步目标", [])
+
+    assert decision.tool == "change_goal_status"
+    assert decision.arguments == {"goal_keyword": "跑步", "status": "paused"}
+
+
+def test_goal_update_requires_complete_new_content():
+    runtime = make_runtime()
+
+    decision = runtime._fallback_decision(
+        "把跑步目标改为每周一三五晚上跑步30分钟", []
+    )
+
+    assert decision.tool == "update_goal"
+    assert decision.arguments["goal_keyword"] == "跑步"
+    assert decision.arguments["new_content"] == "每周一三五晚上跑步30分钟"
+
+
+def test_skip_request_routes_to_guarded_tool_before_confirmation():
+    runtime = make_runtime()
+
+    decision = runtime._fallback_decision("跳过今日的睡眠任务", [])
+
+    assert decision.tool == "skip_task"
+    assert decision.arguments == {"dimension": "sleep"}
+
+
+def test_today_task_query_is_routed_without_planner_model():
+    runtime = make_runtime()
+
+    decision = runtime._fallback_decision("我当前有哪些任务", [])
+
+    assert decision.tool == "list_today_tasks"
+
+
+def test_defer_and_resume_are_distinct_from_skip():
+    runtime = make_runtime()
+
+    defer = runtime._fallback_decision("今天暂缓睡眠任务", [])
+    resume = runtime._fallback_decision("恢复睡眠任务", [])
+
+    assert defer.tool == "defer_today_task"
+    assert resume.tool == "resume_today_task"
+
+
 def test_skip_tool_requires_explicit_confirmation():
     db = MagicMock()
     db.rollback = AsyncMock()
@@ -61,6 +149,20 @@ def test_skip_tool_requires_explicit_confirmation():
 
     result, success, status, _ = run(
         registry.execute("skip_task", {"dimension": "sleep"}, "我不想做睡眠任务")
+    )
+
+    assert success is False
+    assert status == "approval_required"
+    assert result["requires_confirmation"] is True
+
+
+def test_delete_goal_requires_explicit_confirmation():
+    db = MagicMock()
+    db.rollback = AsyncMock()
+    registry = ToolRegistry(db, str(uuid.uuid4()))
+
+    result, success, status, _ = run(
+        registry.execute("delete_goal", {"goal_keyword": "跑步"}, "删除跑步目标")
     )
 
     assert success is False
@@ -80,8 +182,9 @@ def test_complete_tool_rejects_future_intent_even_if_planner_selects_it():
     )
 
     assert success is False
-    assert status == "approval_required"
-    assert result["requires_confirmation"] is True
+    assert status == "clarification_required"
+    assert result["requires_confirmation"] is False
+    assert result["requires_clarification"] is True
 
 
 def test_tool_arguments_are_schema_validated_before_execution():

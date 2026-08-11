@@ -12,22 +12,30 @@ import uuid
 from app.core.database import async_session, engine
 from app.services.cache_service import acknowledge_background_job, read_background_jobs
 from app.services.memory_service import MemoryService
+from app.services.goal_service import goal_service
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("system-agent.worker")
 
 
 async def process_job(kind: str, payload: dict) -> None:
-    if kind != "learn_from_user":
-        logger.warning("Unknown job kind: %s", kind)
-        return
     async with async_session() as session:
-        await MemoryService(session).auto_store_conversation(
-            user_id=payload["user_id"],
-            content=payload["content"],
-            role="user",
-            source_id=payload["user_message_id"],
-        )
+        if kind == "learn_from_user":
+            await MemoryService(session).auto_store_conversation(
+                user_id=payload["user_id"],
+                content=payload["content"],
+                role="user",
+                source_id=payload["user_message_id"],
+            )
+            return
+        if kind == "index_goal":
+            await goal_service.index_goal_embedding(
+                db=session,
+                goal_id=payload["goal_id"],
+                user_id=payload["user_id"],
+            )
+            return
+        logger.warning("Unknown job kind: %s", kind)
 
 
 async def main() -> None:

@@ -3,8 +3,11 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
 import AgentTrace from '../components/AgentTrace';
+import ChatInsightCards from '../components/ChatInsightCards';
+import PrivateImage from '../components/PrivateImage';
 import api from '../services/api';
 import { getAccessToken, refreshAccessToken } from '../services/authSession';
+import { useAuthStore } from '../stores/authStore';
 import type { AgentMetrics, AgentRunMetadata, AgentTraceEvent, Conversation, PendingAction } from '../types';
 
 interface ChatMessage extends Conversation {
@@ -52,35 +55,80 @@ function getRun(message: ChatMessage): AgentRunMetadata | undefined {
   return message.metadata?.agent_run;
 }
 
+function isInsightMessage(message: ChatMessage): boolean {
+  return message.metadata?.message_type === 'profile_assessment'
+    || message.metadata?.message_type === 'daily_tasks'
+    || message.content.includes('【状态基线】')
+    || message.content.includes('今日任务已发布');
+}
+
 function PendingActionCard({ action }: { action: PendingAction }) {
-  const [status, setStatus] = useState(action.status);
+  const [optimisticStatus, setStatus] = useState<PendingAction['status']>(action.status);
   const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState('');
   const queryClient = useQueryClient();
+  const status = action.status === 'pending' ? optimisticStatus : action.status;
   const dimension = typeof action.arguments.dimension === 'string' ? action.arguments.dimension : '';
+  const goalKeyword = typeof action.arguments.goal_keyword === 'string' ? action.arguments.goal_keyword : '';
   const dimensionLabel: Record<string, string> = {
     exercise: '运动', diet: '饮食', sleep: '睡眠', appearance: '形象管理',
   };
 
   const decide = async (decision: 'approve' | 'reject') => {
     setBusy(true);
+    setFeedback('');
     try {
-      await api.post(`/chat/actions/${action.action_id}/${decision}`);
-      setStatus(decision === 'approve' ? 'approved' : 'rejected');
+      const response = await api.post<{
+        success?: boolean;
+        action_status?: PendingAction['status'];
+        result?: { message?: string };
+      }>(`/chat/actions/${action.action_id}/${decision}`);
+      if (decision === 'reject') {
+        setStatus('rejected');
+      } else if (response.data.success) {
+        setStatus('approved');
+        setFeedback('操作已执行，相关页面已经同步。');
+      } else {
+        setStatus(response.data.action_status ?? 'failed');
+        setFeedback(response.data.result?.message ?? '操作执行失败，请重新发起。');
+      }
       await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['chat-history'] }),
         queryClient.invalidateQueries({ queryKey: ['today-tasks'] }),
         queryClient.invalidateQueries({ queryKey: ['tasks'] }),
         queryClient.invalidateQueries({ queryKey: ['behavior-metrics'] }),
+        queryClient.invalidateQueries({ queryKey: ['goals'] }),
       ]);
+    } catch {
+      try {
+        const current = await api.get<PendingAction>(`/chat/actions/${action.action_id}`);
+        setStatus(current.data.status);
+        setFeedback(current.data.status === 'expired' ? '该确认请求已过期，请重新发起。' : '该操作已经处理，页面状态已刷新。');
+        await queryClient.invalidateQueries({ queryKey: ['chat-history'] });
+      } catch {
+        setStatus('failed');
+        setFeedback('无法执行该操作，请重新发起。');
+      }
     } finally {
       setBusy(false);
     }
   };
 
+  const statusLabel: Record<PendingAction['status'], string> = {
+    pending: '等待你的明确确认',
+    approved: '已确认并执行',
+    rejected: '已取消',
+    expired: '确认请求已过期',
+    failed: '执行失败',
+  };
+
   return (
     <div className="mb-3 rounded-xl border border-amber-400/20 bg-amber-400/[0.06] p-3">
-      <p className="text-xs font-medium text-amber-200">等待你的明确确认</p>
+      <p className={`text-xs font-medium ${status === 'failed' || status === 'expired' ? 'text-rose-300' : status === 'approved' ? 'text-emerald-300' : 'text-amber-200'}`}>{statusLabel[status]}</p>
       <p className="mt-1 text-[11px] text-slate-500">
-        {action.tool === 'skip_task' ? `跳过${dimensionLabel[dimension] ?? dimension}任务` : action.tool}
+        {action.tool === 'skip_task'
+          ? `跳过${dimensionLabel[dimension] ?? dimension}任务`
+          : action.tool === 'delete_goal' ? `删除包含“${goalKeyword}”的目标` : action.tool}
       </p>
       {status === 'pending' ? (
         <div className="mt-3 flex gap-2">
@@ -90,13 +138,14 @@ function PendingActionCard({ action }: { action: PendingAction }) {
             className="rounded-lg border border-white/10 px-3 py-1.5 text-[11px] text-slate-400 disabled:opacity-50">取消</button>
         </div>
       ) : (
-        <p className="mt-2 text-[11px] text-slate-400">{status === 'approved' ? '已确认执行' : '已取消'}</p>
+        <p className="mt-2 text-[11px] text-slate-400">{feedback || statusLabel[status]}</p>
       )}
     </div>
   );
 }
 
 export default function Chat() {
+  const user = useAuthStore((state) => state.user);
   const [input, setInput] = useState('');
   const [streamingMsg, setStreamingMsg] = useState<ChatMessage | null>(null);
   const [isThinking, setIsThinking] = useState(false);
@@ -267,7 +316,7 @@ export default function Chat() {
           </div>
         </div>
         <div className="hidden items-center gap-2 sm:flex">
-          {['8 tools', 'memory', 'guarded'].map((label, index) => (
+          {['state tools', 'memory', 'guarded'].map((label, index) => (
             <motion.span
               key={label}
               initial={{ opacity: 0, y: -6 }}
@@ -325,6 +374,7 @@ export default function Chat() {
             {allMessages.map((message) => {
               const run = getRun(message);
               const isUser = message.role === 'user';
+              const isInsight = !isUser && isInsightMessage(message);
               return (
                 <motion.div
                   key={message.id}
@@ -337,14 +387,16 @@ export default function Chat() {
                   {!isUser && (
                     <div className="mt-1 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-xl border border-cyan-400/15 bg-cyan-400/10 text-xs text-cyan-200">✦</div>
                   )}
-                  <div className={`max-w-[88%] md:max-w-[76%] ${isUser ? 'order-first' : ''}`}>
-                    <div className={`rounded-2xl px-4 py-3 shadow-xl ${isUser
+                  <div className={`max-w-[88%] ${isInsight ? 'md:max-w-[88%]' : 'md:max-w-[76%]'} ${isUser ? 'order-first' : ''}`}>
+                    <div className={`${isInsight ? '' : 'rounded-2xl px-4 py-3 shadow-xl'} ${isUser
                       ? 'rounded-br-md bg-gradient-to-br from-blue-600 to-indigo-600 text-white shadow-blue-950/30'
-                      : 'rounded-bl-md border border-white/[0.08] bg-slate-900/75 text-slate-200 shadow-black/20 backdrop-blur-xl'}`}>
+                      : isInsight ? '' : 'rounded-bl-md border border-white/[0.08] bg-slate-900/75 text-slate-200 shadow-black/20 backdrop-blur-xl'}`}>
                       {!isUser && run?.trace && <AgentTrace trace={run.trace} metrics={run.metrics} live={message.streaming} />}
                       {!isUser && run?.pending_action && <PendingActionCard action={run.pending_action} />}
                       {isUser ? (
                         <p className="whitespace-pre-wrap text-sm leading-relaxed">{message.content}</p>
+                      ) : isInsight ? (
+                        <ChatInsightCards message={message} />
                       ) : (
                         <div className="prose prose-invert prose-sm max-w-none text-sm leading-relaxed">
                           <ReactMarkdown>{message.content || (message.streaming ? '正在组织回复…' : '')}</ReactMarkdown>
@@ -356,6 +408,12 @@ export default function Chat() {
                       {new Date(message.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
                     </div>
                   </div>
+                  {isUser && (
+                    <div className="relative mt-1 h-8 w-8 flex-shrink-0 overflow-hidden rounded-xl border border-blue-300/20 bg-gradient-to-br from-blue-500 to-violet-500">
+                      <div className="absolute inset-0 flex items-center justify-center text-[10px] font-semibold text-white">{user?.nickname?.slice(0, 1) ?? '我'}</div>
+                      <PrivateImage src={user?.avatar_url} alt={user?.nickname ?? '我的头像'} className="absolute inset-0 h-full w-full object-cover" />
+                    </div>
+                  )}
                 </motion.div>
               );
             })}

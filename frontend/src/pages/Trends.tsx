@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { motion } from 'framer-motion';
 import api from '../services/api';
-import type { ScoreHistory, UserScore } from '../types';
+import type { BehaviorMetrics, Dimension, ScoreHistory, UserScore } from '../types';
 
 const DIM_COLORS = {
   exercise: '#3b82f6',
@@ -29,6 +29,11 @@ export default function Trends() {
     queryFn: () => api.get('/scores/history?limit=100').then((r) => r.data),
   });
 
+  const { data: behaviorMetrics } = useQuery<BehaviorMetrics>({
+    queryKey: ['behavior-metrics'],
+    queryFn: () => api.get('/behavior/metrics').then((response) => response.data),
+  });
+
   // Build chart data
   const chartData = [...(history ?? [])].reverse().map((h, i) => ({
     index: i + 1,
@@ -40,7 +45,7 @@ export default function Trends() {
     <div className="h-full overflow-y-auto p-6">
       <div className="max-w-4xl mx-auto">
         <motion.h1 initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-          className="text-2xl font-bold text-white mb-6">评分趋势</motion.h1>
+          className="text-2xl font-bold text-white mb-6">状态基线与行为趋势</motion.h1>
 
         {/* Current score cards */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
@@ -56,11 +61,36 @@ export default function Trends() {
           ))}
         </div>
 
+        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}
+          className="mb-8 rounded-2xl border border-cyan-400/10 bg-slate-900 p-5">
+          <div className="mb-4">
+            <h2 className="text-base font-semibold text-slate-300">行为执行趋势</h2>
+            <p className="mt-1 text-xs text-slate-600">行为完成率与成长动量单独追踪，不会伪装成健康或能力评分。</p>
+          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {(Object.entries(DIM_LABELS) as Array<[Dimension, string]>).map(([dimension, label]) => {
+              const metric = behaviorMetrics?.dimensions[dimension];
+              return (
+                <div key={dimension} className="rounded-xl bg-slate-800/60 p-3">
+                  <div className="flex items-center justify-between text-xs"><span className="text-slate-400">{label}</span><span style={{ color: DIM_COLORS[dimension as keyof typeof DIM_COLORS] }}>{metric?.momentum ?? 0}</span></div>
+                  <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-700"><div className="h-full rounded-full" style={{ width: `${metric?.momentum ?? 0}%`, backgroundColor: DIM_COLORS[dimension as keyof typeof DIM_COLORS] }} /></div>
+                  <p className="mt-2 text-[10px] text-slate-600">7 天完成率 {metric?.adherence_7d ?? 0}% · 28 天 {metric?.adherence_28d ?? 0}%</p>
+                </div>
+              );
+            })}
+          </div>
+        </motion.div>
+
         {/* Trend chart */}
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
           className="bg-slate-900 rounded-2xl p-6 border border-slate-800">
           <h2 className="text-lg text-slate-300 mb-4">评分变动历史</h2>
-          <ResponsiveContainer width="100%" height={300}>
+          {chartData.length === 0 ? (
+            <div className="flex h-[220px] flex-col items-center justify-center rounded-xl border border-dashed border-white/[0.07] bg-slate-950/20 px-6 text-center">
+              <p className="text-sm text-slate-400">暂无评分变动记录</p>
+              <p className="mt-2 max-w-lg text-xs leading-5 text-slate-600">当前版本保持画像基线稳定，完成或跳过任务只进入上方的行为趋势，不会直接改写结构化问卷评分。</p>
+            </div>
+          ) : <ResponsiveContainer width="100%" height={300}>
             <LineChart data={chartData}>
               <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
               <XAxis dataKey="date" stroke="#64748b" fontSize={12} />
@@ -68,10 +98,10 @@ export default function Trends() {
               <Tooltip contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8 }} />
               <Legend />
               {Object.entries(DIM_COLORS).map(([dim, color]) => (
-                <Line key={dim} type="monotone" dataKey={dim} stroke={color} strokeWidth={2} dot={false} />
+                <Line key={dim} name={DIM_LABELS[dim]} type="monotone" dataKey={dim} stroke={color} strokeWidth={2} connectNulls dot={{ r: 3 }} />
               ))}
             </LineChart>
-          </ResponsiveContainer>
+          </ResponsiveContainer>}
         </motion.div>
       </div>
     </div>
