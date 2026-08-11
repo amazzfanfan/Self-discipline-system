@@ -12,6 +12,7 @@ import json
 import hashlib
 import logging
 import uuid
+from datetime import datetime, timezone
 
 import redis.asyncio as redis
 
@@ -142,6 +143,9 @@ async def revoke_all_refresh_sessions(user_id: str) -> None:
 
 BACKGROUND_JOB_STREAM = "system-agent:jobs"
 BACKGROUND_JOB_GROUP = "system-agent-workers"
+BACKGROUND_JOB_DEAD_LETTER_STREAM = "system-agent:jobs:dead-letter"
+BACKGROUND_JOB_ATTEMPTS_KEY = "system-agent:job-attempts"
+BACKGROUND_WORKER_HEARTBEAT_KEY = "system-agent:worker:heartbeat"
 
 
 async def enqueue_background_job(kind: str, payload: dict) -> str | None:
@@ -181,8 +185,99 @@ async def read_background_jobs(consumer: str, count: int = 10, block_ms: int = 1
     )
 
 
+async def claim_stale_background_jobs(
+    consumer: str,
+    *,
+    min_idle_ms: int = 30_000,
+    count: int = 10,
+) -> list[tuple[str, dict]]:
+    """Claim jobs abandoned by a crashed or unhealthy worker."""
+    await ensure_background_job_group()
+    response = await _get_redis().xautoclaim(
+        BACKGROUND_JOB_STREAM,
+        BACKGROUND_JOB_GROUP,
+        consumer,
+        min_idle_time=min_idle_ms,
+        start_id="0-0",
+        count=count,
+    )
+    if not response or len(response) < 2:
+        return []
+    return list(response[1] or [])
+
+
 async def acknowledge_background_job(message_id: str) -> None:
-    await _get_redis().xack(BACKGROUND_JOB_STREAM, BACKGROUND_JOB_GROUP, message_id)
+    client = _get_redis()
+    await client.xack(BACKGROUND_JOB_STREAM, BACKGROUND_JOB_GROUP, message_id)
+    await client.hdel(BACKGROUND_JOB_ATTEMPTS_KEY, message_id)
+
+
+async def record_background_job_failure(message_id: str) -> int:
+    return int(await _get_redis().hincrby(BACKGROUND_JOB_ATTEMPTS_KEY, message_id, 1))
+
+
+async def move_background_job_to_dead_letter(
+    message_id: str,
+    fields: dict,
+    *,
+    attempts: int,
+    error_type: str,
+) -> None:
+    client = _get_redis()
+    await client.xadd(
+        BACKGROUND_JOB_DEAD_LETTER_STREAM,
+        {
+            "original_id": message_id,
+            "kind": str(fields.get("kind", "unknown")),
+            "payload": str(fields.get("payload", "{}")),
+            "attempts": str(attempts),
+            "error_type": error_type[:120],
+            "failed_at": datetime.now(timezone.utc).isoformat(),
+        },
+        maxlen=2_000,
+        approximate=True,
+    )
+    await acknowledge_background_job(message_id)
+
+
+async def set_background_worker_heartbeat(consumer: str, ttl_seconds: int = 20) -> None:
+    await _get_redis().set(
+        BACKGROUND_WORKER_HEARTBEAT_KEY,
+        json.dumps(
+            {"consumer": consumer, "seen_at": datetime.now(timezone.utc).isoformat()},
+            ensure_ascii=False,
+        ),
+        ex=ttl_seconds,
+    )
+
+
+async def get_background_worker_status() -> dict:
+    """Return worker liveness plus Redis Stream backlog information."""
+    try:
+        client = _get_redis()
+        heartbeat = await client.get(BACKGROUND_WORKER_HEARTBEAT_KEY)
+        groups = await client.xinfo_groups(BACKGROUND_JOB_STREAM)
+        group = next(
+            (item for item in groups if item.get("name") == BACKGROUND_JOB_GROUP),
+            {},
+        )
+        heartbeat_data = json.loads(heartbeat) if heartbeat else {}
+        return {
+            "ready": bool(heartbeat),
+            "consumer": heartbeat_data.get("consumer"),
+            "last_seen": heartbeat_data.get("seen_at"),
+            "pending": int(group.get("pending", 0) or 0),
+            "lag": int(group.get("lag", 0) or 0),
+        }
+    except Exception as exc:
+        logger.warning("Failed to inspect background worker: %s", exc)
+        return {
+            "ready": False,
+            "consumer": None,
+            "last_seen": None,
+            "pending": None,
+            "lag": None,
+        }
 
 
 # ─── 今日任务缓存 ──────────────────────────────────────────────────────

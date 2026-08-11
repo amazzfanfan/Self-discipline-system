@@ -23,7 +23,7 @@ from app.modules.task.router import router as task_router
 from app.modules.user.router import router as user_router
 from app.modules.weight.router import router as weight_router
 from app.modules.notification.router import router as notification_router
-from app.services.cache_service import cache_is_ready
+from app.services.cache_service import cache_is_ready, get_background_worker_status
 from app.services.scheduler_service import scheduler, start_scheduler
 
 settings = get_settings()
@@ -94,8 +94,18 @@ async def readiness():
         database_ready = False
 
     redis_ready = await cache_is_ready()
+    worker_status = await get_background_worker_status() if redis_ready else {"ready": False}
+    worker_ready = bool(worker_status.get("ready"))
     payload = {
-        "status": "ready" if database_ready and redis_ready else "unavailable",
-        "components": {"database": database_ready, "redis": redis_ready},
+        "status": "ready" if database_ready and redis_ready and worker_ready else "unavailable",
+        "components": {
+            "database": database_ready,
+            "redis": redis_ready,
+            "worker": worker_status,
+        },
     }
-    return payload if database_ready and redis_ready else JSONResponse(payload, status_code=503)
+    return (
+        payload
+        if database_ready and redis_ready and worker_ready
+        else JSONResponse(payload, status_code=503)
+    )
