@@ -1,18 +1,16 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from uuid import UUID
 
 
 class UserResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     email: str
     nickname: str
     avatar_url: str | None
-
-    class Config:
-        from_attributes = True
-
 
 class ProfileUpdate(BaseModel):
     height_cm: float | None = None
@@ -32,6 +30,8 @@ class DeleteAccountRequest(BaseModel):
 
 
 class ProfileResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     height_cm: float | None
     weight_kg: float | None
     age: int | None
@@ -45,10 +45,6 @@ class ProfileResponse(BaseModel):
     daily_task_budget: int
     memory_enabled: int
     notification_settings: dict
-
-    class Config:
-        from_attributes = True
-
 
 class EvaluateRequest(BaseModel):
     height_cm: float = Field(ge=100, le=250)
