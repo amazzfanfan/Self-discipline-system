@@ -91,14 +91,24 @@ export interface NotificationInboxResponse {
 
 export interface BehaviorDimensionMetric {
   baseline: number;
-  adherence_7d: number;
-  adherence_28d: number;
-  momentum: number;
+  adherence_7d: number | null;
+  adherence_28d: number | null;
+  sample_count_7d: number;
+  sample_count_28d: number;
+  confidence: 'none' | 'low' | 'medium' | 'high';
+  momentum: number | null;
   streak_days: number;
 }
 
 export interface BehaviorMetrics {
-  overall: { adherence_7d: number; adherence_28d: number; momentum: number };
+  overall: {
+    adherence_7d: number | null;
+    adherence_28d: number | null;
+    sample_count_7d: number;
+    sample_count_28d: number;
+    confidence: 'none' | 'low' | 'medium' | 'high';
+    momentum: number | null;
+  };
   dimensions: Record<Dimension, BehaviorDimensionMetric>;
 }
 
@@ -117,6 +127,8 @@ export interface WeeklyReview {
   id: string;
   week_start: string;
   summary: {
+    week_start: string;
+    week_end: string;
     completed_tasks: number;
     planned_tasks: number;
     excused_tasks?: number;

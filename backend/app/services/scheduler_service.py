@@ -26,6 +26,7 @@ from app.services.adaptive_task_service import (
     decide_adaptation,
     dimension_priority,
 )
+from app.services.behavior_service import last_completed_week_start
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -397,7 +398,8 @@ async def daily_task_reminders():
 
 async def weekly_review_reminders():
     """Publish the weekly review entry point for users who enabled it."""
-    week_key = local_today().isoformat()
+    review_week_start = last_completed_week_start()
+    week_key = review_week_start.isoformat()
     async with async_session() as db:
         users_result = await db.execute(select(User))
         for user in users_result.scalars().all():
@@ -405,10 +407,10 @@ async def weekly_review_reminders():
                 db,
                 user_id=user.id,
                 kind="weekly_review",
-                title="本周复盘已准备",
-                message="回顾完成率、任务调整与成长动量，为下周设置更合适的节奏。",
+                title="上周复盘已准备",
+                message="回顾上周完成率、任务调整与成长动量，为本周设置更合适的节奏。",
                 dedupe_key=f"weekly-review:{week_key}",
-                payload={"link": "/"},
+                payload={"link": "/", "week_start": week_key},
                 setting_key="weekly_review",
             )
         await db.commit()

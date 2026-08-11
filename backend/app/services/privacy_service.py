@@ -57,6 +57,9 @@ async def export_user_data(db, user: User) -> dict:
                 "dimension": item.dimension.value,
                 "baseline": float(item.baseline_score),
                 "streak_days": item.streak_days,
+                "last_completed_date": (
+                    item.last_completed_date.isoformat() if item.last_completed_date else None
+                ),
             }
             for item in scores
         ],

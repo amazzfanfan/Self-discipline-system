@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import APIRouter, Depends, HTTPException
@@ -9,7 +11,11 @@ from app.models.behavior import DailyCheckIn
 from app.models.user import User
 from app.models.task import DifficultyEnum, Task, TaskStatusEnum
 from app.schemas.behavior import CheckInRequest, WeeklyPlanRequest
-from app.services.behavior_service import build_weekly_review, calculate_behavior_metrics, current_week_start
+from app.services.behavior_service import (
+    build_weekly_review,
+    calculate_behavior_metrics,
+    last_completed_week_start,
+)
 from app.services.cache_service import invalidate_tasks
 from app.services.task_state_service import maintain_task_states
 
@@ -98,7 +104,7 @@ async def get_behavior_metrics(user: User = Depends(get_current_user), db: Async
 @router.get("/weekly-review")
 async def get_weekly_review(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db, scope="function")):
     await maintain_task_states(db, user.id)
-    review = await build_weekly_review(db, user.id)
+    review = await build_weekly_review(db, user.id, last_completed_week_start())
     return {
         "id": str(review.id),
         "week_start": review.week_start.isoformat(),
@@ -114,10 +120,15 @@ async def confirm_weekly_plan(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db, scope="function"),
 ):
-    review = await build_weekly_review(db, user.id)
+    review = await build_weekly_review(db, user.id, last_completed_week_start())
     review.next_week_plan = body.model_dump()
     review.confirmed = True
     if user.profile:
         user.profile.daily_task_budget = body.task_budget
     await db.flush()
-    return {"message": "下周计划已确认", "week_start": current_week_start().isoformat()}
+    effective_week_start = review.week_start + timedelta(days=7)
+    return {
+        "message": "本周计划已确认",
+        "review_week_start": review.week_start.isoformat(),
+        "effective_week_start": effective_week_start.isoformat(),
+    }

@@ -35,7 +35,7 @@ async def complete_task_by_dimension(db: AsyncSession, user_id: str, dimension: 
     task.disposition_reason = None
     task.deferred_until = None
 
-    score_change = await record_task_completion(db, user_id, dim_enum)
+    score_change = await record_task_completion(db, user_id, dim_enum, task.scheduled_date)
     return {
         "success": True,
         "message": f"任务已完成：{task.title}",
@@ -70,7 +70,13 @@ async def skip_task_by_dimension(db: AsyncSession, user_id: str, dimension: str)
     task.disposition_reason = "用户明确跳过任务"
     task.deferred_until = None
 
-    score_change = await record_negative(db, user_id, dim_enum, f"跳过任务：{task.title}")
+    score_change = await record_negative(
+        db,
+        user_id,
+        dim_enum,
+        f"跳过任务：{task.title}",
+        task.scheduled_date,
+    )
     return {
         "success": True,
         "message": f"已跳过任务：{task.title}",

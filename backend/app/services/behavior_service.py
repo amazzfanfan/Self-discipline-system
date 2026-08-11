@@ -1,5 +1,5 @@
 from collections import defaultdict
-from datetime import timedelta
+from datetime import date, timedelta
 
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +15,11 @@ def current_week_start():
     return today - timedelta(days=today.weekday())
 
 
+def last_completed_week_start(reference_date: date | None = None) -> date:
+    today = reference_date or local_today()
+    return today - timedelta(days=today.weekday() + 7)
+
+
 async def calculate_behavior_metrics(db: AsyncSession, user_id) -> dict:
     today = local_today()
     start_28 = today - timedelta(days=27)
@@ -25,7 +30,7 @@ async def calculate_behavior_metrics(db: AsyncSession, user_id) -> dict:
     )
     tasks = result.scalars().all()
 
-    def rate(days: int, dimension: DimensionEnum | None = None) -> float:
+    def window_stats(days: int, dimension: DimensionEnum | None = None) -> dict:
         start = today - timedelta(days=days - 1)
         eligible = [
             task for task in tasks
@@ -33,38 +38,80 @@ async def calculate_behavior_metrics(db: AsyncSession, user_id) -> dict:
             and task.status in {TaskStatusEnum.completed, TaskStatusEnum.failed}
             and (dimension is None or task.dimension == dimension)
         ]
-        if not eligible:
-            return 0.0
-        return round(100 * sum(task.status == TaskStatusEnum.completed for task in eligible) / len(eligible), 1)
+        sample_count = len(eligible)
+        adherence = (
+            round(100 * sum(task.status == TaskStatusEnum.completed for task in eligible) / sample_count, 1)
+            if sample_count
+            else None
+        )
+        confidence = (
+            "none" if sample_count == 0
+            else "low" if sample_count < 4
+            else "medium" if sample_count < 8
+            else "high"
+        )
+        return {
+            "adherence": adherence,
+            "sample_count": sample_count,
+            "confidence": confidence,
+        }
+
+    def momentum_for(short_window: dict, long_window: dict) -> float | None:
+        short_rate = short_window["adherence"]
+        long_rate = long_window["adherence"]
+        if short_rate is None and long_rate is None:
+            return None
+        if short_rate is None:
+            return float(long_rate)
+        if long_rate is None:
+            return float(short_rate)
+        return round(min(100.0, 0.65 * short_rate + 0.35 * long_rate), 1)
 
     score_result = await db.execute(select(UserScore).where(UserScore.user_id == user_id))
     scores = score_result.scalars().all()
     dimensions = {}
     for score in scores:
-        adherence_7d = rate(7, score.dimension)
-        adherence_28d = rate(28, score.dimension)
-        momentum = round(min(100.0, 0.65 * adherence_7d + 0.35 * adherence_28d), 1)
+        stats_7d = window_stats(7, score.dimension)
+        stats_28d = window_stats(28, score.dimension)
+        momentum = momentum_for(stats_7d, stats_28d)
         dimensions[score.dimension.value] = {
             "baseline": float(score.baseline_score),
-            "adherence_7d": adherence_7d,
-            "adherence_28d": adherence_28d,
+            "adherence_7d": stats_7d["adherence"],
+            "adherence_28d": stats_28d["adherence"],
+            "sample_count_7d": stats_7d["sample_count"],
+            "sample_count_28d": stats_28d["sample_count"],
+            "confidence": stats_28d["confidence"],
             "momentum": momentum,
             "streak_days": score.streak_days,
         }
+    overall_7d = window_stats(7)
+    overall_28d = window_stats(28)
+    dimension_momentum = [
+        item["momentum"] for item in dimensions.values() if item["momentum"] is not None
+    ]
     return {
         "overall": {
-            "adherence_7d": rate(7),
-            "adherence_28d": rate(28),
-            "momentum": round(
-                sum(item["momentum"] for item in dimensions.values()) / max(len(dimensions), 1), 1
+            "adherence_7d": overall_7d["adherence"],
+            "adherence_28d": overall_28d["adherence"],
+            "sample_count_7d": overall_7d["sample_count"],
+            "sample_count_28d": overall_28d["sample_count"],
+            "confidence": overall_28d["confidence"],
+            "momentum": (
+                round(sum(dimension_momentum) / len(dimension_momentum), 1)
+                if dimension_momentum
+                else None
             ),
         },
         "dimensions": dimensions,
     }
 
 
-async def build_weekly_review(db: AsyncSession, user_id) -> WeeklyReview:
-    week_start = current_week_start()
+async def build_weekly_review(
+    db: AsyncSession,
+    user_id,
+    week_start: date | None = None,
+) -> WeeklyReview:
+    week_start = week_start or last_completed_week_start()
     week_end = week_start + timedelta(days=6)
     task_result = await db.execute(
         select(Task).where(

@@ -85,8 +85,11 @@ def test_overdue_pending_task_expires(monkeypatch):
     task = _task(scheduled_date=date(2026, 8, 10))
     db = MagicMock()
     db.execute = AsyncMock(return_value=_result([task]))
+    record_negative = AsyncMock()
+    monkeypatch.setattr(task_state_service, "record_negative", record_negative)
 
     changed = asyncio.run(task_state_service.maintain_task_states(db, "user-id"))
     assert changed == {"user-id"}
     assert task.status == TaskStatusEnum.failed
     assert task.disposition == "expired"
+    record_negative.assert_awaited_once()

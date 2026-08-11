@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.time import app_timezone, local_now, local_today
 from app.models.task import Task, TaskStatusEnum
 from app.services.notification_service import create_notification
+from app.services.score_service import record_negative
 
 
 TaskScheduleMode = Literal["later", "reschedule", "excuse"]
@@ -49,6 +50,13 @@ async def maintain_task_states(db: AsyncSession, user_id=None) -> set[str]:
                 task.status = TaskStatusEnum.failed
                 task.disposition = "expired"
                 task.disposition_reason = "稍后提醒到期时已跨日，任务自动结算为未完成"
+                await record_negative(
+                    db,
+                    task.user_id,
+                    task.dimension,
+                    f"任务过期：{task.title}",
+                    task.scheduled_date,
+                )
             else:
                 task.status = TaskStatusEnum.pending
                 task.disposition = None
@@ -79,6 +87,13 @@ async def maintain_task_states(db: AsyncSession, user_id=None) -> set[str]:
             task.status = TaskStatusEnum.failed
             task.disposition = "expired"
             task.disposition_reason = "任务到期时仍未完成"
+            await record_negative(
+                db,
+                task.user_id,
+                task.dimension,
+                f"任务过期：{task.title}",
+                task.scheduled_date,
+            )
             changed = True
 
         if changed:

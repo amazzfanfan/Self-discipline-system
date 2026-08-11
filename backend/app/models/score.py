@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, DateTime, ForeignKey, Numeric, Integer, Enum as SAEnum
+from sqlalchemy import Column, String, Date, DateTime, ForeignKey, Numeric, Integer, Enum as SAEnum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.core.database import Base
@@ -25,6 +25,7 @@ class UserScore(Base):
     total_positive_count = Column(Integer, default=0)
     total_negative_count = Column(Integer, default=0)
     streak_days = Column(Integer, default=0)
+    last_completed_date = Column(Date)
     last_score_change = Column(DateTime(timezone=True))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 

@@ -1,13 +1,13 @@
 import { motion } from 'framer-motion';
 
 interface Props {
-  score: number;
+  score: number | null;
   label?: string;
 }
 
 export default function ScoreRing({ score, label = '综合评分' }: Props) {
   const circumference = 2 * Math.PI * 45;
-  const progress = (score / 100) * circumference;
+  const progress = ((score ?? 0) / 100) * circumference;
 
   return (
     <div className="relative inline-flex items-center justify-center">
@@ -28,7 +28,7 @@ export default function ScoreRing({ score, label = '综合评分' }: Props) {
         </defs>
       </svg>
       <div className="absolute text-center">
-        <div className="text-2xl font-bold text-white">{score.toFixed(1)}</div>
+        <div className="text-2xl font-bold text-white">{score == null ? '—' : score.toFixed(1)}</div>
         <div className="text-xs text-slate-400">{label}</div>
       </div>
     </div>

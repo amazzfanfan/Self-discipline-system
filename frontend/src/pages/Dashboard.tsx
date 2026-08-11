@@ -53,6 +53,10 @@ function localDateKey(date: Date) {
   return `${year}-${month}-${day}`;
 }
 
+function metricText(value: number | null | undefined, sampleCount: number | undefined) {
+  return value == null ? '暂无数据' : `${value}% · ${sampleCount ?? 0} 项`;
+}
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const { addNotification } = useNotification();
@@ -105,7 +109,7 @@ export default function Dashboard() {
   }, [tasks, addNotification]);
 
   const avgScore = scores?.length ? scores.reduce((total, score) => total + score.score, 0) / scores.length : 0;
-  const momentum = behaviorMetrics?.overall.momentum ?? 0;
+  const momentum = behaviorMetrics?.overall.momentum ?? null;
   const completedCount = tasks?.filter((task) => task.status === 'completed').length || 0;
   const totalCount = tasks?.filter((task) => task.disposition !== 'excused').length || 0;
   const maxStreak = scores ? Math.max(...scores.map((score) => score.streak_days), 0) : 0;
@@ -157,7 +161,12 @@ export default function Dashboard() {
             </div>
             <div className="bg-slate-900 rounded-2xl p-5 border border-slate-800 flex-1">
               <div className="text-slate-500 text-xs mb-1">近 7 天完成率</div>
-              <div className="text-3xl font-bold text-white">{behaviorMetrics?.overall.adherence_7d ?? 0}<span className="text-lg text-slate-500">%</span></div>
+              <div className="text-3xl font-bold text-white">
+                {behaviorMetrics?.overall.adherence_7d == null
+                  ? <span className="text-lg text-slate-500">暂无数据</span>
+                  : <>{behaviorMetrics.overall.adherence_7d}<span className="text-lg text-slate-500">%</span></>}
+              </div>
+              <div className="mt-1 text-xs text-slate-600">有效样本 {behaviorMetrics?.overall.sample_count_7d ?? 0} 项</div>
               <div className="text-slate-600 text-xs mt-1">最长连续 {maxStreak} 天</div>
             </div>
             <div className="bg-slate-900 rounded-2xl p-5 border border-slate-800 flex-1">
@@ -222,7 +231,7 @@ export default function Dashboard() {
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-xs text-slate-400">{DIM_LABELS[s.dimension]}</span>
                     <span className="text-sm font-semibold" style={{ color: DIM_COLORS[s.dimension] }}>
-                      {behaviorMetrics?.dimensions[s.dimension]?.momentum ?? 0}
+                      {behaviorMetrics?.dimensions[s.dimension]?.momentum ?? '—'}
                     </span>
                   </div>
                   <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-700">
@@ -232,7 +241,10 @@ export default function Dashboard() {
                     }} />
                   </div>
                   <p className="mt-2 text-[10px] text-slate-600">
-                    7天 {behaviorMetrics?.dimensions[s.dimension]?.adherence_7d ?? 0}% · 28天 {behaviorMetrics?.dimensions[s.dimension]?.adherence_28d ?? 0}%
+                    {metricText(
+                      behaviorMetrics?.dimensions[s.dimension]?.adherence_7d,
+                      behaviorMetrics?.dimensions[s.dimension]?.sample_count_7d,
+                    )}
                   </p>
                 </div>
               ))}
@@ -245,7 +257,10 @@ export default function Dashboard() {
             className="mb-4 rounded-2xl border border-violet-400/15 bg-violet-400/[0.04] p-5">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
-                <h2 className="text-sm font-semibold text-violet-200">本周复盘</h2>
+                <h2 className="text-sm font-semibold text-violet-200">上周复盘</h2>
+                <p className="mt-1 text-[10px] text-slate-600">
+                  {weeklyReview.summary.week_start} 至 {weeklyReview.summary.week_end}
+                </p>
                 <p className="mt-2 text-xs text-slate-500">
                   完成 {weeklyReview.summary.completed_tasks}/{weeklyReview.summary.planned_tasks} 项 · Check-in {weeklyReview.summary.checkin_days} 天
                 </p>

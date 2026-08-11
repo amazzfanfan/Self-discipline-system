@@ -115,7 +115,7 @@ async def complete_task(task_id: str, user: User = Depends(get_current_user), db
     task.deferred_until = None
 
     from app.services.score_service import record_task_completion
-    score_change = await record_task_completion(db, user.id, task.dimension)
+    score_change = await record_task_completion(db, user.id, task.dimension, task.scheduled_date)
 
     # 清除缓存
     await invalidate_tasks(str(user.id))

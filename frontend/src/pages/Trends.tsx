@@ -72,9 +72,13 @@ export default function Trends() {
               const metric = behaviorMetrics?.dimensions[dimension];
               return (
                 <div key={dimension} className="rounded-xl bg-slate-800/60 p-3">
-                  <div className="flex items-center justify-between text-xs"><span className="text-slate-400">{label}</span><span style={{ color: DIM_COLORS[dimension as keyof typeof DIM_COLORS] }}>{metric?.momentum ?? 0}</span></div>
+                  <div className="flex items-center justify-between text-xs"><span className="text-slate-400">{label}</span><span style={{ color: DIM_COLORS[dimension as keyof typeof DIM_COLORS] }}>{metric?.momentum ?? '—'}</span></div>
                   <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-700"><div className="h-full rounded-full" style={{ width: `${metric?.momentum ?? 0}%`, backgroundColor: DIM_COLORS[dimension as keyof typeof DIM_COLORS] }} /></div>
-                  <p className="mt-2 text-[10px] text-slate-600">7 天完成率 {metric?.adherence_7d ?? 0}% · 28 天 {metric?.adherence_28d ?? 0}%</p>
+                  <p className="mt-2 text-[10px] text-slate-600">
+                    {metric?.adherence_7d == null
+                      ? '暂无有效样本'
+                      : `7 天 ${metric.adherence_7d}% · ${metric.sample_count_7d} 项样本`}
+                  </p>
                 </div>
               );
             })}
