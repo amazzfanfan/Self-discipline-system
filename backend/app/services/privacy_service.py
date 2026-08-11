@@ -90,6 +90,9 @@ async def export_user_data(db, user: User) -> dict:
                 "rubric_version": item.rubric_version,
                 "scores": item.scores,
                 "evidence": item.evidence,
+                "generation_status": item.generation_status,
+                "generation_stage": item.generation_stage,
+                "care_suggestions": item.care_suggestions,
                 "created_at": item.created_at.isoformat(),
             }
             for item in assessments

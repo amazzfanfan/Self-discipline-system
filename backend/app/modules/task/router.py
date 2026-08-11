@@ -9,6 +9,7 @@ from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.models.user import User
 from app.models.task import Task, TaskStatusEnum
+from app.models.assessment import AssessmentRun
 from app.services.cache_service import get_cached_tasks, set_cached_tasks, invalidate_tasks, invalidate_scores
 from app.core.time import local_today
 from app.services.task_state_service import apply_task_schedule, maintain_task_states
@@ -72,6 +73,14 @@ async def get_today_tasks(user: User = Depends(get_current_user), db: AsyncSessi
 
     # 如果今天没有任务（定时器可能没触发），自动生成
     if not tasks:
+        generation_status = await db.scalar(
+            select(AssessmentRun.generation_status)
+            .where(AssessmentRun.user_id == user.id)
+            .order_by(AssessmentRun.created_at.desc())
+            .limit(1)
+        )
+        if generation_status in {"pending", "running"}:
+            return []
         from app.services.scheduler_service import generate_tasks_for_user
         import logging
         logger = logging.getLogger(__name__)

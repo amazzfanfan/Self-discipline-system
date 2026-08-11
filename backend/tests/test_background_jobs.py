@@ -90,3 +90,39 @@ def test_successful_job_is_acknowledged(monkeypatch):
     asyncio.run(worker.handle_message("1-0", {"kind": "index_goal", "payload": "{}"}))
 
     acknowledge.assert_awaited_once_with("1-0")
+
+
+def test_assessment_generation_job_is_dispatched(monkeypatch):
+    generate = AsyncMock()
+    monkeypatch.setattr(worker, "process_assessment_generation", generate)
+
+    asyncio.run(
+        worker.process_job(
+            "generate_assessment_extras",
+            {"assessment_run_id": "assessment-id", "user_id": "user-id"},
+        )
+    )
+
+    generate.assert_awaited_once_with(
+        assessment_run_id="assessment-id",
+        user_id="user-id",
+    )
+
+
+def test_deduplicated_enqueue_uses_short_lived_marker(monkeypatch):
+    client = MagicMock()
+    client.set = AsyncMock(return_value=True)
+    client.xadd = AsyncMock(return_value="1-0")
+    monkeypatch.setattr(cache_service, "_get_redis", lambda: client)
+
+    result = asyncio.run(
+        cache_service.enqueue_background_job_once(
+            "generate_assessment_extras",
+            {"assessment_run_id": "assessment-id"},
+            dedupe_key="assessment:assessment-id",
+        )
+    )
+
+    assert result == "1-0"
+    client.set.assert_awaited_once()
+    client.xadd.assert_awaited_once()

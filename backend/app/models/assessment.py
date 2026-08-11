@@ -32,6 +32,16 @@ class AssessmentRun(Base):
     skin_source = Column(String(32), nullable=False, default="none")
     skin_input_hash = Column(String(64))
     reused = Column(Boolean, nullable=False, default=False)
+    generation_status = Column(String(24), nullable=False, default="pending")
+    generation_stage = Column(String(32), nullable=False, default="queued")
+    generation_error = Column(String(120))
+    care_suggestions = Column(JSON, nullable=False, default=list)
+    profile_message_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("conversations.id", ondelete="SET NULL"),
+    )
+    generation_started_at = Column(DateTime(timezone=True))
+    generation_completed_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
     user = relationship("User", back_populates="assessment_runs")

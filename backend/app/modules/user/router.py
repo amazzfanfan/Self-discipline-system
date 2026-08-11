@@ -20,14 +20,14 @@ from app.schemas.user import (
 )
 from app.core.security import verify_password
 from app.services.assessment_service import evaluate_profile
-from app.services.cache_service import invalidate_scores
+from app.services.cache_service import enqueue_background_job_once, invalidate_scores
 from app.services.faceplus_service import (
     analyze_skin,
     generate_ai_suggestions,
     get_source_display,
 )
-from app.services.scheduler_service import generate_tasks_for_user
 from app.models.conversation import Conversation, RoleEnum
+from app.services.assessment_generation_service import generation_payload
 from app.services.upload_service import (
     UPLOAD_DIRECTORY,
     delete_saved_image,
@@ -56,6 +56,7 @@ def _assessment_payload(run: AssessmentRun, *, reused: bool | None = None) -> di
         "skin_source": run.skin_source,
         "skin_input_hash": run.skin_input_hash,
         "reused": run.reused if reused is None else reused,
+        "generation": generation_payload(run),
         "created_at": run.created_at.isoformat(),
     }
 
@@ -128,7 +129,41 @@ async def get_latest_assessment(
     run = result.scalar_one_or_none()
     if run is None:
         raise HTTPException(404, "尚未完成状态评估")
+    if run.generation_status in {"pending", "failed"}:
+        await enqueue_background_job_once(
+            "generate_assessment_extras",
+            {"assessment_run_id": str(run.id), "user_id": str(user.id)},
+            dedupe_key=f"assessment:{run.id}",
+        )
     return _assessment_payload(run)
+
+
+@router.get("/me/assessment/{assessment_id}/generation")
+async def get_assessment_generation(
+    assessment_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    run = await db.scalar(
+        select(AssessmentRun).where(
+            AssessmentRun.id == assessment_id,
+            AssessmentRun.user_id == user.id,
+        )
+    )
+    if run is None:
+        raise HTTPException(404, "Assessment not found")
+    if run.generation_status in {"pending", "failed"}:
+        if run.generation_status == "failed":
+            run.generation_status = "pending"
+            run.generation_stage = "queued"
+            run.generation_error = None
+            await db.commit()
+        await enqueue_background_job_once(
+            "generate_assessment_extras",
+            {"assessment_run_id": str(run.id), "user_id": str(user.id)},
+            dedupe_key=f"assessment:{run.id}",
+        )
+    return generation_payload(run)
 
 
 @router.put("/me/profile", response_model=ProfileResponse)
@@ -375,7 +410,6 @@ async def evaluate(
     skin_source = "none"
     photo_hash = None
     photo_for_skin = profile.portrait_photo_url or profile.front_photo_url
-    skin_suggestions: list[str] = []
     if photo_for_skin:
         try:
             photo_path = resolve_image_path(photo_for_skin)
@@ -397,20 +431,6 @@ async def evaluate(
             skin_source = skin_result.source
             skin_analysis = asdict(skin_result)
             profile.skin_analysis = skin_analysis
-        if skin_source == "faceplusplus" and skin_analysis:
-            try:
-                skin_suggestions = await generate_ai_suggestions(
-                    list(skin_analysis.get("issues") or []),
-                    str(skin_analysis.get("skin_type_name") or "未知"),
-                )
-            except Exception as exc:
-                raise HTTPException(
-                    503,
-                    "AI 护理建议生成暂时失败，请稍后重试。",
-                ) from exc
-            skin_analysis = {**skin_analysis, "suggestions": skin_suggestions}
-            profile.skin_analysis = skin_analysis
-
     try:
         assessment = evaluate_profile(
             height_cm=float(req.height_cm),
@@ -445,6 +465,9 @@ async def evaluate(
             warnings=assessment.warnings,
             skin_source=skin_source,
             skin_input_hash=photo_hash,
+            generation_status="pending",
+            generation_stage="queued",
+            care_suggestions=[],
         )
         db.add(assessment_run)
     else:
@@ -480,57 +503,55 @@ async def evaluate(
     if not reused:
         report_data = assessment.to_dict()
         analysis = _profile_report(user.nickname, report_data, skin_analysis)
-        if skin_suggestions:
-            analysis += "\n\n【日常护理建议】\n" + "\n".join(
-                f"{index}. {suggestion}"
-                for index, suggestion in enumerate(skin_suggestions[:3], 1)
-            )
         focus_dimension = min(scores, key=scores.get)
-        db.add(
-            Conversation(
-                user_id=user_id,
-                role=RoleEnum.system,
-                content=analysis,
-                extra_metadata={
-                    "message_type": "profile_assessment",
-                    "assessment": {
-                        "scores": scores,
-                        "focus_dimension": focus_dimension,
-                        "overall_confidence": float(assessment.overall_confidence),
-                    },
-                    "skin_analysis": {
-                        "skin_type_name": skin_analysis.get("skin_type_name"),
-                        "skin_score": skin_analysis.get("skin_score"),
-                        "issues": list(skin_analysis.get("issues") or []),
-                        "source": skin_analysis.get("source"),
-                    }
-                    if skin_analysis
-                    else None,
-                    "care_suggestions": skin_suggestions[:3],
+        profile_message = Conversation(
+            user_id=user_id,
+            role=RoleEnum.system,
+            content=analysis,
+            extra_metadata={
+                "message_type": "profile_assessment",
+                "assessment": {
+                    "scores": scores,
+                    "focus_dimension": focus_dimension,
+                    "overall_confidence": float(assessment.overall_confidence),
                 },
+                "skin_analysis": {
+                    "skin_type_name": skin_analysis.get("skin_type_name"),
+                    "skin_score": skin_analysis.get("skin_score"),
+                    "issues": list(skin_analysis.get("issues") or []),
+                    "source": skin_analysis.get("source"),
+                }
+                if skin_analysis
+                else None,
+                "care_suggestions": [],
+                "generation_status": "pending",
+            },
+        )
+        db.add(profile_message)
+        await db.flush()
+        assessment_run.profile_message_id = profile_message.id
+
+    await db.commit()
+    should_enqueue = assessment_run.generation_status != "completed"
+    queued = False
+    if should_enqueue:
+        queued = bool(
+            await enqueue_background_job_once(
+                "generate_assessment_extras",
+                {
+                    "assessment_run_id": str(assessment_run.id),
+                    "user_id": str(user_id),
+                },
+                dedupe_key=f"assessment:{assessment_run.id}",
             )
         )
-        await db.flush()
-
-    try:
-        await generate_tasks_for_user(
-            user_id,
-            user.nickname,
-            db,
-            regenerate_pending=True,
-        )
-    except Exception as exc:
-        raise HTTPException(
-            503,
-            "AI 今日任务生成暂时失败，请稍后重试。",
-        ) from exc
-    await db.flush()
 
     return {
-        "message": "evaluation complete",
+        "message": "evaluation saved; AI content generation queued",
         "scores": scores,
         "skin_analysis": skin_analysis,
         "skin_source": skin_source,
         "eval_mode": assessment_run.mode,
         "assessment": _assessment_payload(assessment_run, reused=reused),
+        "generation_queued": queued,
     }

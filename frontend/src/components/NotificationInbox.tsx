@@ -46,9 +46,17 @@ export default function NotificationInbox() {
       ) {
         new window.Notification(item.title, { body: item.message, tag: item.id });
       }
+      if (item.kind === 'daily_tasks' || item.payload.assessment_id) {
+        void Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['today-tasks'] }),
+          queryClient.invalidateQueries({ queryKey: ['tasks'] }),
+          queryClient.invalidateQueries({ queryKey: ['chat-history'] }),
+          queryClient.invalidateQueries({ queryKey: ['latest-assessment'] }),
+        ]);
+      }
     }
     for (const item of data.items) knownIds.current.add(item.id);
-  }, [addNotification, data, profile?.notification_settings?.browser_notifications]);
+  }, [addNotification, data, profile?.notification_settings?.browser_notifications, queryClient]);
 
   const markRead = async (item: UserNotification) => {
     if (!item.read_at) await api.post(`/notifications/${item.id}/read`);

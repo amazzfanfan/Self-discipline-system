@@ -20,6 +20,7 @@ from app.services.cache_service import (
 )
 from app.services.memory_service import MemoryService
 from app.services.goal_service import goal_service
+from app.services.assessment_generation_service import process_assessment_generation
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("system-agent.worker")
@@ -42,6 +43,12 @@ async def process_job(kind: str, payload: dict) -> None:
             await goal_service.index_goal_embedding(
                 db=session,
                 goal_id=payload["goal_id"],
+                user_id=payload["user_id"],
+            )
+            return
+        if kind == "generate_assessment_extras":
+            await process_assessment_generation(
+                assessment_run_id=payload["assessment_run_id"],
                 user_id=payload["user_id"],
             )
             return

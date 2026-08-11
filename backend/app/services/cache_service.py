@@ -161,6 +161,35 @@ async def enqueue_background_job(kind: str, payload: dict) -> str | None:
         return None
 
 
+async def enqueue_background_job_once(
+    kind: str,
+    payload: dict,
+    *,
+    dedupe_key: str,
+    ttl_seconds: int = 60,
+) -> str | None:
+    """Enqueue once within a short window so status polling cannot create a job storm."""
+    marker = f"system-agent:job-dedupe:{dedupe_key}"
+    try:
+        client = _get_redis()
+        acquired = await client.set(marker, "1", ex=ttl_seconds, nx=True)
+        if not acquired:
+            return "deduplicated"
+        try:
+            return await client.xadd(
+                BACKGROUND_JOB_STREAM,
+                {"kind": kind, "payload": json.dumps(payload, ensure_ascii=False)},
+                maxlen=10_000,
+                approximate=True,
+            )
+        except Exception:
+            await client.delete(marker)
+            raise
+    except Exception as exc:
+        logger.warning("Failed to enqueue deduplicated job %s: %s", kind, exc)
+        return None
+
+
 async def ensure_background_job_group() -> None:
     try:
         await _get_redis().xgroup_create(

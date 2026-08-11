@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
@@ -59,6 +59,7 @@ function metricText(value: number | null | undefined, sampleCount: number | unde
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { addNotification } = useNotification();
   const hasNotifiedRef = useRef(false);
 
@@ -86,7 +87,22 @@ export default function Dashboard() {
     queryKey: ['latest-assessment'],
     queryFn: () => api.get('/users/me/assessment/latest').then((response) => response.data),
     retry: false,
+    refetchInterval: (query) => {
+      const assessment = query.state.data as AssessmentRun | undefined;
+      return assessment && ['pending', 'running'].includes(assessment.generation.status)
+        ? 2_000
+        : false;
+    },
   });
+
+  useEffect(() => {
+    if (latestAssessment?.generation.status !== 'completed') return;
+    void Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['today-tasks'] }),
+      queryClient.invalidateQueries({ queryKey: ['tasks'] }),
+      queryClient.invalidateQueries({ queryKey: ['chat-history'] }),
+    ]);
+  }, [latestAssessment?.generation.status, queryClient]);
 
   // 检测任务发布（只在当天首次加载时通知）
   useEffect(() => {
@@ -295,6 +311,13 @@ export default function Dashboard() {
                 <p className="mt-2 text-xs leading-5 text-slate-500">
                   {latestAssessment.rubric_version} · 结构化问卷与固定规则 · 照片不参与行为评分
                 </p>
+                {latestAssessment.generation.status !== 'completed' && (
+                  <p className="mt-2 text-xs text-cyan-300/80">
+                    {latestAssessment.generation.status === 'failed'
+                      ? 'AI 方案生成暂时失败，系统将在查询时自动重试。'
+                      : '画像已保存，AI 护理建议和今日任务正在后台生成…'}
+                  </p>
+                )}
               </div>
               <div className="flex items-center gap-5">
                 <div>

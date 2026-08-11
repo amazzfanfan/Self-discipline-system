@@ -51,6 +51,15 @@ export interface AssessmentRun {
   warnings: string[];
   skin_source: string;
   reused: boolean;
+  generation: {
+    assessment_id: string;
+    status: 'pending' | 'running' | 'completed' | 'failed';
+    stage: 'queued' | 'care_suggestions' | 'daily_tasks' | 'completed' | 'failed';
+    error: string | null;
+    care_suggestions: string[];
+    started_at: string | null;
+    completed_at: string | null;
+  };
   created_at: string;
 }
 

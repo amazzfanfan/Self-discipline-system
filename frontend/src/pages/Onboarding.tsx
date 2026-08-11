@@ -191,7 +191,7 @@ const QUESTION_GROUPS: QuestionGroup[] = [
 const EVAL_STAGES: Array<{ key: EvalStage; label: string; icon: string }> = [
   { key: 'upload', label: '上传并校验资料', icon: '↑' },
   { key: 'assess', label: 'Face++ 与规则引擎评估', icon: '◇' },
-  { key: 'done', label: '保存画像并生成任务', icon: '✓' },
+  { key: 'done', label: '保存画像并排队生成 AI 方案', icon: '✓' },
 ];
 
 interface PhotoSlotProps {
@@ -358,6 +358,15 @@ export default function Onboarding() {
           title: '已复用一致评估',
           message: '检测到相同输入，已返回同一规则版本的评估结果。',
           duration: 5000,
+        });
+      }
+
+      if (response.data.generation_queued) {
+        addNotification({
+          type: 'info',
+          title: '画像已建立',
+          message: 'AI 护理建议和今日任务正在后台生成，完成后会自动通知你。',
+          duration: 7000,
         });
       }
 
