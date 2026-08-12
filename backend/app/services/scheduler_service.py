@@ -1,17 +1,17 @@
 import asyncio
 import logging
-from datetime import timedelta
+from datetime import datetime, time as clock_time, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import and_, select
 from app.core.config import get_settings
 from app.core.database import async_session
-from app.core.time import local_now, local_today
+from app.core.time import app_timezone, local_now, local_today
 from app.models.user import User, UserProfile
 from app.models.score import UserScore, DimensionEnum
 from app.models.task import Task, TaskEvent, TaskStatusEnum
 from app.models.conversation import Conversation, RoleEnum
-from app.models.goal import GoalStatus
+from app.models.goal import Goal, GoalStatus
 from app.models.behavior import DailyCheckIn
 from app.services.ai_service import generate_task
 from app.services.faceplus_service import generate_skin_task_ai
@@ -28,6 +28,7 @@ from app.services.adaptive_task_service import (
     dimension_priority,
 )
 from app.services.behavior_service import last_completed_week_start
+from app.services.goal_schedule_service import goal_is_due, goal_planning_context
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -116,11 +117,15 @@ async def generate_tasks_for_user(
                 user_id=user_id,
                 status=GoalStatus.active.value
             )
-            # 按目标类型分组，每个类型取最新的一个目标
+            # 按目标类型分组，每个类型取今天实际需要执行的最新目标。
             for goal in user_goals:
                 goal_type = goal.get("goal_type")
-                if goal_type and goal_type not in goals_by_type:
-                    goals_by_type[goal_type] = goal.get("content", "")
+                if (
+                    goal_type
+                    and goal_type not in goals_by_type
+                    and goal_is_due(goal, today)
+                ):
+                    goals_by_type[goal_type] = goal
             print(f"[任务生成] 用户 {user_id} 有 {len(user_goals)} 个活跃目标，覆盖类型: {list(goals_by_type.keys())}")
         except Exception as e:
             print(f"[任务生成] 获取用户目标失败: {e}")
@@ -168,6 +173,14 @@ async def generate_tasks_for_user(
                     task.estimated_minutes = adaptation.estimated_minutes
                     task.rationale = adaptation.rationale
                     task.adaptation_metadata = adaptation.metadata
+                    goal = goals_by_type.get(dim.value)
+                    if goal:
+                        task.goal_id = goal["id"]
+                        task.scheduled_time = (
+                            clock_time.fromisoformat(goal["preferred_time"])
+                            if goal.get("preferred_time")
+                            else None
+                        )
                     await record_task_event(
                         session,
                         task,
@@ -204,13 +217,14 @@ async def generate_tasks_for_user(
             )
             difficulty = adaptation.difficulty
 
-            goal_content = goals_by_type.get(dim.value)
-            if goal_content:
+            goal = goals_by_type.get(dim.value)
+            goal_content = goal_planning_context(goal) if goal else None
+            if goal:
                 logger.info(
                     "User %s has a %s goal: %s",
                     user_id,
                     dim.value,
-                    goal_content[:50],
+                    goal["content"][:50],
                 )
             task_specs.append({
                 "dimension": dim,
@@ -218,6 +232,7 @@ async def generate_tasks_for_user(
                 "score": score_val,
                 "recent_titles": [task.title for task in dimension_history[:6]],
                 "goal_content": goal_content,
+                "goal": goal,
                 "existing_task": existing_task,
                 "adaptation": adaptation,
             })
@@ -226,6 +241,7 @@ async def generate_tasks_for_user(
             dimension = spec["dimension"]
             if (
                 dimension == DimensionEnum.appearance
+                and not spec["goal"]
                 and isinstance(skin_analysis, dict)
                 and skin_analysis.get("source") == "faceplusplus"
             ):
@@ -267,6 +283,12 @@ async def generate_tasks_for_user(
             rationale = adaptation.rationale
             estimated_minutes = adaptation.estimated_minutes
             task = spec["existing_task"]
+            goal = spec["goal"]
+            scheduled_time = (
+                clock_time.fromisoformat(goal["preferred_time"])
+                if goal and goal.get("preferred_time")
+                else None
+            )
             if task:
                 previous_title = task.title
                 task.title = task_title
@@ -274,6 +296,9 @@ async def generate_tasks_for_user(
                 task.estimated_minutes = estimated_minutes
                 task.difficulty = difficulty
                 task.adaptation_metadata = adaptation.metadata
+                task.goal_id = goal["id"] if goal else None
+                task.scheduled_time = scheduled_time
+                task.source = "goal" if goal else "adaptive"
                 await record_task_event(
                     session,
                     task,
@@ -287,6 +312,7 @@ async def generate_tasks_for_user(
                         "old_title": previous_title,
                         "new_title": task_title,
                         "version": ADAPTATION_VERSION,
+                        "goal_id": goal["id"] if goal else None,
                     },
                 )
             else:
@@ -299,6 +325,9 @@ async def generate_tasks_for_user(
                     estimated_minutes=estimated_minutes,
                     difficulty=difficulty,
                     scheduled_date=today,
+                    scheduled_time=scheduled_time,
+                    goal_id=goal["id"] if goal else None,
+                    source="goal" if goal else "adaptive",
                     adaptation_metadata=adaptation.metadata,
                 )
                 session.add(task)
@@ -310,7 +339,10 @@ async def generate_tasks_for_user(
                     actor="system",
                     source="scheduler",
                     to_status=task.status or TaskStatusEnum.pending,
-                    metadata={"version": ADAPTATION_VERSION},
+                    metadata={
+                        "version": ADAPTATION_VERSION,
+                        "goal_id": goal["id"] if goal else None,
+                    },
                 )
             generated_tasks.append((dim, task_title, difficulty))
 
@@ -454,6 +486,51 @@ async def daily_task_reminders():
         await db.commit()
 
 
+async def scheduled_goal_reminders():
+    """Remind once shortly before a task linked to a scheduled growth goal."""
+    now = local_now()
+    today = now.date()
+    async with async_session() as db:
+        result = await db.execute(
+            select(Task, Goal)
+            .join(Goal, Task.goal_id == Goal.id)
+            .where(
+                Task.scheduled_date == today,
+                Task.scheduled_time.isnot(None),
+                Task.status.in_([TaskStatusEnum.pending, TaskStatusEnum.in_progress]),
+                Goal.status == GoalStatus.active.value,
+                Goal.reminder_enabled.is_(True),
+            )
+        )
+        for task, goal in result.all():
+            scheduled_at = datetime.combine(
+                today,
+                task.scheduled_time,
+                tzinfo=app_timezone(),
+            )
+            remind_at = scheduled_at - timedelta(
+                minutes=goal.reminder_minutes_before or 0
+            )
+            if not (remind_at <= now < scheduled_at + timedelta(hours=1)):
+                continue
+            await create_notification(
+                db,
+                user_id=task.user_id,
+                kind="task_reminder",
+                title=f"{task.scheduled_time.strftime('%H:%M')} 的计划快开始了",
+                message=task.title,
+                dedupe_key=f"goal-task-reminder:{task.id}:{today.isoformat()}",
+                payload={
+                    "link": "/tasks",
+                    "task_id": str(task.id),
+                    "goal_id": str(goal.id),
+                    "scheduled_time": task.scheduled_time.strftime("%H:%M"),
+                },
+                setting_key="task_reminders",
+            )
+        await db.commit()
+
+
 async def weekly_review_reminders():
     """Publish the weekly review entry point for users who enabled it."""
     review_week_start = last_completed_week_start()
@@ -502,6 +579,14 @@ def start_scheduler():
         minute=0,
         id="daily_task_reminders",
         replace_existing=True,
+    )
+    scheduler.add_job(
+        scheduled_goal_reminders,
+        "interval",
+        minutes=1,
+        id="scheduled_goal_reminders",
+        replace_existing=True,
+        max_instances=1,
     )
     scheduler.add_job(
         weekly_review_reminders,

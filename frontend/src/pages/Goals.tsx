@@ -12,6 +12,8 @@ const icons: Record<Dimension, string> = {
   exercise: '↗', diet: '◒', sleep: '☾', appearance: '✦',
 };
 
+const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
+
 const statusMeta: Record<Goal['status'], { label: string; className: string }> = {
   active: { label: '进行中', className: 'border-cyan-300/15 bg-cyan-400/[0.08] text-cyan-200' },
   paused: { label: '已暂停', className: 'border-amber-300/15 bg-amber-400/[0.08] text-amber-200' },
@@ -27,6 +29,11 @@ type GoalDraft = {
   target: string;
   current: string;
   deadline: string;
+  recurrence: Goal['recurrence'];
+  daysOfWeek: number[];
+  preferredTime: string;
+  durationMinutes: string;
+  reminderEnabled: boolean;
 };
 
 const draftFromGoal = (goal: Goal): GoalDraft => ({
@@ -36,6 +43,11 @@ const draftFromGoal = (goal: Goal): GoalDraft => ({
   target: goal.target_value == null ? '' : String(goal.target_value),
   current: goal.current_value == null ? '' : String(goal.current_value),
   deadline: goal.deadline ?? '',
+  recurrence: goal.recurrence ?? 'flexible',
+  daysOfWeek: goal.days_of_week ?? [],
+  preferredTime: goal.preferred_time ?? '',
+  durationMinutes: goal.duration_minutes == null ? '' : String(goal.duration_minutes),
+  reminderEnabled: goal.reminder_enabled ?? false,
 });
 
 export default function Goals() {
@@ -47,6 +59,11 @@ export default function Goals() {
   const [metric, setMetric] = useState('');
   const [target, setTarget] = useState('');
   const [deadline, setDeadline] = useState('');
+  const [recurrence, setRecurrence] = useState<Goal['recurrence']>('flexible');
+  const [daysOfWeek, setDaysOfWeek] = useState<number[]>([]);
+  const [preferredTime, setPreferredTime] = useState('');
+  const [durationMinutes, setDurationMinutes] = useState('');
+  const [reminderEnabled, setReminderEnabled] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [editingGoal, setEditingGoal] = useState<Goal | null>(null);
   const [editDraft, setEditDraft] = useState<GoalDraft | null>(null);
@@ -83,8 +100,15 @@ export default function Goals() {
         current_value: 0,
         deadline: deadline || null,
         milestones: [],
+        recurrence,
+        days_of_week: recurrence === 'custom' || recurrence === 'weekly' ? daysOfWeek : [],
+        preferred_time: preferredTime || null,
+        duration_minutes: durationMinutes ? Number(durationMinutes) : null,
+        reminder_enabled: reminderEnabled && Boolean(preferredTime),
       });
-      setContent(''); setMetric(''); setTarget(''); setDeadline(''); setCreating(false);
+      setContent(''); setMetric(''); setTarget(''); setDeadline('');
+      setRecurrence('flexible'); setDaysOfWeek([]); setPreferredTime('');
+      setDurationMinutes(''); setReminderEnabled(false); setCreating(false);
       setNotice({ type: 'success', text: '目标已创建，并会参与后续任务规划。' });
       await refresh();
     } catch {
@@ -123,6 +147,11 @@ export default function Goals() {
       target_value: editDraft.target ? Number(editDraft.target) : null,
       current_value: editDraft.current ? Number(editDraft.current) : 0,
       deadline: editDraft.deadline || null,
+      recurrence: editDraft.recurrence,
+      days_of_week: editDraft.recurrence === 'custom' || editDraft.recurrence === 'weekly' ? editDraft.daysOfWeek : [],
+      preferred_time: editDraft.preferredTime || null,
+      duration_minutes: editDraft.durationMinutes ? Number(editDraft.durationMinutes) : null,
+      reminder_enabled: editDraft.reminderEnabled && Boolean(editDraft.preferredTime),
     }, '目标内容和进度已保存。');
     if (saved) {
       setEditingGoal(null);
@@ -155,7 +184,9 @@ export default function Goals() {
   const editIsValid = Boolean(
     editDraft?.content.trim()
     && (!editDraft.target || (Number.isFinite(Number(editDraft.target)) && Number(editDraft.target) > 0))
-    && (!editDraft.current || (Number.isFinite(Number(editDraft.current)) && Number(editDraft.current) >= 0)),
+    && (!editDraft.current || (Number.isFinite(Number(editDraft.current)) && Number(editDraft.current) >= 0))
+    && (!editDraft?.durationMinutes || (Number(editDraft.durationMinutes) >= 1 && Number(editDraft.durationMinutes) <= 600))
+    && (!['custom', 'weekly'].includes(editDraft?.recurrence || '') || Boolean(editDraft?.daysOfWeek.length)),
   );
 
   return (
@@ -194,7 +225,14 @@ export default function Goals() {
                 <input value={metric} onChange={(event) => setMetric(event.target.value)} placeholder="目标指标，如每周训练次数" className="rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
                 <input value={target} onChange={(event) => setTarget(event.target.value)} type="number" placeholder="目标值（可选）" className="rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
                 <input value={deadline} onChange={(event) => setDeadline(event.target.value)} type="date" className="rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
-                <div className="md:col-span-2"><button disabled={!content.trim()} type="button" onClick={() => void createGoal()} className="rounded-xl bg-cyan-400 px-4 py-2.5 text-xs font-semibold text-slate-950 disabled:opacity-40">创建并纳入计划</button></div>
+                <select value={recurrence} onChange={(event) => setRecurrence(event.target.value as Goal['recurrence'])} className="rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30">
+                  <option value="flexible">灵活安排</option><option value="daily">每天</option><option value="weekly">每周指定日</option><option value="custom">自定义执行日</option>
+                </select>
+                <input aria-label="计划时间" value={preferredTime} onChange={(event) => setPreferredTime(event.target.value)} type="time" className="rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
+                <input aria-label="计划时长" value={durationMinutes} onChange={(event) => setDurationMinutes(event.target.value)} min="1" max="600" type="number" placeholder="计划时长（分钟）" className="rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
+                <label className="flex items-center gap-2 rounded-xl border border-white/[0.06] bg-slate-950/50 px-3.5 py-3 text-xs text-slate-400"><input type="checkbox" checked={reminderEnabled} disabled={!preferredTime} onChange={(event) => setReminderEnabled(event.target.checked)} />执行前提醒</label>
+                {(recurrence === 'weekly' || recurrence === 'custom') && <div className="flex flex-wrap gap-2 md:col-span-2">{weekdays.map((day, index) => <button key={day} type="button" onClick={() => setDaysOfWeek((value) => value.includes(index) ? value.filter((item) => item !== index) : [...value, index].sort())} className={`h-9 w-9 rounded-lg text-xs ${daysOfWeek.includes(index) ? 'bg-cyan-400 text-slate-950' : 'bg-slate-950/70 text-slate-500'}`}>{day}</button>)}</div>}
+                <div className="md:col-span-2"><button disabled={!content.trim() || ((recurrence === 'weekly' || recurrence === 'custom') && daysOfWeek.length === 0)} type="button" onClick={() => void createGoal()} className="rounded-xl bg-cyan-400 px-4 py-2.5 text-xs font-semibold text-slate-950 disabled:opacity-40">创建并纳入计划</button></div>
               </div>
             </motion.div>
           )}
@@ -245,6 +283,22 @@ export default function Goals() {
                     <input aria-label="截止日期" type="date" value={editDraft.deadline} onChange={(event) => setEditDraft({ ...editDraft, deadline: event.target.value })}
                       className="w-full rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
                   </label>
+                  <label>
+                    <span className="mb-1.5 block text-[10px] text-slate-500">执行频率</span>
+                    <select aria-label="执行频率" value={editDraft.recurrence} onChange={(event) => setEditDraft({ ...editDraft, recurrence: event.target.value as Goal['recurrence'] })} className="w-full rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30">
+                      <option value="flexible">灵活安排</option><option value="daily">每天</option><option value="weekly">每周指定日</option><option value="custom">自定义执行日</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span className="mb-1.5 block text-[10px] text-slate-500">计划时间</span>
+                    <input aria-label="编辑计划时间" type="time" value={editDraft.preferredTime} onChange={(event) => setEditDraft({ ...editDraft, preferredTime: event.target.value })} className="w-full rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
+                  </label>
+                  <label>
+                    <span className="mb-1.5 block text-[10px] text-slate-500">计划时长（分钟）</span>
+                    <input aria-label="编辑计划时长" type="number" min="1" max="600" value={editDraft.durationMinutes} onChange={(event) => setEditDraft({ ...editDraft, durationMinutes: event.target.value })} className="w-full rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
+                  </label>
+                  <label className="flex items-center gap-2 self-end rounded-xl border border-white/[0.06] bg-slate-950/50 px-3.5 py-3 text-xs text-slate-400"><input type="checkbox" checked={editDraft.reminderEnabled} disabled={!editDraft.preferredTime} onChange={(event) => setEditDraft({ ...editDraft, reminderEnabled: event.target.checked })} />执行前提醒</label>
+                  {(editDraft.recurrence === 'weekly' || editDraft.recurrence === 'custom') && <div className="flex flex-wrap gap-2 md:col-span-2">{weekdays.map((day, index) => <button key={day} type="button" onClick={() => setEditDraft({ ...editDraft, daysOfWeek: editDraft.daysOfWeek.includes(index) ? editDraft.daysOfWeek.filter((item) => item !== index) : [...editDraft.daysOfWeek, index].sort() })} className={`h-9 w-9 rounded-lg text-xs ${editDraft.daysOfWeek.includes(index) ? 'bg-cyan-400 text-slate-950' : 'bg-slate-950/70 text-slate-500'}`}>{day}</button>)}</div>}
                 </div>
                 <div className="flex justify-end gap-2 border-t border-white/[0.06] px-5 py-4">
                   <button type="button" onClick={() => { setEditingGoal(null); setEditDraft(null); }} className="rounded-xl border border-white/[0.08] px-4 py-2.5 text-xs text-slate-400 hover:text-white">取消</button>
@@ -299,6 +353,12 @@ export default function Goals() {
                   </div>
                   <h2 className="relative mt-4 min-h-12 text-[15px] font-medium leading-6 text-white">{goal.content}</h2>
                   <div className="relative mt-2 flex items-center justify-between text-[9px] text-slate-600"><span>{goal.source === 'chat' ? '来自 Agent 对话' : '手动创建'}</span><span>{goal.deadline ?? '长期目标'}</span></div>
+                  <div className="relative mt-3 flex flex-wrap gap-1.5 text-[9px]">
+                    <span className="rounded-full bg-white/[0.04] px-2 py-1 text-slate-400">{goal.recurrence === 'daily' ? '每天' : !goal.recurrence || goal.recurrence === 'flexible' ? '灵活安排' : `周${(goal.days_of_week ?? []).map((day) => weekdays[day]).join('、')}`}</span>
+                    {goal.preferred_time && <span className="rounded-full bg-cyan-400/[0.07] px-2 py-1 text-cyan-300">{goal.preferred_time}</span>}
+                    {goal.duration_minutes && <span className="rounded-full bg-white/[0.04] px-2 py-1 text-slate-400">{goal.duration_minutes} 分钟</span>}
+                    {goal.reminder_enabled && <span className="rounded-full bg-violet-400/[0.07] px-2 py-1 text-violet-300">提前 {goal.reminder_minutes_before} 分钟提醒</span>}
+                  </div>
                   {goal.target_value != null && <div className="relative mt-4"><div className="flex justify-between text-[10px] text-slate-500"><span>{goal.target_metric || '目标进度'}</span><span>{goal.current_value ?? 0} / {goal.target_value}</span></div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800"><motion.div initial={{ width: 0 }} animate={{ width: `${progress}%` }} className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-violet-500" /></div></div>}
                   <div className="relative mt-5 flex flex-wrap gap-2 border-t border-white/[0.055] pt-4">
                     <button disabled={busyId === goal.id} type="button" onClick={() => editGoal(goal)} className="rounded-lg bg-white/[0.045] px-2.5 py-1.5 text-[10px] text-slate-400 hover:text-white">编辑</button>

@@ -5,7 +5,7 @@ Goals Router - 目标管理 API
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from datetime import date
+from datetime import date, time
 from typing import Literal, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,6 +30,15 @@ class GoalCreateRequest(BaseModel):
     current_value: Optional[float] = Field(default=None, ge=0)
     deadline: Optional[date] = None
     milestones: list[dict] = Field(default_factory=list, max_length=20)
+    recurrence: Literal["flexible", "daily", "weekly", "custom"] | None = None
+    days_of_week: list[Literal[0, 1, 2, 3, 4, 5, 6]] | None = Field(
+        default=None, max_length=7
+    )
+    preferred_time: Optional[time] = None
+    duration_minutes: Optional[int] = Field(default=None, ge=1, le=600)
+    start_date: Optional[date] = None
+    reminder_enabled: Optional[bool] = None
+    reminder_minutes_before: int = Field(default=30, ge=0, le=1440)
 
 
 class GoalUpdateRequest(BaseModel):
@@ -47,6 +56,15 @@ class GoalUpdateRequest(BaseModel):
     current_value: Optional[float] = Field(default=None, ge=0)
     deadline: Optional[date] = None
     milestones: Optional[list[dict]] = Field(default=None, max_length=20)
+    recurrence: Optional[Literal["flexible", "daily", "weekly", "custom"]] = None
+    days_of_week: Optional[list[Literal[0, 1, 2, 3, 4, 5, 6]]] = Field(
+        default=None, max_length=7
+    )
+    preferred_time: Optional[time] = None
+    duration_minutes: Optional[int] = Field(default=None, ge=1, le=600)
+    start_date: Optional[date] = None
+    reminder_enabled: Optional[bool] = None
+    reminder_minutes_before: Optional[int] = Field(default=None, ge=0, le=1440)
 
 
 class GoalResponse(BaseModel):
@@ -60,6 +78,13 @@ class GoalResponse(BaseModel):
     current_value: Optional[float] = None
     deadline: Optional[str] = None
     milestones: list[dict] = Field(default_factory=list)
+    recurrence: str
+    days_of_week: list[int] = Field(default_factory=list)
+    preferred_time: Optional[str] = None
+    duration_minutes: Optional[int] = None
+    start_date: Optional[str] = None
+    reminder_enabled: bool
+    reminder_minutes_before: int
     importance_score: Optional[float] = None
     status: str
     source: str
@@ -87,6 +112,13 @@ async def create_goal(
         current_value=body.current_value,
         deadline=body.deadline,
         milestones=body.milestones,
+        recurrence=body.recurrence,
+        days_of_week=body.days_of_week,
+        preferred_time=body.preferred_time,
+        duration_minutes=body.duration_minutes,
+        start_date=body.start_date,
+        reminder_enabled=body.reminder_enabled,
+        reminder_minutes_before=body.reminder_minutes_before,
         source="manual",
     )
     return goal.to_dict()
@@ -139,8 +171,16 @@ async def update_goal(
     updates = body.model_dump(exclude_unset=True)
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
-    if any(updates.get(field) is None for field in ("content", "goal_type", "status") if field in updates):
-        raise HTTPException(status_code=422, detail="content, goal_type and status cannot be null")
+    required_fields = (
+        "content",
+        "goal_type",
+        "status",
+        "recurrence",
+        "reminder_enabled",
+        "reminder_minutes_before",
+    )
+    if any(updates.get(field) is None for field in required_fields if field in updates):
+        raise HTTPException(status_code=422, detail="required goal fields cannot be null")
 
     goal = await goal_service.update_goal(
         db=db,

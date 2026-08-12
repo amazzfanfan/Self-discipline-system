@@ -147,10 +147,16 @@ async def _exercise_api_contracts(monkeypatch):
                         "goal_type": "exercise",
                         "target_metric": "weekly_sessions",
                         "target_value": 7,
+                        "recurrence": "daily",
+                        "preferred_time": "20:00",
+                        "duration_minutes": 40,
+                        "reminder_enabled": True,
                     },
                 )
                 assert goal_response.status_code == 200
                 goal_id = goal_response.json()["id"]
+                assert goal_response.json()["preferred_time"] == "20:00"
+                assert goal_response.json()["duration_minutes"] == 40
                 pause_response = await client.put(
                     f"/api/goals/{goal_id}",
                     json={"status": "paused"},
@@ -159,6 +165,16 @@ async def _exercise_api_contracts(monkeypatch):
                 assert pause_response.json()["status"] == "paused"
                 paused_goals = await client.get("/api/goals?status=paused")
                 assert [item["id"] for item in paused_goals.json()] == [goal_id]
+
+                calendar_response = await client.get(
+                    "/api/tasks",
+                    params={
+                        "start_date": local_today().isoformat(),
+                        "end_date": local_today().isoformat(),
+                    },
+                )
+                assert calendar_response.status_code == 200
+                assert calendar_response.json()[0]["scheduled_date"] == local_today().isoformat()
 
                 inbox_response = await client.get("/api/notifications?unread_only=true")
                 assert inbox_response.status_code == 200

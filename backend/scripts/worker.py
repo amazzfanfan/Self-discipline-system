@@ -21,6 +21,8 @@ from app.services.cache_service import (
 from app.services.memory_service import MemoryService
 from app.services.goal_service import goal_service
 from app.services.assessment_generation_service import process_assessment_generation
+from app.services.scheduler_service import generate_tasks_for_user
+from app.models.user import User
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("system-agent.worker")
@@ -45,6 +47,16 @@ async def process_job(kind: str, payload: dict) -> None:
                 goal_id=payload["goal_id"],
                 user_id=payload["user_id"],
             )
+            return
+        if kind == "refresh_goal_tasks":
+            user = await session.get(User, payload["user_id"])
+            if user:
+                await generate_tasks_for_user(
+                    user.id,
+                    user.nickname,
+                    session,
+                    regenerate_pending=True,
+                )
             return
         if kind == "generate_assessment_extras":
             await process_assessment_generation(

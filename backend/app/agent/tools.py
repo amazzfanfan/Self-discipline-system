@@ -5,7 +5,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time as clock_time
 from typing import Any, Awaitable, Callable, Literal
 
 from pydantic import BaseModel, Field, ValidationError
@@ -81,6 +81,11 @@ class GoalCreateArgs(BaseModel):
     goal_type: Literal["exercise", "diet", "sleep", "appearance"] = Field(
         description="目标维度"
     )
+    recurrence: Literal["flexible", "daily", "weekly", "custom"] | None = None
+    days_of_week: list[int] | None = Field(default=None, max_length=7)
+    preferred_time: clock_time | None = None
+    duration_minutes: int | None = Field(default=None, ge=1, le=600)
+    reminder_enabled: bool | None = None
 
 
 class TaskReplaceArgs(BaseModel):
@@ -111,6 +116,11 @@ class GoalStatusArgs(GoalSelectorArgs):
 class GoalUpdateArgs(GoalSelectorArgs):
     new_content: str = Field(min_length=2, max_length=500, description="修改后的完整目标内容")
     goal_type: Literal["exercise", "diet", "sleep", "appearance"] | None = None
+    recurrence: Literal["flexible", "daily", "weekly", "custom"] | None = None
+    days_of_week: list[int] | None = Field(default=None, max_length=7)
+    preferred_time: clock_time | None = None
+    duration_minutes: int | None = Field(default=None, ge=1, le=600)
+    reminder_enabled: bool | None = None
 
 
 class MemorySearchArgs(BaseModel):
@@ -261,6 +271,11 @@ class ToolRegistry:
                 user_id=self.user_id,
                 content=args.content,
                 goal_type=args.goal_type,
+                recurrence=args.recurrence,
+                days_of_week=args.days_of_week,
+                preferred_time=args.preferred_time,
+                duration_minutes=args.duration_minutes,
+                reminder_enabled=args.reminder_enabled,
                 source="chat",
             )
             return {"success": True, "goal": goal.to_dict()}
@@ -273,6 +288,16 @@ class ToolRegistry:
             updates: dict[str, Any] = {"content": args.new_content}
             if args.goal_type:
                 updates["goal_type"] = args.goal_type
+            for field in (
+                "recurrence",
+                "days_of_week",
+                "preferred_time",
+                "duration_minutes",
+                "reminder_enabled",
+            ):
+                value = getattr(args, field)
+                if value is not None:
+                    updates[field] = value
             updated = await goal_service.update_goal(
                 db=self.db,
                 goal_id=str(goal.id),

@@ -69,6 +69,7 @@ function scheduleDetail(task: Task) {
 
 export default function Tasks() {
   const [filter, setFilter] = useState('all');
+  const [selectedDate, setSelectedDate] = useState(() => localDateKey(new Date()));
   const [busyId, setBusyId] = useState<string | null>(null);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [mode, setMode] = useState<ScheduleMode>('later');
@@ -79,8 +80,12 @@ export default function Tasks() {
   const { addNotification } = useNotification();
 
   const { data: tasks, isLoading, isError } = useQuery<Task[]>({
-    queryKey: ['tasks', filter],
-    queryFn: () => api.get('/tasks', { params: filter !== 'all' ? { dimension: filter } : {} }).then((r) => r.data),
+    queryKey: ['tasks', filter, selectedDate],
+    queryFn: () => api.get('/tasks', { params: {
+      ...(filter !== 'all' ? { dimension: filter } : {}),
+      start_date: selectedDate,
+      end_date: selectedDate,
+    } }).then((r) => r.data),
   });
 
   const now = new Date();
@@ -95,6 +100,11 @@ export default function Tasks() {
   const selectedIsToday = selectedTask?.scheduled_date === localDateKey(now);
 
   const filteredTasks = useMemo(() => tasks || [], [tasks]);
+  const calendarDays = useMemo(() => Array.from({ length: 7 }, (_, index) => {
+    const value = new Date();
+    value.setDate(value.getDate() + index - 2);
+    return { key: localDateKey(value), day: value.toLocaleDateString('zh-CN', { weekday: 'short' }), date: value.getDate() };
+  }), []);
 
   const refreshTasks = async () => {
     await Promise.all([
@@ -152,6 +162,8 @@ export default function Tasks() {
 
   const resumeTask = (task: Task) => runTaskAction(task.id, () => api.post(`/tasks/${task.id}/resume`), '已恢复为待完成。');
 
+  const completeTask = (task: Task) => runTaskAction(task.id, () => api.post(`/tasks/${task.id}/complete`), '完成记录和连续打卡已同步。');
+
   const feedbackTask = (taskId: string, feedback: 'too_easy' | 'just_right' | 'too_hard' | 'not_suitable') => runTaskAction(
     taskId,
     () => api.post(`/tasks/${taskId}/feedback`, { feedback }),
@@ -176,6 +188,10 @@ export default function Tasks() {
               {value === 'all' ? '全部' : dimensionLabels[value]}
             </button>
           ))}
+        </div>
+
+        <div className="mb-6 grid grid-cols-7 gap-1.5 rounded-2xl border border-white/5 bg-slate-900/40 p-2">
+          {calendarDays.map((day) => <button key={day.key} type="button" onClick={() => setSelectedDate(day.key)} className={`rounded-xl px-1 py-2 text-center transition ${selectedDate === day.key ? 'bg-cyan-400 text-slate-950 shadow-lg shadow-cyan-950/30' : 'text-slate-500 hover:bg-white/5 hover:text-slate-300'}`}><span className="block text-[9px]">{day.day}</span><span className="mt-1 block text-sm font-semibold">{day.date}</span></button>)}
         </div>
 
         <div className="space-y-3">
@@ -214,7 +230,7 @@ export default function Tasks() {
                         </div>
                       </details>
                     )}
-                    <div className="mt-1 text-xs text-slate-600">{task.scheduled_date}</div>
+                    <div className="mt-1 flex flex-wrap gap-2 text-xs text-slate-600"><span>{task.scheduled_date}{task.scheduled_time ? ` · ${task.scheduled_time}` : ''}</span>{task.goal_id && <span className="text-cyan-400/70">来自成长目标</span>}</div>
                   </div>
                   <span className={`flex-shrink-0 whitespace-nowrap rounded-full border px-2.5 py-1 text-xs ${status.color}`}>{status.text}</span>
                 </div>
@@ -226,6 +242,12 @@ export default function Tasks() {
                 )}
 
                 <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/5 pt-3">
+                  {actionable && (
+                    <button type="button" disabled={busyId === task.id} onClick={() => void completeTask(task)}
+                      className="rounded-lg border border-emerald-400/20 bg-emerald-400/10 px-3 py-1.5 text-[11px] font-medium text-emerald-300 transition hover:bg-emerald-400/15 disabled:opacity-50">
+                      标记完成
+                    </button>
+                  )}
                   {actionable && (
                     <button type="button" disabled={busyId === task.id} onClick={() => openSchedule(task)}
                       className="rounded-lg border border-cyan-400/20 bg-cyan-400/5 px-3 py-1.5 text-[11px] text-cyan-300 transition hover:bg-cyan-400/10 disabled:opacity-50">

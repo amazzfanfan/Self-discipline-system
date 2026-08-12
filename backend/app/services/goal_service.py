@@ -4,7 +4,7 @@ Goal Service - 目标管理服务
 支持向量嵌入的语义搜索，关键词搜索作为降级方案
 """
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from sqlalchemy import select, or_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.goal import Goal, GoalStatus, GoalSource
@@ -15,6 +15,7 @@ import traceback
 from app.services.llm_service import get_embedding
 from app.services.cache_service import enqueue_background_job
 from app.core.config import get_settings
+from app.services.goal_schedule_service import parse_goal_schedule
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -38,6 +39,13 @@ class GoalService:
         current_value: float | None = None,
         deadline: date | None = None,
         milestones: list[dict] | None = None,
+        recurrence: str | None = None,
+        days_of_week: list[int] | None = None,
+        preferred_time: time | None = None,
+        duration_minutes: int | None = None,
+        start_date: date | None = None,
+        reminder_enabled: bool | None = None,
+        reminder_minutes_before: int = 30,
         source: str = "manual",
     ) -> Goal:
         """
@@ -55,7 +63,8 @@ class GoalService:
             Goal 对象
         """
         try:
-            # 创建目标记录
+            parsed_schedule = parse_goal_schedule(content)
+            resolved_time = preferred_time or parsed_schedule.get("preferred_time")
             goal = Goal(
                 user_id=user_id,
                 content=content,
@@ -66,6 +75,23 @@ class GoalService:
                 current_value=current_value,
                 deadline=deadline,
                 milestones=milestones or [],
+                recurrence=(
+                    recurrence or parsed_schedule.get("recurrence") or "flexible"
+                ),
+                days_of_week=(
+                    days_of_week
+                    if days_of_week is not None
+                    else parsed_schedule.get("days_of_week", [])
+                ),
+                preferred_time=resolved_time,
+                duration_minutes=(
+                    duration_minutes or parsed_schedule.get("duration_minutes")
+                ),
+                start_date=start_date,
+                reminder_enabled=(
+                    bool(resolved_time) if reminder_enabled is None else reminder_enabled
+                ),
+                reminder_minutes_before=reminder_minutes_before,
                 embedding=None,
                 embedding_model=None,
                 source=source,
@@ -75,6 +101,10 @@ class GoalService:
             db.add(goal)
             await db.commit()
 
+            await enqueue_background_job(
+                "refresh_goal_tasks",
+                {"goal_id": str(goal.id), "user_id": str(user_id)},
+            )
             queued = await enqueue_background_job(
                 "index_goal",
                 {"goal_id": str(goal.id), "user_id": str(user_id)},
@@ -121,8 +151,29 @@ class GoalService:
                 logger.warning(f"Goal {goal_id} not found for user {user_id}")
                 return None
 
+            if updates.get("content") and updates["content"] != goal.content:
+                parsed_schedule = parse_goal_schedule(updates["content"])
+                for key, value in parsed_schedule.items():
+                    updates.setdefault(key, value)
+                if "preferred_time" in parsed_schedule:
+                    updates.setdefault("reminder_enabled", True)
+
             # 更新字段
             content_changed = False
+            planning_changed = bool(
+                set(updates)
+                & {
+                    "content",
+                    "goal_type",
+                    "status",
+                    "recurrence",
+                    "days_of_week",
+                    "preferred_time",
+                    "duration_minutes",
+                    "start_date",
+                    "deadline",
+                }
+            )
             for key, value in updates.items():
                 if hasattr(goal, key):
                     if key == "content" and value != goal.content:
@@ -138,6 +189,11 @@ class GoalService:
             goal.updated_at = datetime.now(timezone.utc)
             await db.commit()
 
+            if planning_changed:
+                await enqueue_background_job(
+                    "refresh_goal_tasks",
+                    {"goal_id": str(goal.id), "user_id": str(user_id)},
+                )
             if content_changed:
                 queued = await enqueue_background_job(
                     "index_goal",
@@ -204,6 +260,10 @@ class GoalService:
             if goal:
                 await db.delete(goal)
                 await db.commit()
+                await enqueue_background_job(
+                    "refresh_goal_tasks",
+                    {"goal_id": str(goal_id), "user_id": str(user_id)},
+                )
                 logger.info(f"Deleted goal {goal_id}")
                 return True
 

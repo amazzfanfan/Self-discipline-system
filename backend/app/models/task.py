@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, DateTime, Date, ForeignKey, Text, Integer, JSON, Enum as SAEnum, UniqueConstraint, Index
+from sqlalchemy import Column, String, DateTime, Date, Time, ForeignKey, Text, Integer, JSON, Enum as SAEnum, UniqueConstraint, Index
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.core.database import Base
@@ -35,11 +35,18 @@ class Task(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    goal_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("goals.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     dimension = Column(SAEnum(DimensionEnum), nullable=False)
     title = Column(String(200), nullable=False)
     description = Column(Text)
     difficulty = Column(SAEnum(DifficultyEnum), default=DifficultyEnum.medium)
     scheduled_date = Column(Date, nullable=False, index=True)
+    scheduled_time = Column(Time)
     status = Column(SAEnum(TaskStatusEnum), default=TaskStatusEnum.pending)
     completion_proof = Column(Text)
     rationale = Column(Text)

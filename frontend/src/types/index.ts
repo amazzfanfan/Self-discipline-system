@@ -65,11 +65,14 @@ export interface AssessmentRun {
 
 export interface Task {
   id: string;
+  goal_id?: string | null;
   dimension: Dimension;
   title: string;
   description: string;
   difficulty: 'easy' | 'medium' | 'hard';
   scheduled_date: string;
+  scheduled_time?: string | null;
+  source?: 'adaptive' | 'goal' | 'chat_modified';
   status: 'pending' | 'in_progress' | 'completed' | 'failed' | 'deferred';
   completed_at: string | null;
   rationale?: string | null;
@@ -163,6 +166,13 @@ export interface Goal {
   current_value: number | null;
   deadline: string | null;
   milestones: Array<{ title?: string; completed?: boolean }>;
+  recurrence: 'flexible' | 'daily' | 'weekly' | 'custom';
+  days_of_week: number[];
+  preferred_time: string | null;
+  duration_minutes: number | null;
+  start_date: string | null;
+  reminder_enabled: boolean;
+  reminder_minutes_before: number;
   status: 'active' | 'completed' | 'paused';
   source: 'manual' | 'chat';
   created_at: string;

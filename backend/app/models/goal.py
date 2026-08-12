@@ -6,7 +6,20 @@ Goal Model - 用户目标模型
 import uuid
 import enum
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, Date, DateTime, ForeignKey, Text, Float, JSON, Index
+from sqlalchemy import (
+    Boolean,
+    Column,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    String,
+    Text,
+    Time,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from pgvector.sqlalchemy import Vector
 from app.core.database import Base
@@ -51,6 +64,13 @@ class Goal(Base):
     current_value = Column(Float)
     deadline = Column(Date)
     milestones = Column(JSON, nullable=False, default=list)
+    recurrence = Column(String(20), nullable=False, default="flexible")
+    days_of_week = Column(JSON, nullable=False, default=list)
+    preferred_time = Column(Time)
+    duration_minutes = Column(Integer)
+    start_date = Column(Date)
+    reminder_enabled = Column(Boolean, nullable=False, default=False)
+    reminder_minutes_before = Column(Integer, nullable=False, default=30)
 
     # 向量嵌入
     # 向量由远程百炼 Embedding API 生成；本地 pgvector 只负责存储与检索。
@@ -92,6 +112,15 @@ class Goal(Base):
             "current_value": self.current_value,
             "deadline": self.deadline.isoformat() if self.deadline else None,
             "milestones": self.milestones or [],
+            "recurrence": self.recurrence,
+            "days_of_week": self.days_of_week or [],
+            "preferred_time": (
+                self.preferred_time.strftime("%H:%M") if self.preferred_time else None
+            ),
+            "duration_minutes": self.duration_minutes,
+            "start_date": self.start_date.isoformat() if self.start_date else None,
+            "reminder_enabled": self.reminder_enabled,
+            "reminder_minutes_before": self.reminder_minutes_before,
             "embedding_model": self.embedding_model,
             "importance_score": self.importance_score,
             "status": self.status,

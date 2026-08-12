@@ -32,11 +32,20 @@ class TaskScheduleRequest(BaseModel):
 def _task_payload(task: Task) -> dict:
     return {
         "id": str(task.id),
+        "goal_id": (
+            str(task.goal_id) if getattr(task, "goal_id", None) else None
+        ),
         "dimension": task.dimension.value,
         "title": task.title,
         "description": task.description,
         "difficulty": task.difficulty.value,
         "scheduled_date": task.scheduled_date.isoformat(),
+        "scheduled_time": (
+            task.scheduled_time.strftime("%H:%M")
+            if getattr(task, "scheduled_time", None)
+            else None
+        ),
+        "source": getattr(task, "source", "adaptive"),
         "status": task.status.value,
         "completed_at": task.completed_at.isoformat() if task.completed_at else None,
         "rationale": task.rationale,
@@ -284,6 +293,8 @@ async def list_tasks(
     db: AsyncSession = Depends(get_db, scope="function"),
     dimension: Literal["exercise", "diet", "sleep", "appearance"] | None = None,
     status: Literal["pending", "in_progress", "completed", "failed", "deferred"] | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
     limit: int = Query(default=20, ge=1, le=100),
 ):
     changed_users = await maintain_task_states(db, user.id)
@@ -294,6 +305,12 @@ async def list_tasks(
         query = query.where(Task.dimension == dimension)
     if status:
         query = query.where(Task.status == status)
+    if start_date:
+        query = query.where(Task.scheduled_date >= start_date)
+    if end_date:
+        query = query.where(Task.scheduled_date <= end_date)
+    if start_date and end_date and end_date < start_date:
+        raise HTTPException(422, "end_date must not be before start_date")
     query = query.order_by(Task.scheduled_date.desc()).limit(limit)
 
     result = await db.execute(query)

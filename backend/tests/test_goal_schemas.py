@@ -31,3 +31,18 @@ def test_goal_update_preserves_explicit_null_for_clearable_fields():
 def test_goal_update_rejects_empty_content():
     with pytest.raises(ValidationError):
         GoalUpdateRequest(content="")
+
+
+def test_goal_schedule_fields_are_validated():
+    body = GoalCreateRequest(
+        content="每天晚上八点快走",
+        recurrence="daily",
+        preferred_time="20:00",
+        duration_minutes=40,
+        reminder_enabled=True,
+    )
+    assert body.preferred_time.isoformat() == "20:00:00"
+    with pytest.raises(ValidationError):
+        GoalCreateRequest(content="周一快走", days_of_week=[7])
+    with pytest.raises(ValidationError):
+        GoalUpdateRequest(duration_minutes=0)

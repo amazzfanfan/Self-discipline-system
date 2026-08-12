@@ -255,7 +255,11 @@ AI 的回复、分析、推荐一律不记住。问题和请求一律不记住�
         # 目标上下文
         goal_context = ""
         if goal_content:
-            goal_context = f"用户目标：{goal_content}\n请生成与该目标相关的任务，帮助用户逐步实现目标。\n"
+            goal_context = (
+                f"用户目标：{goal_content}\n"
+                "请生成与该目标直接一致的任务；若目标中包含执行时间、时长或具体活动，"
+                "必须保留这些约束，不得擅自换成通用任务。\n"
+            )
         
         return self.TASK_PROMPT.format(
             dimension=dimension,
