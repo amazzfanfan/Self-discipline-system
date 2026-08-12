@@ -11,6 +11,8 @@ def production_settings(**overrides):
         "AUTH_COOKIE_SECURE": True,
         "AI_API_KEY": "configured",
         "CORS_ORIGINS": ["https://example.com"],
+        "RATE_LIMIT_STORAGE_URI": "redis://redis:6379/0",
+        "SCHEDULER_PERSIST_JOBS": True,
     }
     values.update(overrides)
     return Settings(_env_file=None, **values)
@@ -28,6 +30,8 @@ def test_secure_production_settings_are_accepted():
         ({"CORS_ORIGINS": ["http://localhost:5174"]}, "CORS"),
         ({"DEBUG": True}, "DEBUG"),
         ({"AI_API_KEY": ""}, "AI_API_KEY"),
+        ({"RATE_LIMIT_STORAGE_URI": ""}, "RATE_LIMIT_STORAGE_URI"),
+        ({"SCHEDULER_PERSIST_JOBS": False}, "persistent jobs"),
     ],
 )
 def test_insecure_production_settings_are_rejected(overrides, message):

@@ -10,7 +10,10 @@ TRACKED_FIELDS = (
     "goal_type",
     "status",
     "target_metric",
+    "target_unit",
+    "metric_direction",
     "target_value",
+    "baseline_value",
     "current_value",
     "progress_mode",
     "deadline",
@@ -76,15 +79,20 @@ def detect_goal_change_type(previous: dict, current: dict) -> str | None:
     return None
 
 
+def goal_target_reached(goal: Goal) -> bool:
+    target = float(goal.target_value or 0)
+    current = float(goal.current_value or 0)
+    direction = getattr(goal, "metric_direction", None) or "increase"
+    return target > 0 and (current <= target if direction == "decrease" else current >= target)
+
+
 def complete_goal_if_target_reached(
     db,
     goal: Goal,
     *,
     source: str,
 ) -> bool:
-    target = float(goal.target_value or 0)
-    current = float(goal.current_value or 0)
-    if target <= 0 or current < target or goal.status == GoalStatus.completed.value:
+    if not goal_target_reached(goal) or goal.status == GoalStatus.completed.value:
         return False
     previous = goal_lifecycle_snapshot(goal)
     goal.status = GoalStatus.completed.value

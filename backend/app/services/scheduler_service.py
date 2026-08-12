@@ -1,7 +1,9 @@
 import asyncio
 import logging
 from datetime import datetime, time as clock_time, timedelta
+from urllib.parse import unquote, urlparse
 
+from apscheduler.jobstores.redis import RedisJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import and_, select
 from app.core.config import get_settings
@@ -33,7 +35,42 @@ from app.services.goal_progress_service import build_goal_progress_summaries
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
-scheduler = AsyncIOScheduler(timezone=settings.APP_TIMEZONE)
+
+
+def _scheduler_jobstores() -> dict | None:
+    if not settings.SCHEDULER_PERSIST_JOBS:
+        return None
+    parsed = urlparse(settings.SCHEDULER_REDIS_URL or settings.REDIS_URL)
+    if parsed.scheme not in {"redis", "rediss"} or not parsed.hostname:
+        raise RuntimeError("SCHEDULER_REDIS_URL must be a redis:// or rediss:// URL")
+    database = int((parsed.path or "/0").lstrip("/") or 0)
+    connect_args = {
+        "host": parsed.hostname,
+        "port": parsed.port or 6379,
+        "password": unquote(parsed.password) if parsed.password else None,
+        "username": unquote(parsed.username) if parsed.username else None,
+    }
+    if parsed.scheme == "rediss":
+        connect_args["ssl"] = True
+    return {
+        "default": RedisJobStore(
+            db=database,
+            jobs_key="system-agent:scheduler:jobs",
+            run_times_key="system-agent:scheduler:run-times",
+            **connect_args,
+        )
+    }
+
+
+scheduler = AsyncIOScheduler(
+    timezone=settings.APP_TIMEZONE,
+    jobstores=_scheduler_jobstores(),
+    job_defaults={
+        "coalesce": True,
+        "max_instances": 1,
+        "misfire_grace_time": 3600,
+    },
+)
 
 TASKS_PER_DIMENSION = {
     DimensionEnum.exercise: 1,
@@ -331,6 +368,7 @@ async def generate_tasks_for_user(
                 return await _generate_skin_based_task(
                     skin_analysis,
                     profile.skincare_constraints if profile else None,
+                    profile.task_constraints if profile else None,
                 )
             adaptation = spec["adaptation"]
             signals = adaptation.metadata["signals"]
@@ -352,6 +390,7 @@ async def generate_tasks_for_user(
                 recent_tasks=spec["recent_titles"],
                 goal_content=spec["goal_content"],
                 adaptation_context=adaptation_notes,
+                task_constraints=profile.task_constraints if profile else None,
             )
 
         # These calls are independent. Running them concurrently avoids making
@@ -506,13 +545,14 @@ async def generate_tasks_for_user(
 async def _generate_skin_based_task(
     skin_analysis: dict,
     constraints: dict | None = None,
+    task_constraints: dict | None = None,
 ) -> str:
     """根据肤质分析结果生成护肤任务（使用AI动态生成）"""
     issues = skin_analysis.get("issues", [])
     skin_type = skin_analysis.get("skin_type_name", "")
     
     # 调用AI生成个性化护肤任务
-    return await generate_skin_task_ai(issues, skin_type, constraints)
+    return await generate_skin_task_ai(issues, skin_type, constraints, task_constraints)
 
 
 async def daily_task_generation():
@@ -675,6 +715,7 @@ def start_scheduler():
         minute=0,
         id="daily_tasks",
         replace_existing=True,
+        misfire_grace_time=21600,
     )
     scheduler.add_job(
         task_state_maintenance,
@@ -691,6 +732,7 @@ def start_scheduler():
         minute=0,
         id="daily_task_reminders",
         replace_existing=True,
+        misfire_grace_time=14400,
     )
     scheduler.add_job(
         scheduled_goal_reminders,
@@ -708,6 +750,7 @@ def start_scheduler():
         minute=0,
         id="weekly_review_reminders",
         replace_existing=True,
+        misfire_grace_time=86400,
     )
     scheduler.add_job(
         privacy_retention_cleanup,

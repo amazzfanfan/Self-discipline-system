@@ -213,7 +213,11 @@ async def _exercise_api_contracts(monkeypatch):
                         "content": "每天晚上八点快走四十分钟",
                         "goal_type": "exercise",
                         "target_metric": "weekly_sessions",
+                        "target_unit": "次",
+                        "metric_direction": "increase",
                         "target_value": 7,
+                        "baseline_value": 0,
+                        "milestones": [{"title": "完成三次", "target_value": 3}],
                         "recurrence": "daily",
                         "preferred_time": "20:00",
                         "duration_minutes": 40,
@@ -224,15 +228,24 @@ async def _exercise_api_contracts(monkeypatch):
                 goal_id = goal_response.json()["id"]
                 assert goal_response.json()["preferred_time"] == "20:00"
                 assert goal_response.json()["duration_minutes"] == 40
+                assert goal_response.json()["target_unit"] == "次"
                 manual_progress_response = await client.put(
                     f"/api/goals/{goal_id}",
                     json={"progress_mode": "manual", "current_value": 3},
                 )
                 assert manual_progress_response.status_code == 200
                 assert manual_progress_response.json()["current_value"] == 3
+                assert manual_progress_response.json()["milestones"][0]["completed_at"]
+                progress_entry_response = await client.post(
+                    f"/api/goals/{goal_id}/progress",
+                    json={"current_value": 4, "note": "集成测试记录"},
+                )
+                assert progress_entry_response.status_code == 200
+                assert progress_entry_response.json()["current_value"] == 4
                 manual_timeline = await client.get(f"/api/goals/{goal_id}/progress")
                 assert manual_timeline.status_code == 200
                 assert manual_timeline.json()[0]["event_type"] == "manual_progress"
+                assert manual_timeline.json()[0]["metadata"]["note"] == "集成测试记录"
                 pause_response = await client.put(
                     f"/api/goals/{goal_id}",
                     json={"status": "paused"},
@@ -241,6 +254,22 @@ async def _exercise_api_contracts(monkeypatch):
                 assert pause_response.json()["status"] == "paused"
                 paused_goals = await client.get("/api/goals?status=paused")
                 assert [item["id"] for item in paused_goals.json()] == [goal_id]
+
+                constraint_response = await client.put(
+                    "/api/users/me/profile",
+                    json={
+                        "task_constraints": {
+                            "available_items": ["跑步机"],
+                            "unavailable_items": ["眼霜"],
+                            "preferred_locations": ["家里"],
+                            "avoid_activities": [],
+                            "max_task_minutes": 45,
+                            "notes": "低噪音",
+                        }
+                    },
+                )
+                assert constraint_response.status_code == 200
+                assert constraint_response.json()["task_constraints"]["unavailable_items"] == ["眼霜"]
 
                 calendar_response = await client.get(
                     "/api/tasks",

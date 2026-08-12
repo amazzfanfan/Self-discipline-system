@@ -23,6 +23,14 @@ export interface UserProfile {
     prescription_treatment: boolean;
     allergies: string[];
   };
+  task_constraints?: {
+    available_items: string[];
+    unavailable_items: string[];
+    preferred_locations: string[];
+    avoid_activities: string[];
+    max_task_minutes: number | null;
+    notes: string;
+  };
   daily_task_budget?: number;
   memory_enabled?: number;
   notification_settings?: Record<string, boolean>;
@@ -175,13 +183,16 @@ export interface Goal {
   content: string;
   goal_type: Dimension;
   target_metric: string | null;
+  target_unit: string | null;
+  metric_direction: 'increase' | 'decrease';
   target_value: number | null;
+  baseline_value: number | null;
   current_value: number | null;
   progress_mode: 'sessions' | 'manual';
   completed_sessions: number;
   last_progress_at: string | null;
   deadline: string | null;
-  milestones: Array<{ title?: string; completed?: boolean }>;
+  milestones: Array<{ id: string; title: string; target_value: number; completed_at: string | null }>;
   recurrence: 'flexible' | 'daily' | 'weekly' | 'custom';
   days_of_week: number[];
   preferred_time: string | null;

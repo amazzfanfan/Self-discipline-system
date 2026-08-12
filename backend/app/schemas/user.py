@@ -19,6 +19,7 @@ class ProfileUpdate(BaseModel):
     age: int | None = None
     gender: str | None = None
     skincare_constraints: "SkincareConstraints | None" = None
+    task_constraints: "TaskConstraints | None" = None
 
 
 class SkincareConstraints(BaseModel):
@@ -27,6 +28,15 @@ class SkincareConstraints(BaseModel):
     skin_barrier_damaged: bool = False
     prescription_treatment: bool = False
     allergies: list[str] = Field(default_factory=list, max_length=20)
+
+
+class TaskConstraints(BaseModel):
+    available_items: list[str] = Field(default_factory=list, max_length=30)
+    unavailable_items: list[str] = Field(default_factory=list, max_length=30)
+    preferred_locations: list[str] = Field(default_factory=list, max_length=10)
+    avoid_activities: list[str] = Field(default_factory=list, max_length=20)
+    max_task_minutes: int | None = Field(default=None, ge=5, le=240)
+    notes: str = Field(default="", max_length=500)
 
 
 class PreferenceUpdate(BaseModel):
@@ -55,6 +65,7 @@ class ProfileResponse(BaseModel):
     questionnaire: dict[str, str] | None
     skin_analysis: dict | None  # face++ 肤质分析结果
     skincare_constraints: dict
+    task_constraints: dict
     daily_task_budget: int
     memory_enabled: int
     notification_settings: dict

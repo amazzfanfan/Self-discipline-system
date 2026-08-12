@@ -42,6 +42,8 @@ PLANNER_SYSTEM_PROMPT = """你是“系统”的任务编排器。你只负责�
 7. 用户只说“想修改任务/目标”但没有给出新内容或约束时选择 respond 并追问，禁止自行编造修改内容。
 8. 明确的“每天/每周计划”应调用 create_goal；明确要求改成某项任务时应调用 replace_today_task。
 9. 任务调整必须区分三种语义：今天具体时间再提醒用 later；改到明天或未来日期用 reschedule；明确今天不做但不希望受罚用 excuse。信息不足时追问，不得猜测。
+10. 用户明确说明没有某个产品/器材、不能做某项活动或单项任务最长时间时，调用 update_task_constraints 持久化。
+11. 用户明确报告某个目标的当前数值或进度增量时，调用 record_goal_progress；不得把计划值当成已完成进度。
 
 只返回 JSON：
 {"action":"tool|respond","tool":"工具名或null","arguments":{},"reason":"一句话理由"}
@@ -215,6 +217,8 @@ class AgentRuntime:
             "update_goal",
             "change_goal_status",
             "delete_goal",
+            "update_task_constraints",
+            "record_goal_progress",
         }
         can_reply_without_context = len(observations) == 1 and (
             observations[0].tool in direct_receipt_tools
@@ -301,8 +305,10 @@ class AgentRuntime:
             return PlannerDecision(action="respond", reason="检测到不可信指令，不执行工具")
         if re.search(r"(?:他|她|朋友|同事|别人).{0,16}(?:任务|目标|体重|计划|完成|跳过)", text):
             return PlannerDecision(action="respond", reason="这是第三方信息，不执行个人数据工具")
-        if re.search(r"(?:假设|如果).{0,20}(?:完成|跳过|删除|记录|创建|延后|恢复)", text):
+        if re.search(r"(?:假设|如果).{0,30}(?:完成|跳过|删除|记录|创建|延后|恢复|累计|进度|增加|减少)", text):
             return PlannerDecision(action="respond", reason="这是情景讨论，不执行写操作")
+        if re.search(r"(?:明天|后天|下周|以后|计划|准备).{0,30}(?:目标|进度).{0,12}(?:累计|增加|减少|达到)", text):
+            return PlannerDecision(action="respond", reason="这是未来计划，不将计划值写成已完成进度")
         weight_match = re.search(
             r"(\d+(?:\.\d+)?)\s*(?:公斤|kg|千克)", text, re.IGNORECASE
         )
@@ -312,6 +318,71 @@ class AgentRuntime:
                 tool="record_weight",
                 arguments={"weight_kg": float(weight_match.group(1))},
                 reason="记录用户明确提供的体重",
+            )
+
+        unavailable_match = re.search(
+            r"(?:我)?(?:没有|没买|手头没有|不能用)\s*([^，。！？!?]{1,30})",
+            text,
+        )
+        if unavailable_match:
+            item = unavailable_match.group(1).strip(" 的")
+            return PlannerDecision(
+                action="tool",
+                tool="update_task_constraints",
+                arguments={"unavailable_items": [item]},
+                reason="记录用户明确说明的不可用物品或器材",
+            )
+        avoid_match = re.search(r"(?:我)?(?:不能做|避免)\s*([^，。！？!?]{1,30})", text)
+        if avoid_match:
+            activity = avoid_match.group(1).strip(" 的")
+            return PlannerDecision(
+                action="tool",
+                tool="update_task_constraints",
+                arguments={"avoid_activities": [activity]},
+                reason="记录用户明确说明需要避免的活动",
+            )
+        available_match = re.search(
+            r"(?:我有(?!哪些|什么|几)|我可以使用|可用)\s*([^，。！？!?]{1,30})",
+            text,
+        )
+        if available_match:
+            item = available_match.group(1).strip(" 的")
+            return PlannerDecision(
+                action="tool",
+                tool="update_task_constraints",
+                arguments={"available_items": [item]},
+                reason="记录用户明确说明的可用物品或器材",
+            )
+        max_minutes_match = re.search(r"(?:任务)?最多\s*(\d{1,3})\s*分钟", text)
+        if max_minutes_match:
+            return PlannerDecision(
+                action="tool",
+                tool="update_task_constraints",
+                arguments={"max_task_minutes": int(max_minutes_match.group(1))},
+                reason="记录用户的单项任务时长上限",
+            )
+
+        goal_progress_match = re.search(
+            r"(.{1,30}?)(?:目标|计划).{0,12}?"
+            r"(进度(?:增加|提升|减少|降低)|(?:目前|现在)?(?:累计|完成到|达到|进度是))\s*"
+            r"(\d+(?:\.\d+)?)",
+            text,
+        )
+        if goal_progress_match:
+            keyword = goal_progress_match.group(1).strip(" ，。！？!?：:的")
+            operation = goal_progress_match.group(2)
+            value = float(goal_progress_match.group(3))
+            if "增加" in operation or "提升" in operation:
+                arguments = {"goal_keyword": keyword, "delta": value}
+            elif "减少" in operation or "降低" in operation:
+                arguments = {"goal_keyword": keyword, "delta": -value}
+            else:
+                arguments = {"goal_keyword": keyword, "current_value": value}
+            return PlannerDecision(
+                action="tool",
+                tool="record_goal_progress",
+                arguments=arguments,
+                reason="记录用户明确报告的目标数值进度",
             )
 
         dimension = self._detect_dimension(text)
@@ -578,7 +649,7 @@ class AgentRuntime:
             r"(?:请|帮我|把|将|我的|我|这个|那个|今天的|今日的|今天|今日|今晚|"
             r"任务|待办|已经|刚刚|刚才|完成|做完|搞定|打卡|跳过|放弃|"
             r"恢复|继续|免做|不做|不安排|先不做|延后|暂缓|稍后再做|晚点再做|"
-            r"改一下|修改|更改|调整|"
+            r"改一下|修改|更改|调整|提醒|做|"
             r"改到|推迟到|挪到|一小时后|1小时后|明天|后天|"
             r"运动|锻炼|饮食|睡眠|形象管理|形象|护肤|确认|了|啦|成功)",
             " ",

@@ -44,6 +44,12 @@ class Memory(Base):
     __table_args__ = (
         Index("idx_memories_user_type", "user_id", "memory_type"),
         Index("idx_memories_created_at", "created_at"),
+        Index(
+            "ix_memories_content_trgm",
+            "content",
+            postgresql_using="gin",
+            postgresql_ops={"content": "gin_trgm_ops"},
+        ),
     )
 
     def __repr__(self):

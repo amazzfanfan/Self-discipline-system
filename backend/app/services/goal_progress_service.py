@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
+import uuid
 
 from sqlalchemy import select
 
@@ -10,6 +11,7 @@ from app.models.goal import Goal, GoalLifecycleEvent, GoalProgressEvent
 from app.models.task import Task
 from app.services.goal_lifecycle_service import (
     complete_goal_if_target_reached,
+    goal_target_reached,
     goal_lifecycle_snapshot,
     record_goal_lifecycle_event,
 )
@@ -23,6 +25,80 @@ def _date_value(value) -> date | None:
     if isinstance(value, date):
         return value
     return date.fromisoformat(str(value)[:10])
+
+
+def normalize_goal_milestones(
+    milestones: list[dict] | None,
+    *,
+    direction: str = "increase",
+) -> list[dict]:
+    """Normalize user milestones into stable, auditable threshold records."""
+    normalized = []
+    for item in milestones or []:
+        title = str(item.get("title") or "").strip()[:100]
+        target_value = item.get("target_value")
+        if not title or target_value is None:
+            continue
+        try:
+            threshold = float(target_value)
+        except (TypeError, ValueError):
+            continue
+        normalized.append(
+            {
+                "id": str(item.get("id") or uuid.uuid4()),
+                "title": title,
+                "target_value": threshold,
+                "completed_at": item.get("completed_at") or None,
+            }
+        )
+    normalized.sort(
+        key=lambda item: item["target_value"],
+        reverse=direction == "decrease",
+    )
+    return normalized[:20]
+
+
+def merge_goal_milestones(
+    existing: list[dict] | None,
+    updates: list[dict] | None,
+    *,
+    direction: str = "increase",
+) -> list[dict]:
+    """Preserve stable IDs and achieved timestamps when milestone text is edited."""
+    previous = normalize_goal_milestones(existing, direction=direction)
+    by_id = {item["id"]: item for item in previous}
+    by_threshold = {
+        (item["title"], item["target_value"]): item
+        for item in previous
+    }
+    merged = normalize_goal_milestones(updates, direction=direction)
+    for item in merged:
+        old = by_id.get(item["id"]) or by_threshold.get(
+            (item["title"], item["target_value"])
+        )
+        if old:
+            item["id"] = old["id"]
+            item["completed_at"] = item.get("completed_at") or old.get("completed_at")
+    return merged
+
+
+def update_completed_milestones(goal: Goal) -> list[dict]:
+    direction = getattr(goal, "metric_direction", None) or "increase"
+    current = float(goal.current_value or 0)
+    milestones = normalize_goal_milestones(goal.milestones, direction=direction)
+    completed = []
+    completed_at = datetime.now(timezone.utc).isoformat()
+    for milestone in milestones:
+        reached = (
+            current <= milestone["target_value"]
+            if direction == "decrease"
+            else current >= milestone["target_value"]
+        )
+        if reached and not milestone.get("completed_at"):
+            milestone["completed_at"] = completed_at
+            completed.append(milestone)
+    goal.milestones = milestones
+    return completed
 
 
 def _active_on_date(goal, target: date, lifecycle_events: list | None = None) -> bool:
@@ -194,7 +270,7 @@ async def revert_goal_task_completion(db, task: Task) -> dict | None:
     if (goal.progress_mode or "sessions") == "sessions":
         goal.current_value = max(0.0, previous_value - float(completed.delta or 1))
     goal.last_progress_at = datetime.now(timezone.utc)
-    if goal.status == "completed" and float(goal.current_value or 0) < float(goal.target_value or 0):
+    if goal.status == "completed" and not goal_target_reached(goal):
         goal.status = "active"
         record_goal_lifecycle_event(
             db,
@@ -234,6 +310,7 @@ async def record_manual_goal_progress(
     previous_value: float | None,
     current_value: float | None,
     source: str = "goal_update",
+    note: str | None = None,
 ) -> GoalProgressEvent | None:
     if previous_value == current_value:
         return None
@@ -248,11 +325,73 @@ async def record_manual_goal_progress(
         current_value=current,
         event_date=local_today(),
         source=source,
-        event_metadata={},
+        event_metadata={"note": (note or "")[:300] or None},
     )
     goal.last_progress_at = datetime.now(timezone.utc)
     db.add(event)
     return event
+
+
+async def apply_manual_goal_progress(
+    db,
+    *,
+    goal_id,
+    user_id,
+    current_value: float | None = None,
+    delta: float | None = None,
+    note: str | None = None,
+    source: str = "manual_entry",
+) -> dict | None:
+    goal = await db.scalar(
+        select(Goal)
+        .where(Goal.id == goal_id, Goal.user_id == user_id)
+        .with_for_update()
+    )
+    if goal is None:
+        return None
+    previous_state = goal_lifecycle_snapshot(goal)
+    previous = float(goal.current_value or 0)
+    resolved = float(current_value) if current_value is not None else previous + float(delta or 0)
+    if resolved < 0:
+        raise ValueError("目标进度不能小于 0")
+    goal.current_value = resolved
+    event = await record_manual_goal_progress(
+        db,
+        goal,
+        previous_value=previous,
+        current_value=resolved,
+        source=source,
+        note=note,
+    )
+    completed_milestones = update_completed_milestones(goal)
+    if event is not None:
+        event.event_metadata = {
+            **(event.event_metadata or {}),
+            "completed_milestones": [item["id"] for item in completed_milestones],
+        }
+    auto_completed = complete_goal_if_target_reached(db, goal, source=source)
+    reopened = False
+    if goal.status == "completed" and not goal_target_reached(goal):
+        goal.status = "active"
+        reopened = True
+        record_goal_lifecycle_event(
+            db,
+            goal,
+            event_type="completion_reverted",
+            previous_state=previous_state,
+            reason="手动进度修正后不再满足目标值",
+            actor="user",
+            source=source,
+        )
+    await db.commit()
+    return {
+        "goal": goal.to_dict(),
+        "previous_value": previous,
+        "current_value": resolved,
+        "completed_milestones": completed_milestones,
+        "goal_completed": auto_completed,
+        "goal_reopened": reopened,
+    }
 
 
 async def build_goal_progress_summaries(

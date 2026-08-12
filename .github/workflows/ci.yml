@@ -39,6 +39,7 @@ jobs:
       - run: python -m alembic upgrade head
       - run: python -m compileall -q app
       - run: python -m ruff check app scripts tests
+      - run: python -m scripts.evaluate_agent
       - run: python -m pytest -q
 
   frontend:

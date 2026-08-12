@@ -1,5 +1,5 @@
 import json
-from datetime import time
+from datetime import datetime, time, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -46,3 +46,10 @@ def test_quiet_hours_support_ranges_across_midnight():
     assert web_push_service.within_quiet_hours(time(7, 0), time(22, 30), time(7, 30))
     assert not web_push_service.within_quiet_hours(time(12, 0), time(22, 30), time(7, 30))
     assert web_push_service.within_quiet_hours(time(12, 0), time(9, 0), time(18, 0))
+
+
+def test_push_retry_backoff_is_bounded():
+    now = datetime(2026, 8, 12, tzinfo=timezone.utc)
+    assert web_push_service.next_retry_at(1, now=now).minute == 1
+    assert web_push_service.next_retry_at(2, now=now).minute == 5
+    assert web_push_service.next_retry_at(99, now=now).minute == 15

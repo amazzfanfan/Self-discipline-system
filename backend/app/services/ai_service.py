@@ -7,6 +7,7 @@ import re
 from app.services.assessment_service import evaluate_profile
 from app.services.llm_service import chat_completion_with_fallback
 from app.services.prompt_service import prompt_service
+from app.services.task_constraint_service import task_constraints_text, validate_task_feasibility
 
 logger = logging.getLogger(__name__)
 
@@ -19,32 +20,43 @@ async def generate_task(
     recent_tasks: list[str],
     goal_content: str | None = None,
     adaptation_context: str | None = None,
+    task_constraints: dict | None = None,
 ) -> str:
     """Generate a daily task title with AI or raise an explicit error."""
-    prompt = prompt_service.build_task_prompt(
-        dimension=dimension,
-        score=score,
-        difficulty=difficulty,
-        recent_tasks=recent_tasks,
-        goal_content=goal_content,
-        adaptation_context=adaptation_context,
-    )
-    content = await chat_completion_with_fallback(
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=120,
-        response_format={"type": "json_object"},
-        enable_thinking=False,
-        num_retries=0,
-        timeout=20,
-    )
-    parsed = json.loads(content)
-    if not isinstance(parsed, dict):
-        raise RuntimeError(f"AI task response for {dimension} is not a JSON object")
-    task_title = _clean_task_title(parsed.get("task", ""))
-    if not task_title:
-        raise RuntimeError(f"AI task response for {dimension} has no valid task")
-    logger.info("Task generation succeeded: %s -> %s", dimension, task_title)
-    return task_title
+    rejection = None
+    for _ in range(2):
+        context = adaptation_context or ""
+        if rejection:
+            context += f" 上一次候选被系统拒绝：{rejection}；必须换一种可执行方案。"
+        prompt = prompt_service.build_task_prompt(
+            dimension=dimension,
+            score=score,
+            difficulty=difficulty,
+            recent_tasks=recent_tasks,
+            goal_content=goal_content,
+            adaptation_context=context,
+            constraint_context=task_constraints_text(task_constraints),
+        )
+        content = await chat_completion_with_fallback(
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=120,
+            response_format={"type": "json_object"},
+            enable_thinking=False,
+            num_retries=0,
+            timeout=20,
+        )
+        parsed = json.loads(content)
+        if not isinstance(parsed, dict):
+            raise RuntimeError(f"AI task response for {dimension} is not a JSON object")
+        task_title = _clean_task_title(parsed.get("task", ""))
+        if not task_title:
+            rejection = "没有有效任务标题"
+            continue
+        feasible, rejection = validate_task_feasibility(task_title, task_constraints)
+        if feasible:
+            logger.info("Task generation succeeded: %s -> %s", dimension, task_title)
+            return task_title
+    raise RuntimeError(f"AI task response for {dimension} is infeasible: {rejection}")
 
 
 def _clean_task_title(text: str) -> str:

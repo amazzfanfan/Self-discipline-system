@@ -4,7 +4,7 @@ Goals Router - 目标管理 API
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from datetime import date, time, timedelta
 from typing import Literal, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,12 +22,20 @@ from app.services.goal_schedule_service import goal_is_due
 from app.services.goal_progress_service import (
     build_goal_progress_summaries,
     get_goal_progress_timeline,
+    apply_manual_goal_progress,
 )
 
 router = APIRouter(prefix="/api/goals", tags=["goals"])
 
 
 # ── Pydantic 请求/响应模型 ──────────────────────────────────────────
+
+class GoalMilestoneRequest(BaseModel):
+    id: Optional[str] = Field(default=None, max_length=64)
+    title: str = Field(min_length=1, max_length=100)
+    target_value: float = Field(ge=0)
+    completed_at: Optional[str] = None
+
 
 class GoalCreateRequest(BaseModel):
     content: str = Field(..., min_length=1, max_length=2000, description="目标内容")
@@ -36,10 +44,13 @@ class GoalCreateRequest(BaseModel):
     )
     structured_data: Optional[dict] = Field(default=None, description="结构化数据")
     target_metric: Optional[str] = Field(default=None, max_length=100)
+    target_unit: Optional[str] = Field(default=None, max_length=30)
+    metric_direction: Literal["increase", "decrease"] = "increase"
     target_value: Optional[float] = Field(default=None, gt=0)
+    baseline_value: Optional[float] = Field(default=None, ge=0)
     current_value: Optional[float] = Field(default=None, ge=0)
     deadline: Optional[date] = None
-    milestones: list[dict] = Field(default_factory=list, max_length=20)
+    milestones: list[GoalMilestoneRequest] = Field(default_factory=list, max_length=20)
     recurrence: Literal["flexible", "daily", "weekly", "custom"] | None = None
     days_of_week: list[Literal[0, 1, 2, 3, 4, 5, 6]] | None = Field(
         default=None, max_length=7
@@ -63,10 +74,13 @@ class GoalUpdateRequest(BaseModel):
     importance_score: Optional[float] = Field(default=None, ge=0, le=1, description="重要性评分")
     structured_data: Optional[dict] = Field(default=None, description="结构化数据")
     target_metric: Optional[str] = Field(default=None, max_length=100)
+    target_unit: Optional[str] = Field(default=None, max_length=30)
+    metric_direction: Optional[Literal["increase", "decrease"]] = None
     target_value: Optional[float] = Field(default=None, gt=0)
+    baseline_value: Optional[float] = Field(default=None, ge=0)
     current_value: Optional[float] = Field(default=None, ge=0)
     deadline: Optional[date] = None
-    milestones: Optional[list[dict]] = Field(default=None, max_length=20)
+    milestones: Optional[list[GoalMilestoneRequest]] = Field(default=None, max_length=20)
     recurrence: Optional[Literal["flexible", "daily", "weekly", "custom"]] = None
     days_of_week: Optional[list[Literal[0, 1, 2, 3, 4, 5, 6]]] = Field(
         default=None, max_length=7
@@ -86,7 +100,10 @@ class GoalResponse(BaseModel):
     goal_type: str
     structured_data: Optional[dict] = None
     target_metric: Optional[str] = None
+    target_unit: Optional[str] = None
+    metric_direction: str
     target_value: Optional[float] = None
+    baseline_value: Optional[float] = None
     current_value: Optional[float] = None
     deadline: Optional[str] = None
     milestones: list[dict] = Field(default_factory=list)
@@ -107,6 +124,18 @@ class GoalResponse(BaseModel):
     updated_at: Optional[str] = None
 
 
+class GoalProgressRequest(BaseModel):
+    current_value: Optional[float] = Field(default=None, ge=0)
+    delta: Optional[float] = None
+    note: Optional[str] = Field(default=None, max_length=300)
+
+    @model_validator(mode="after")
+    def require_exactly_one_progress_value(self):
+        if (self.current_value is None) == (self.delta is None):
+            raise ValueError("current_value and delta must provide exactly one value")
+        return self
+
+
 # ── API 端点 ────────────────────────────────────────────────────────
 
 @router.post("", response_model=GoalResponse)
@@ -123,10 +152,13 @@ async def create_goal(
         goal_type=body.goal_type,
         structured_data=body.structured_data,
         target_metric=body.target_metric,
+        target_unit=body.target_unit,
+        metric_direction=body.metric_direction,
         target_value=body.target_value,
+        baseline_value=body.baseline_value,
         current_value=body.current_value,
         deadline=body.deadline,
-        milestones=body.milestones,
+        milestones=[item.model_dump() for item in body.milestones],
         recurrence=body.recurrence,
         days_of_week=body.days_of_week,
         preferred_time=body.preferred_time,
@@ -267,6 +299,30 @@ async def goal_progress_timeline(
     if timeline is None:
         raise HTTPException(status_code=404, detail="Goal not found")
     return timeline
+
+
+@router.post("/{goal_id}/progress")
+async def record_goal_progress(
+    goal_id: str,
+    body: GoalProgressRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    try:
+        result = await apply_manual_goal_progress(
+            db,
+            goal_id=goal_id,
+            user_id=user.id,
+            current_value=body.current_value,
+            delta=body.delta,
+            note=body.note,
+            source="goal_progress_api",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    return result
 
 
 @router.put("/{goal_id}", response_model=GoalResponse)

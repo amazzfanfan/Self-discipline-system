@@ -17,6 +17,7 @@ from app.services.skin_safety_service import (
     skincare_constraints_text,
     validate_skin_suggestions,
 )
+from app.services.task_constraint_service import task_constraints_text, validate_task_feasibility
 from app.services.llm_service import chat_completion_with_fallback
 from app.services.cache_service import get_cached_skin_analysis, set_cached_skin_analysis
 from app.services.upload_service import sha256_file
@@ -289,6 +290,7 @@ async def generate_ai_suggestions(
     issues: list[str],
     skin_type_name: str,
     constraints: dict | None = None,
+    task_constraints: dict | None = None,
 ) -> list[str]:
     """根据肤质问题列表，调用AI生成个性化护理建议
     
@@ -304,6 +306,7 @@ async def generate_ai_suggestions(
         skin_type_name,
         issues_str,
         skincare_constraints_text(constraints),
+        task_constraints_text(task_constraints),
     )
 
     content = await chat_completion_with_fallback(
@@ -318,6 +321,9 @@ async def generate_ai_suggestions(
     if not isinstance(parsed, dict):
         raise RuntimeError("AI skin suggestion response is not a JSON object")
     cleaned = validate_skin_suggestions(parsed.get("suggestions"), constraints)
+    cleaned = [item for item in cleaned if validate_task_feasibility(item, task_constraints)[0]]
+    if not cleaned:
+        raise RuntimeError("AI skin suggestions require unavailable user resources")
     logger.info("AI skin suggestions generated: count=%s", len(cleaned[:3]))
     return cleaned[:3]
 
@@ -326,6 +332,7 @@ async def generate_skin_task_ai(
     issues: list[str],
     skin_type_name: str,
     constraints: dict | None = None,
+    task_constraints: dict | None = None,
 ) -> str:
     """根据肤质分析结果，调用AI生成个性化护肤任务
     
@@ -341,6 +348,7 @@ async def generate_skin_task_ai(
         issues_str,
         skin_type_name,
         skincare_constraints_text(constraints),
+        task_constraints_text(task_constraints),
     )
 
     content = await chat_completion_with_fallback(
@@ -358,5 +366,8 @@ async def generate_skin_task_ai(
     if not task or len(task) >= 100:
         raise RuntimeError("AI skin task response has no valid task")
     task = validate_skin_suggestions([task], constraints, limit=1)[0]
+    feasible, reason = validate_task_feasibility(task, task_constraints)
+    if not feasible:
+        raise RuntimeError(f"AI skin task is infeasible: {reason}")
     logger.info("AI skin task generated")
     return task

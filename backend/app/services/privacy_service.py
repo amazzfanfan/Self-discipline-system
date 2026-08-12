@@ -8,7 +8,7 @@ from app.models.behavior import DailyCheckIn, WeeklyReview
 from app.models.conversation import Conversation
 from app.models.goal import Goal, GoalLifecycleEvent, GoalProgressEvent
 from app.models.memory import Memory
-from app.models.notification import PushSubscription, UserNotification
+from app.models.notification import PushDelivery, PushSubscription, UserNotification
 from app.models.score import ScoreHistory, UserScore
 from app.models.task import Task, TaskEvent
 from app.models.user import User, UserProfile
@@ -38,6 +38,7 @@ async def export_user_data(db, user: User) -> dict:
     runs = await all_items(AgentRun)
     notifications = await all_items(UserNotification)
     push_subscriptions = await all_items(PushSubscription)
+    push_deliveries = await all_items(PushDelivery)
     return {
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "account": {
@@ -54,6 +55,7 @@ async def export_user_data(db, user: User) -> dict:
             "questionnaire": profile.questionnaire if profile else None,
             "skin_analysis": profile.skin_analysis if profile else None,
             "skincare_constraints": profile.skincare_constraints if profile else {},
+            "task_constraints": profile.task_constraints if profile else {},
             "memory_enabled": bool(profile.memory_enabled) if profile else True,
             "daily_task_budget": profile.daily_task_budget if profile else 3,
             "notification_settings": profile.notification_settings if profile else {},
@@ -191,6 +193,17 @@ async def export_user_data(db, user: User) -> dict:
             }
             for item in push_subscriptions
         ],
+        "push_deliveries": [
+            {
+                "notification_id": str(item.notification_id),
+                "subscription_id": str(item.subscription_id) if item.subscription_id else None,
+                "status": item.status,
+                "attempts": item.attempts,
+                "sent_at": item.sent_at.isoformat() if item.sent_at else None,
+                "last_error": item.last_error,
+            }
+            for item in push_deliveries
+        ],
     }
 
 
@@ -221,6 +234,7 @@ async def delete_user_account(db, user: User) -> None:
         WeightRecord,
         DailyCheckIn,
         WeeklyReview,
+        PushDelivery,
         PushSubscription,
         UserNotification,
         UserScore,

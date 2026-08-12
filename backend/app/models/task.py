@@ -55,6 +55,8 @@ class Task(Base):
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
+        Index("ix_tasks_deferred_until", "deferred_until"),
+        Index("ix_tasks_user_date_status", "user_id", "scheduled_date", "status"),
         Index(
             "uq_tasks_user_goal_date",
             "user_id",

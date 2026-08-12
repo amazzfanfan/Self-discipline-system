@@ -16,12 +16,18 @@ from app.services.llm_service import get_embedding
 from app.services.cache_service import enqueue_background_job
 from app.core.config import get_settings
 from app.services.goal_schedule_service import parse_goal_schedule
-from app.services.goal_progress_service import record_manual_goal_progress
+from app.services.goal_progress_service import (
+    normalize_goal_milestones,
+    merge_goal_milestones,
+    record_manual_goal_progress,
+    update_completed_milestones,
+)
 from app.services.goal_lifecycle_service import (
     complete_goal_if_target_reached,
     detect_goal_change_type,
     goal_lifecycle_snapshot,
     record_goal_lifecycle_event,
+    goal_target_reached,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,7 +48,10 @@ class GoalService:
         goal_type: str = "exercise",
         structured_data: dict = None,
         target_metric: str | None = None,
+        target_unit: str | None = None,
+        metric_direction: str = "increase",
         target_value: float | None = None,
+        baseline_value: float | None = None,
         current_value: float | None = None,
         deadline: date | None = None,
         milestones: list[dict] | None = None,
@@ -79,10 +88,20 @@ class GoalService:
                 goal_type=goal_type,
                 structured_data=structured_data,
                 target_metric=target_metric,
+                target_unit=target_unit,
+                metric_direction=metric_direction,
                 target_value=target_value,
+                baseline_value=(
+                    baseline_value
+                    if baseline_value is not None
+                    else current_value
+                ),
                 current_value=current_value,
                 deadline=deadline,
-                milestones=milestones or [],
+                milestones=normalize_goal_milestones(
+                    milestones,
+                    direction=metric_direction,
+                ),
                 recurrence=(
                     recurrence or parsed_schedule.get("recurrence") or "flexible"
                 ),
@@ -170,6 +189,13 @@ class GoalService:
 
             previous_state = goal_lifecycle_snapshot(goal)
 
+            if "milestones" in updates:
+                updates["milestones"] = merge_goal_milestones(
+                    goal.milestones,
+                    updates["milestones"],
+                    direction=updates.get("metric_direction", goal.metric_direction or "increase"),
+                )
+
             if updates.get("content") and updates["content"] != goal.content:
                 parsed_schedule = parse_goal_schedule(updates["content"])
                 for key, value in parsed_schedule.items():
@@ -201,6 +227,7 @@ class GoalService:
                     setattr(goal, key, value)
 
             auto_completed = False
+            reopened = False
             if "current_value" in updates:
                 await record_manual_goal_progress(
                     db,
@@ -208,11 +235,24 @@ class GoalService:
                     previous_value=previous_current_value,
                     current_value=goal.current_value,
                 )
+                update_completed_milestones(goal)
             if {"current_value", "target_value"} & set(updates):
                 auto_completed = complete_goal_if_target_reached(
                     db, goal, source="manual_progress"
                 )
-                planning_changed = planning_changed or auto_completed
+                if goal.status == GoalStatus.completed.value and not goal_target_reached(goal):
+                    goal.status = GoalStatus.active.value
+                    reopened = True
+                    record_goal_lifecycle_event(
+                        db,
+                        goal,
+                        event_type="completion_reverted",
+                        previous_state=previous_state,
+                        reason="进度修正后不再满足目标值",
+                        actor="user",
+                        source="goal_update",
+                    )
+                planning_changed = planning_changed or auto_completed or reopened
 
             # 内容变化时先完成业务写入，向量在本地 Redis worker 中异步更新，
             # 避免一次远程 embedding 调用阻塞用户对话。
@@ -223,7 +263,7 @@ class GoalService:
             goal.updated_at = datetime.now(timezone.utc)
             current_state = goal_lifecycle_snapshot(goal)
             change_type = detect_goal_change_type(previous_state, current_state)
-            if change_type and not auto_completed:
+            if change_type and not auto_completed and not reopened:
                 record_goal_lifecycle_event(
                     db,
                     goal,

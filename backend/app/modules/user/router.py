@@ -42,6 +42,18 @@ from sqlalchemy import delete
 router = APIRouter(prefix="/api/users", tags=["users"])
 
 
+async def _get_or_create_profile(db: AsyncSession, user_id) -> UserProfile:
+    """Load explicitly so async endpoints never trigger relationship lazy I/O."""
+    profile = await db.scalar(
+        select(UserProfile).where(UserProfile.user_id == user_id)
+    )
+    if profile is None:
+        profile = UserProfile(user_id=user_id)
+        db.add(profile)
+        await db.flush()
+    return profile
+
+
 def _assessment_payload(run: AssessmentRun, *, reused: bool | None = None) -> dict:
     return {
         "id": str(run.id),
@@ -107,12 +119,7 @@ async def get_profile(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db, scope="function"),
 ):
-    if not user.profile:
-        profile = UserProfile(user_id=user.id)
-        db.add(profile)
-        await db.flush()
-        return profile
-    return user.profile
+    return await _get_or_create_profile(db, user.id)
 
 
 @router.get("/me/assessment/latest")
@@ -172,11 +179,7 @@ async def update_profile(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db, scope="function"),
 ):
-    profile = user.profile
-    if not profile:
-        profile = UserProfile(user_id=user.id)
-        db.add(profile)
-        await db.flush()
+    profile = await _get_or_create_profile(db, user.id)
 
     for field, value in req.model_dump(exclude_unset=True).items():
         setattr(profile, field, value)
@@ -189,11 +192,7 @@ async def update_preferences(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db, scope="function"),
 ):
-    profile = user.profile
-    if not profile:
-        profile = UserProfile(user_id=user.id)
-        db.add(profile)
-        await db.flush()
+    profile = await _get_or_create_profile(db, user.id)
     updates = req.model_dump(exclude_unset=True)
     if "memory_enabled" in updates:
         updates["memory_enabled"] = int(bool(updates["memory_enabled"]))
@@ -347,6 +346,7 @@ async def skin_analyze(
                 skin_result.issues,
                 skin_result.skin_type_name,
                 constraints,
+                profile.task_constraints if profile else None,
             )
         skin_result.suggestions = ai_suggestions
 

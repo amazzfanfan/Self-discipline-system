@@ -61,7 +61,10 @@ class Goal(Base):
     # 结构化数据
     structured_data = Column(JSON, nullable=True)  # AI 解析后的结构化数据
     target_metric = Column(String(100))
+    target_unit = Column(String(30))
+    metric_direction = Column(String(12), nullable=False, default="increase")
     target_value = Column(Float)
+    baseline_value = Column(Float)
     current_value = Column(Float)
     progress_mode = Column(String(20), nullable=False, default="sessions")
     completed_sessions = Column(Integer, nullable=False, default=0)
@@ -112,7 +115,10 @@ class Goal(Base):
             "goal_type": self.goal_type,
             "structured_data": self.structured_data,
             "target_metric": self.target_metric,
+            "target_unit": self.target_unit,
+            "metric_direction": self.metric_direction or "increase",
             "target_value": self.target_value,
+            "baseline_value": self.baseline_value,
             "current_value": self.current_value,
             "progress_mode": self.progress_mode,
             "completed_sessions": self.completed_sessions or 0,

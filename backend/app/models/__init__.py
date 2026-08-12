@@ -8,7 +8,7 @@ from app.models.goal import Goal, GoalLifecycleEvent, GoalProgressEvent, GoalTyp
 from app.models.assessment import AssessmentRun
 from app.models.behavior import DailyCheckIn, WeeklyReview
 from app.models.agent_run import AgentRun, AgentStep, PendingAction
-from app.models.notification import PushSubscription, UserNotification
+from app.models.notification import PushDelivery, PushSubscription, UserNotification
 
 __all__ = [
     "User", "UserProfile", "GenderEnum",
@@ -21,5 +21,5 @@ __all__ = [
     "AssessmentRun",
     "DailyCheckIn", "WeeklyReview",
     "AgentRun", "AgentStep", "PendingAction",
-    "UserNotification", "PushSubscription",
+    "UserNotification", "PushSubscription", "PushDelivery",
 ]

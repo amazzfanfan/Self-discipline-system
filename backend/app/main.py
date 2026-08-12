@@ -33,10 +33,10 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     settings.validate_runtime_security()
-    if settings.ENABLE_SCHEDULER:
+    if settings.ENABLE_SCHEDULER and settings.SCHEDULER_IN_API:
         start_scheduler()
     yield
-    if scheduler.running:
+    if settings.SCHEDULER_IN_API and scheduler.running:
         scheduler.shutdown(wait=False)
 
 

@@ -21,6 +21,12 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     nickname = Column(String(100), nullable=False)
     avatar_url = Column(String(500))
+    # Deprecated legacy provider settings kept in metadata for backward-compatible
+    # migrations. Runtime model credentials are server-side environment variables.
+    llm_api_key = Column(String(500))
+    llm_base_url = Column(String(500))
+    llm_model = Column(String(200))
+    embedding_api_key = Column(String)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
@@ -48,6 +54,7 @@ class UserProfile(Base):
     questionnaire = Column(JSON, nullable=True)
     skin_analysis = Column(JSON, nullable=True)  # face++ 肤质分析结果
     skincare_constraints = Column(JSON, nullable=False, default=dict)
+    task_constraints = Column(JSON, nullable=False, default=dict)
     daily_task_budget = Column(Integer, nullable=False, default=3)
     memory_enabled = Column(Integer, nullable=False, default=1)
     notification_settings = Column(JSON, nullable=False, default=dict)

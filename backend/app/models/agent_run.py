@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, JSON, Numeric, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 
 from app.core.database import Base
@@ -9,6 +9,7 @@ from app.core.database import Base
 
 class AgentRun(Base):
     __tablename__ = "agent_runs"
+    __table_args__ = (UniqueConstraint("run_id", name="agent_runs_run_id_key"),)
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     run_id = Column(String(64), unique=True, nullable=False, index=True)
@@ -44,6 +45,9 @@ class AgentStep(Base):
 
 class PendingAction(Base):
     __tablename__ = "pending_actions"
+    __table_args__ = (
+        UniqueConstraint("action_id", name="pending_actions_action_id_key"),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     action_id = Column(String(64), unique=True, nullable=False, index=True)

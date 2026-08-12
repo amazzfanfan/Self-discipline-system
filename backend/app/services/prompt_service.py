@@ -69,6 +69,8 @@ dimension 只能是: exercise, diet, sleep, appearance
 难度：{difficulty}，当前评分：{score}分，最近做过的：{recent}（避免重复）。
 要求：具体可执行，有明确完成标准。
 {adaptation_context}
+用户可执行条件：{constraint_context}
+不得生成依赖“不可用物品/器材”、命中“避免活动”或超过最长时长的任务。
 
 重要：{dim_guide}
 {goal_context}
@@ -121,6 +123,7 @@ AI 的回复、分析、推荐一律不记住。问题和请求一律不记住�
     SKIN_SUGGESTION_PROMPT = (
         "用户肤质分析结果：皮肤类型为{skin_type_name}，检测到以下问题：{issues_str}。\n\n"
         "用户安全限制：{constraints_text}。\n\n"
+        "用户可执行条件：{feasibility_text}。不得推荐用户明确没有的产品。\n\n"
         "请针对问题给出具体、可操作的日常护理建议，返回JSON格式：\n"
         '{{"suggestions": [{{"text": "建议1", "risk_level": "low", "cautions": ["注意事项"]}}]}}\n\n'
         "要求：\n"
@@ -136,6 +139,7 @@ AI 的回复、分析、推荐一律不记住。问题和请求一律不记住�
     SKIN_TASK_PROMPT = (
         "用户肤质问题：{issues_str}，皮肤类型：{skin_type_name}。\n\n"
         "用户安全限制：{constraints_text}。\n\n"
+        "用户可执行条件：{feasibility_text}。不得依赖用户明确没有的产品或工具。\n\n"
         "请生成1个今日护肤任务，要求：\n"
         "1. 具体可执行，有明确的完成标准\n"
         "2. 针对用户的具体问题\n"
@@ -206,6 +210,7 @@ AI 的回复、分析、推荐一律不记住。问题和请求一律不记住�
         skin_type_name: str,
         issues_str: str,
         constraints_text: str = "未提供特殊限制",
+        feasibility_text: str = "未提供特殊可执行条件",
     ) -> str:
         """
         构建肤质护理建议提示词
@@ -221,6 +226,7 @@ AI 的回复、分析、推荐一律不记住。问题和请求一律不记住�
             skin_type_name=skin_type_name,
             issues_str=issues_str,
             constraints_text=constraints_text,
+            feasibility_text=feasibility_text,
         )
 
     def build_skin_task_prompt(
@@ -228,6 +234,7 @@ AI 的回复、分析、推荐一律不记住。问题和请求一律不记住�
         issues_str: str,
         skin_type_name: str,
         constraints_text: str = "未提供特殊限制",
+        feasibility_text: str = "未提供特殊可执行条件",
     ) -> str:
         """
         构建肤质任务提示词
@@ -243,6 +250,7 @@ AI 的回复、分析、推荐一律不记住。问题和请求一律不记住�
             issues_str=issues_str,
             skin_type_name=skin_type_name,
             constraints_text=constraints_text,
+            feasibility_text=feasibility_text,
         )
     
     def build_task_prompt(
@@ -253,6 +261,7 @@ AI 的回复、分析、推荐一律不记住。问题和请求一律不记住�
         recent_tasks: list[str],
         goal_content: str = None,
         adaptation_context: str | None = None,
+        constraint_context: str | None = None,
     ) -> str:
         """
         构建任务生成提示词
@@ -288,6 +297,7 @@ AI 的回复、分析、推荐一律不记住。问题和请求一律不记住�
             dim_guide=dim_guide,
             goal_context=goal_context,
             adaptation_context=adaptation_context or "",
+            constraint_context=constraint_context or "未提供特殊可执行条件",
         )
     
 # 全局实例

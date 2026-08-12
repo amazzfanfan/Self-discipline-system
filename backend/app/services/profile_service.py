@@ -3,8 +3,9 @@ Profile Service - 用户画像服务
 管理用户的偏好、习惯、目标等画像信息
 """
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models.user import User
+from app.models.user import User, UserProfile
 from app.services.memory_service import MemoryService
 import logging
 
@@ -157,7 +158,9 @@ class ProfileService:
         summary_parts.append(f"昵称：{user.nickname}")
         
         # 获取用户档案
-        profile = user.profile
+        profile = await self.db.scalar(
+            select(UserProfile).where(UserProfile.user_id == user_id)
+        )
         if profile:
             if profile.age:
                 summary_parts.append(f"年龄：{profile.age}岁")

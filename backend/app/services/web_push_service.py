@@ -10,7 +10,7 @@ from sqlalchemy import select
 from app.core.config import get_settings
 from app.core.database import async_session
 from app.core.time import local_now
-from app.models.notification import PushSubscription, UserNotification
+from app.models.notification import PushDelivery, PushSubscription, UserNotification
 from app.models.user import UserProfile
 
 try:
@@ -22,6 +22,8 @@ except ImportError:  # The feature is optional; station notifications must remai
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+MAX_DELIVERY_ATTEMPTS = 3
+RETRY_DELAYS_MINUTES = (1, 5, 15)
 
 
 def web_push_configured() -> bool:
@@ -75,6 +77,13 @@ def _send(subscription: PushSubscription, notification: UserNotification) -> Non
     )
 
 
+def next_retry_at(attempts: int, *, now: datetime | None = None) -> datetime:
+    """Return the retry deadline for a failed attempt using bounded backoff."""
+    current = now or datetime.now(timezone.utc)
+    index = max(0, min(attempts - 1, len(RETRY_DELAYS_MINUTES) - 1))
+    return current + timedelta(minutes=RETRY_DELAYS_MINUTES[index])
+
+
 async def deliver_pending_web_push() -> dict:
     """Deliver recent unread station notifications to registered browsers once."""
     if not web_push_configured():
@@ -96,6 +105,7 @@ async def deliver_pending_web_push() -> dict:
         )
         for notification, profile in result.all():
             if not (profile.notification_settings or {}).get("browser_notifications", False):
+                notification.push_sent_at = datetime.now(timezone.utc)
                 continue
             if within_quiet_hours(
                 local_now().time(),
@@ -110,22 +120,55 @@ async def deliver_pending_web_push() -> dict:
                     )
                 )
             ).scalars().all()
-            delivered = False
+            if not subscriptions:
+                notification.push_sent_at = datetime.now(timezone.utc)
+                continue
+            all_terminal = bool(subscriptions)
             for subscription in subscriptions:
+                delivery = await db.scalar(
+                    select(PushDelivery).where(
+                        PushDelivery.notification_id == notification.id,
+                        PushDelivery.subscription_id == subscription.id,
+                    )
+                )
+                if delivery is None:
+                    delivery = PushDelivery(
+                        notification_id=notification.id,
+                        subscription_id=subscription.id,
+                        user_id=notification.user_id,
+                    )
+                    db.add(delivery)
+                if delivery.status in {"sent", "failed"}:
+                    continue
+                now = datetime.now(timezone.utc)
+                if delivery.next_attempt_at and delivery.next_attempt_at > now:
+                    all_terminal = False
+                    continue
                 try:
                     await asyncio.to_thread(_send, subscription, notification)
                     subscription.failure_count = 0
                     subscription.last_error = None
-                    delivered = True
+                    delivery.status = "sent"
+                    delivery.attempts = (delivery.attempts or 0) + 1
+                    delivery.next_attempt_at = None
+                    delivery.sent_at = now
+                    delivery.last_error = None
                     sent += 1
                 except WebPushException as exc:
                     status_code = getattr(getattr(exc, "response", None), "status_code", None)
                     subscription.failure_count = (subscription.failure_count or 0) + 1
                     subscription.last_error = str(exc)[:300]
+                    delivery.attempts = (delivery.attempts or 0) + 1
+                    delivery.last_error = str(exc)[:300]
                     failed += 1
-                    if status_code in {404, 410} or subscription.failure_count >= 3:
+                    terminal = status_code in {404, 410} or delivery.attempts >= MAX_DELIVERY_ATTEMPTS
+                    delivery.status = "failed" if terminal else "retrying"
+                    delivery.next_attempt_at = None if terminal else next_retry_at(delivery.attempts, now=now)
+                    if terminal:
                         await db.delete(subscription)
                         removed += 1
+                    else:
+                        all_terminal = False
                     logger.warning(
                         "Web Push delivery failed subscription=%s status=%s",
                         subscription.id,
@@ -134,9 +177,19 @@ async def deliver_pending_web_push() -> dict:
                 except Exception as exc:
                     subscription.failure_count = (subscription.failure_count or 0) + 1
                     subscription.last_error = str(exc)[:300]
+                    delivery.attempts = (delivery.attempts or 0) + 1
+                    delivery.last_error = str(exc)[:300]
+                    terminal = delivery.attempts >= MAX_DELIVERY_ATTEMPTS
+                    delivery.status = "failed" if terminal else "retrying"
+                    delivery.next_attempt_at = None if terminal else next_retry_at(delivery.attempts, now=now)
+                    if terminal:
+                        await db.delete(subscription)
+                        removed += 1
+                    else:
+                        all_terminal = False
                     failed += 1
                     logger.warning("Web Push delivery failed subscription=%s", subscription.id)
-            if delivered:
+            if all_terminal:
                 notification.push_sent_at = datetime.now(timezone.utc)
         await db.commit()
     return {"enabled": True, "sent": sent, "failed": failed, "removed": removed}

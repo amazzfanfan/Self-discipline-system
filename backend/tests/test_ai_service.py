@@ -32,7 +32,7 @@ def test_task_generation_rejects_invalid_ai_content(monkeypatch):
         AsyncMock(return_value='{"task":""}'),
     )
 
-    with pytest.raises(RuntimeError, match="no valid task"):
+    with pytest.raises(RuntimeError, match="infeasible"):
         asyncio.run(
             ai_service.generate_task(
                 nickname="测试用户",
@@ -42,3 +42,27 @@ def test_task_generation_rejects_invalid_ai_content(monkeypatch):
                 recent_tasks=[],
             )
         )
+
+
+def test_task_generation_retries_when_candidate_uses_unavailable_item(monkeypatch):
+    completion = AsyncMock(
+        side_effect=[
+            '{"task":"涂眼霜并按摩两分钟"}',
+            '{"task":"清水洁面两分钟"}',
+        ]
+    )
+    monkeypatch.setattr(ai_service, "chat_completion_with_fallback", completion)
+
+    result = asyncio.run(
+        ai_service.generate_task(
+            nickname="测试用户",
+            dimension="appearance",
+            score=55,
+            difficulty="easy",
+            recent_tasks=[],
+            task_constraints={"unavailable_items": ["眼霜"]},
+        )
+    )
+
+    assert result == "清水洁面两分钟"
+    assert completion.await_count == 2

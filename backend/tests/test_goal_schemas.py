@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from app.modules.goals.router import GoalCreateRequest, GoalUpdateRequest
+from app.modules.goals.router import GoalCreateRequest, GoalProgressRequest, GoalUpdateRequest
 
 
 def test_goal_create_rejects_unknown_dimension():
@@ -48,3 +48,22 @@ def test_goal_schedule_fields_are_validated():
         GoalUpdateRequest(duration_minutes=0)
     with pytest.raises(ValidationError):
         GoalUpdateRequest(progress_mode="automatic")
+
+
+def test_structured_goal_metric_and_progress_are_validated():
+    body = GoalCreateRequest(
+        content="累计跑步 100 公里",
+        target_metric="累计里程",
+        target_unit="km",
+        metric_direction="increase",
+        target_value=100,
+        current_value=12,
+        milestones=[{"title": "完成 20 公里", "target_value": 20}],
+        progress_mode="manual",
+    )
+    assert body.milestones[0].target_value == 20
+    assert GoalProgressRequest(delta=5).delta == 5
+    with pytest.raises(ValidationError):
+        GoalProgressRequest()
+    with pytest.raises(ValidationError):
+        GoalProgressRequest(current_value=10, delta=2)

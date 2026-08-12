@@ -41,6 +41,14 @@ interface ProfileData {
     prescription_treatment: boolean;
     allergies: string[];
   };
+  task_constraints: {
+    available_items: string[];
+    unavailable_items: string[];
+    preferred_locations: string[];
+    avoid_activities: string[];
+    max_task_minutes: number | null;
+    notes: string;
+  };
 }
 
 interface ProfilePayload {
@@ -113,6 +121,14 @@ export default function Profile() {
     prescription_treatment: false,
     allergies: '',
   });
+  const [taskConstraintForm, setTaskConstraintForm] = useState({
+    available_items: '',
+    unavailable_items: '',
+    preferred_locations: '',
+    avoid_activities: '',
+    max_task_minutes: '',
+    notes: '',
+  });
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Goal management state
@@ -141,6 +157,18 @@ export default function Profile() {
       setSafetyForm({
         ...constraints,
         allergies: constraints.allergies.join('、'),
+      });
+      const taskConstraints = p.task_constraints || {
+        available_items: [], unavailable_items: [], preferred_locations: [],
+        avoid_activities: [], max_task_minutes: null, notes: '',
+      };
+      setTaskConstraintForm({
+        available_items: taskConstraints.available_items.join('、'),
+        unavailable_items: taskConstraints.unavailable_items.join('、'),
+        preferred_locations: taskConstraints.preferred_locations.join('、'),
+        avoid_activities: taskConstraints.avoid_activities.join('、'),
+        max_task_minutes: taskConstraints.max_task_minutes?.toString() || '',
+        notes: taskConstraints.notes || '',
       });
       return p;
     }),
@@ -218,6 +246,27 @@ export default function Profile() {
       addNotification({ type: 'success', title: '护理限制已保存', message: '后续 AI 护理建议和形象任务都会执行安全校验。' });
     },
     onError: () => addNotification({ type: 'error', title: '保存失败', message: '护理限制没有更新，请稍后重试。' }),
+  });
+
+  const taskConstraintMutation = useMutation({
+    mutationFn: () => {
+      const split = (value: string) => value.split(/[、,，]/).map((item) => item.trim()).filter(Boolean);
+      return api.put('/users/me/profile', {
+        task_constraints: {
+          available_items: split(taskConstraintForm.available_items),
+          unavailable_items: split(taskConstraintForm.unavailable_items),
+          preferred_locations: split(taskConstraintForm.preferred_locations),
+          avoid_activities: split(taskConstraintForm.avoid_activities),
+          max_task_minutes: taskConstraintForm.max_task_minutes ? Number(taskConstraintForm.max_task_minutes) : null,
+          notes: taskConstraintForm.notes.trim(),
+        },
+      });
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['profile'] });
+      addNotification({ type: 'success', title: '可执行条件已保存', message: '后续 AI 任务会避开不可用物品和活动。' });
+    },
+    onError: () => addNotification({ type: 'error', title: '保存失败', message: '任务可执行条件没有更新。' }),
   });
 
   // Goal mutations
@@ -475,6 +524,53 @@ export default function Profile() {
             <button type="button" onClick={() => safetyMutation.mutate()} disabled={safetyMutation.isPending}
               className="shrink-0 rounded-xl bg-cyan-400/10 px-4 py-2.5 text-xs font-medium text-cyan-300 disabled:opacity-50">
               {safetyMutation.isPending ? '保存中...' : '保存限制'}
+            </button>
+          </div>
+        </motion.div>
+
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.09 }}
+          className="mb-4 rounded-2xl border border-cyan-400/10 bg-slate-900 p-5">
+          <div className="mb-4">
+            <h2 className="text-base font-semibold text-slate-300">任务可执行条件</h2>
+            <p className="mt-1 text-xs leading-5 text-slate-500">记录你实际拥有的物品、器材和时间条件，避免 AI 发布无法执行的任务。</p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {[
+              ['available_items', '可用物品或器材', '例如：跑步机、瑜伽垫、防晒霜'],
+              ['unavailable_items', '目前没有的物品', '例如：眼霜、哑铃'],
+              ['preferred_locations', '偏好场地', '例如：家里、小区、健身房'],
+              ['avoid_activities', '需要避免的活动', '例如：跳绳、深蹲'],
+            ].map(([key, label, placeholder]) => (
+              <label key={key} className="text-xs text-slate-500">
+                {label}
+                <input value={taskConstraintForm[key as keyof typeof taskConstraintForm]}
+                  onChange={(event) => setTaskConstraintForm({ ...taskConstraintForm, [key]: event.target.value })}
+                  placeholder={placeholder}
+                  className="mt-2 w-full rounded-xl border border-white/5 bg-slate-950/50 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
+              </label>
+            ))}
+          </div>
+          <div className="mt-3 grid gap-3 sm:grid-cols-[180px_1fr]">
+            <label className="text-xs text-slate-500">
+              单项任务最长时间
+              <input type="number" min={5} max={240} value={taskConstraintForm.max_task_minutes}
+                onChange={(event) => setTaskConstraintForm({ ...taskConstraintForm, max_task_minutes: event.target.value })}
+                placeholder="分钟"
+                className="mt-2 w-full rounded-xl border border-white/5 bg-slate-950/50 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
+            </label>
+            <label className="text-xs text-slate-500">
+              其他说明
+              <input value={taskConstraintForm.notes}
+                onChange={(event) => setTaskConstraintForm({ ...taskConstraintForm, notes: event.target.value })}
+                placeholder="例如：工作日只能安排低噪音任务"
+                className="mt-2 w-full rounded-xl border border-white/5 bg-slate-950/50 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
+            </label>
+          </div>
+          <div className="mt-4 flex items-center justify-between gap-3">
+            <p className="text-[11px] text-slate-600">你也可以在 Agent 对话里说“我没有眼霜”或“任务最多20分钟”。</p>
+            <button type="button" onClick={() => taskConstraintMutation.mutate()} disabled={taskConstraintMutation.isPending}
+              className="shrink-0 rounded-xl bg-cyan-400/10 px-4 py-2.5 text-xs font-medium text-cyan-300 disabled:opacity-50">
+              {taskConstraintMutation.isPending ? '保存中...' : '保存条件'}
             </button>
           </div>
         </motion.div>

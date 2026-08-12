@@ -48,3 +48,46 @@ class PushSubscription(Base):
         onupdate=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
+
+
+class PushDelivery(Base):
+    __tablename__ = "push_deliveries"
+    __table_args__ = (
+        UniqueConstraint(
+            "notification_id",
+            "subscription_id",
+            name="uq_push_deliveries_notification_subscription",
+        ),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    notification_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("user_notifications.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    subscription_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("push_subscriptions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    next_attempt_at = Column(DateTime(timezone=True), index=True)
+    sent_at = Column(DateTime(timezone=True))
+    last_error = Column(String(300))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )

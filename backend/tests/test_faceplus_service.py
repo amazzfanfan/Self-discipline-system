@@ -120,3 +120,21 @@ def test_sensitive_skin_suggestion_adds_patch_test(monkeypatch):
     )
 
     assert "局部试用" in result[0]
+
+
+def test_skin_suggestions_reject_unavailable_product(monkeypatch):
+    monkeypatch.setattr(
+        faceplus_service,
+        "chat_completion_with_fallback",
+        AsyncMock(return_value='{"suggestions": ["晚间涂眼霜并按摩"]}'),
+    )
+
+    with pytest.raises(RuntimeError, match="unavailable user resources"):
+        asyncio.run(
+            faceplus_service.generate_ai_suggestions(
+                ["眼袋"],
+                "中性",
+                None,
+                {"unavailable_items": ["眼霜"]},
+            )
+        )

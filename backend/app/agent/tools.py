@@ -8,15 +8,20 @@ from dataclasses import dataclass
 from datetime import date, datetime, time as clock_time, timedelta
 from typing import Any, Awaitable, Callable, Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.goal import Goal
 from app.models.score import UserScore
+from app.models.task import Task, TaskStatusEnum
+from app.models.user import UserProfile
 from app.services.cache_service import invalidate_scores, invalidate_tasks
 from app.services.goal_service import goal_service
-from app.services.goal_progress_service import build_goal_progress_summaries
+from app.services.goal_progress_service import (
+    apply_manual_goal_progress,
+    build_goal_progress_summaries,
+)
 from app.core.time import local_today
 from app.services.memory_service import MemoryService
 from app.services.task_service import (
@@ -26,6 +31,10 @@ from app.services.task_service import (
     replace_task_by_dimension,
     resume_task_by_dimension,
     skip_task_by_dimension,
+)
+from app.services.task_constraint_service import (
+    merge_task_constraints,
+    validate_task_feasibility,
 )
 from app.services.weight_service import record_weight
 
@@ -48,6 +57,8 @@ def has_explicit_completion(text: str) -> bool:
 
 
 def has_explicit_weight_record_intent(text: str) -> bool:
+    if re.search(r"(?:不要|不需要|别|无需).{0,4}(?:记录|记下)|(?:体重).{0,6}(?:不是|并非)", text):
+        return False
     return bool(
         re.search(
             r"(?:帮我|请|给我)?.{0,6}(?:记录|记下).{0,10}(?:体重|公斤|kg)"
@@ -93,6 +104,12 @@ class GoalCreateArgs(BaseModel):
     preferred_time: clock_time | None = None
     duration_minutes: int | None = Field(default=None, ge=1, le=600)
     reminder_enabled: bool | None = None
+    target_metric: str | None = Field(default=None, max_length=100)
+    target_unit: str | None = Field(default=None, max_length=30)
+    metric_direction: Literal["increase", "decrease"] = "increase"
+    target_value: float | None = Field(default=None, gt=0)
+    baseline_value: float | None = Field(default=None, ge=0)
+    current_value: float | None = Field(default=None, ge=0)
 
 
 class TaskReplaceArgs(BaseModel):
@@ -131,9 +148,45 @@ class GoalUpdateArgs(GoalSelectorArgs):
     reminder_enabled: bool | None = None
 
 
+class GoalProgressArgs(GoalSelectorArgs):
+    current_value: float | None = Field(default=None, ge=0)
+    delta: float | None = None
+    note: str | None = Field(default=None, max_length=300)
+
+    @model_validator(mode="after")
+    def require_exactly_one_progress_value(self):
+        if (self.current_value is None) == (self.delta is None):
+            raise ValueError("必须且只能提供 current_value 或 delta 中的一项")
+        return self
+
+
 class MemorySearchArgs(BaseModel):
     query: str = Field(min_length=1, max_length=300)
     top_k: int = Field(default=3, ge=1, le=5)
+
+
+class TaskConstraintArgs(BaseModel):
+    available_items: list[str] = Field(default_factory=list, max_length=10)
+    unavailable_items: list[str] = Field(default_factory=list, max_length=10)
+    preferred_locations: list[str] = Field(default_factory=list, max_length=5)
+    avoid_activities: list[str] = Field(default_factory=list, max_length=10)
+    max_task_minutes: int | None = Field(default=None, ge=5, le=240)
+    notes: str | None = Field(default=None, max_length=300)
+
+    @model_validator(mode="after")
+    def require_update(self):
+        if not any(
+            (
+                self.available_items,
+                self.unavailable_items,
+                self.preferred_locations,
+                self.avoid_activities,
+                self.max_task_minutes is not None,
+                self.notes,
+            )
+        ):
+            raise ValueError("至少提供一项任务可执行条件")
+        return self
 
 
 ToolHandler = Callable[[BaseModel], Awaitable[dict[str, Any]]]
@@ -305,9 +358,30 @@ class ToolRegistry:
                 preferred_time=args.preferred_time,
                 duration_minutes=args.duration_minutes,
                 reminder_enabled=args.reminder_enabled,
+                target_metric=args.target_metric,
+                target_unit=args.target_unit,
+                metric_direction=args.metric_direction,
+                target_value=args.target_value,
+                baseline_value=args.baseline_value,
+                current_value=args.current_value,
                 source="chat",
             )
             return {"success": True, "goal": goal.to_dict()}
+
+        async def record_goal_progress(args: GoalProgressArgs) -> dict[str, Any]:
+            goal, error = await resolve_goal(args.goal_keyword)
+            if error:
+                return error
+            result = await apply_manual_goal_progress(
+                self.db,
+                goal_id=goal.id,
+                user_id=self.user_id,
+                current_value=args.current_value,
+                delta=args.delta,
+                note=args.note,
+                source="agent_chat",
+            )
+            return {"success": bool(result), **(result or {})}
 
         async def update_goal(args: GoalUpdateArgs) -> dict[str, Any]:
             goal, error = await resolve_goal(args.goal_keyword)
@@ -407,6 +481,53 @@ class ToolRegistry:
                 ]
             }
 
+        async def update_task_constraints(args: TaskConstraintArgs) -> dict[str, Any]:
+            profile = await self.db.scalar(
+                select(UserProfile).where(UserProfile.user_id == self.user_id)
+            )
+            if profile is None:
+                profile = UserProfile(user_id=self.user_id)
+                self.db.add(profile)
+            profile.task_constraints = merge_task_constraints(
+                profile.task_constraints,
+                args.model_dump(exclude_none=True),
+            )
+            task_result = await self.db.execute(
+                select(Task).where(
+                    Task.user_id == self.user_id,
+                    Task.scheduled_date == local_today(),
+                    Task.status.in_([TaskStatusEnum.pending, TaskStatusEnum.in_progress]),
+                )
+            )
+            conflicting_tasks = []
+            for task in task_result.scalars().all():
+                feasible, reason = validate_task_feasibility(
+                    task.title,
+                    profile.task_constraints,
+                )
+                if not feasible:
+                    conflicting_tasks.append(
+                        {
+                            "id": str(task.id),
+                            "dimension": task.dimension.value,
+                            "title": task.title,
+                            "reason": reason,
+                        }
+                    )
+            await self.db.commit()
+            message = "任务可执行条件已更新，后续 AI 生成任务时会遵守这些限制。"
+            if conflicting_tasks:
+                message += (
+                    "检测到今日已有任务与新条件冲突；系统没有擅自编造替代任务。"
+                    "请直接说明要改成的具体内容，或让 Agent 基于现有条件生成替代方案。"
+                )
+            return {
+                "success": True,
+                "message": message,
+                "task_constraints": profile.task_constraints,
+                "conflicting_tasks": conflicting_tasks,
+            }
+
         definitions = [
             AgentTool("list_today_tasks", "查询今天的任务及状态", EmptyArgs, list_today),
             AgentTool(
@@ -461,6 +582,13 @@ class ToolRegistry:
                 "write",
             ),
             AgentTool(
+                "record_goal_progress",
+                "记录用户明确提供的目标当前数值或进度增量，并更新里程碑与达成状态",
+                GoalProgressArgs,
+                record_goal_progress,
+                "write",
+            ),
+            AgentTool(
                 "change_goal_status",
                 "暂停、恢复或完成一个已有成长目标",
                 GoalStatusArgs,
@@ -476,6 +604,13 @@ class ToolRegistry:
             ),
             AgentTool("get_score_overview", "查询四个成长维度的当前评分", EmptyArgs, score_overview),
             AgentTool("search_memory", "检索与当前问题相关的历史偏好和事实", MemorySearchArgs, search_memory),
+            AgentTool(
+                "update_task_constraints",
+                "记录用户明确说明的可用或不可用物品、器材、场地、活动限制和任务最长时间",
+                TaskConstraintArgs,
+                update_task_constraints,
+                "write",
+            ),
         ]
         for definition in definitions:
             self._register(definition)
@@ -516,6 +651,17 @@ class ToolRegistry:
             r"(?:目标|计划|打算|想要|希望|准备)", text
         ):
             return False, "请明确说明希望创建的成长目标。", "clarification_required"
+        if tool.name == "update_task_constraints" and not re.search(
+            r"(?:我有|可以使用|可用|没有|没买|手头没有|不能用|不能做|避免|最多.{0,4}分钟)",
+            text,
+        ):
+            return False, "请明确说明可用或不可用的物品、活动或时间限制。", "clarification_required"
+        if tool.name == "record_goal_progress" and not re.search(
+            r"(?:目标|计划).{0,16}(?:进度|累计|目前|现在|增加|减少).{0,8}\d|"
+            r"(?:进度|累计).{0,8}\d",
+            text,
+        ):
+            return False, "请明确说明要更新的目标和具体进度数值。", "clarification_required"
         return True, "", ""
 
     async def execute(

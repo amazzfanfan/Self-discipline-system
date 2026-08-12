@@ -28,6 +28,40 @@ def test_fallback_planner_records_explicit_weight():
     assert decision.arguments == {"weight_kg": 68.5}
 
 
+def test_fallback_planner_does_not_record_negated_weight():
+    runtime = make_runtime()
+
+    decision = runtime._fallback_decision("我体重不是70kg，不要记录", [])
+
+    assert decision.tool is None
+
+
+def test_fallback_planner_persists_task_resource_constraints():
+    runtime = make_runtime()
+
+    unavailable = runtime._fallback_decision("我没有眼霜，可以更改形象任务吗", [])
+    available = runtime._fallback_decision("我有跑步机", [])
+    avoided = runtime._fallback_decision("我不能做深蹲", [])
+    duration = runtime._fallback_decision("任务最多20分钟", [])
+
+    assert unavailable.tool == "update_task_constraints"
+    assert unavailable.arguments == {"unavailable_items": ["眼霜"]}
+    assert available.arguments == {"available_items": ["跑步机"]}
+    assert avoided.arguments == {"avoid_activities": ["深蹲"]}
+    assert duration.arguments == {"max_task_minutes": 20}
+
+
+def test_fallback_planner_records_numeric_goal_progress():
+    runtime = make_runtime()
+
+    current = runtime._fallback_decision("跑步目标目前累计12公里", [])
+    delta = runtime._fallback_decision("跑步目标进度增加5公里", [])
+
+    assert current.tool == "record_goal_progress"
+    assert current.arguments == {"goal_keyword": "跑步", "current_value": 12.0}
+    assert delta.arguments == {"goal_keyword": "跑步", "delta": 5.0}
+
+
 def test_fallback_planner_marks_explicit_completed_task():
     runtime = make_runtime()
 

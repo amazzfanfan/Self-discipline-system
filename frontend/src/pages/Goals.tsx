@@ -26,8 +26,11 @@ type GoalDraft = {
   content: string;
   goalType: Dimension;
   metric: string;
+  unit: string;
+  direction: Goal['metric_direction'];
   target: string;
   current: string;
+  milestonesText: string;
   deadline: string;
   recurrence: Goal['recurrence'];
   daysOfWeek: number[];
@@ -41,8 +44,11 @@ const draftFromGoal = (goal: Goal): GoalDraft => ({
   content: goal.content,
   goalType: goal.goal_type,
   metric: goal.target_metric ?? '',
+  unit: goal.target_unit ?? '',
+  direction: goal.metric_direction ?? 'increase',
   target: goal.target_value == null ? '' : String(goal.target_value),
   current: goal.current_value == null ? '' : String(goal.current_value),
+  milestonesText: (goal.milestones ?? []).map((item) => `${item.title}|${item.target_value}`).join('\n'),
   deadline: goal.deadline ?? '',
   recurrence: goal.recurrence ?? 'flexible',
   daysOfWeek: goal.days_of_week ?? [],
@@ -52,6 +58,19 @@ const draftFromGoal = (goal: Goal): GoalDraft => ({
   progressMode: goal.progress_mode ?? 'sessions',
 });
 
+const parseMilestones = (value: string) => value.split('\n').map((line) => {
+  const [title, rawTarget] = line.split('|').map((item) => item.trim());
+  return { title, target_value: Number(rawTarget) };
+}).filter((item) => item.title && Number.isFinite(item.target_value) && item.target_value >= 0);
+
+const goalProgressPercent = (goal: Goal) => {
+  if (goal.target_value == null) return 0;
+  if (goal.metric_direction === 'decrease' && goal.baseline_value != null && goal.baseline_value > goal.target_value) {
+    return Math.max(0, Math.min(100, 100 * (goal.baseline_value - (goal.current_value ?? goal.baseline_value)) / (goal.baseline_value - goal.target_value)));
+  }
+  return Math.max(0, Math.min(100, 100 * (goal.current_value ?? 0) / goal.target_value));
+};
+
 export default function Goals() {
   const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
@@ -59,7 +78,11 @@ export default function Goals() {
   const [content, setContent] = useState('');
   const [goalType, setGoalType] = useState<Dimension>('exercise');
   const [metric, setMetric] = useState('');
+  const [unit, setUnit] = useState('');
+  const [direction, setDirection] = useState<Goal['metric_direction']>('increase');
   const [target, setTarget] = useState('');
+  const [current, setCurrent] = useState('0');
+  const [milestonesText, setMilestonesText] = useState('');
   const [deadline, setDeadline] = useState('');
   const [recurrence, setRecurrence] = useState<Goal['recurrence']>('flexible');
   const [daysOfWeek, setDaysOfWeek] = useState<number[]>([]);
@@ -72,6 +95,9 @@ export default function Goals() {
   const [editDraft, setEditDraft] = useState<GoalDraft | null>(null);
   const [deleteCandidate, setDeleteCandidate] = useState<Goal | null>(null);
   const [timelineGoal, setTimelineGoal] = useState<Goal | null>(null);
+  const [progressGoal, setProgressGoal] = useState<Goal | null>(null);
+  const [progressValue, setProgressValue] = useState('');
+  const [progressNote, setProgressNote] = useState('');
   const [notice, setNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const { data: goals = [], isLoading } = useQuery<Goal[]>({
@@ -120,10 +146,13 @@ export default function Goals() {
         content: content.trim(),
         goal_type: goalType,
         target_metric: metric.trim() || null,
+        target_unit: unit.trim() || null,
+        metric_direction: direction,
         target_value: target ? Number(target) : null,
-        current_value: 0,
+        baseline_value: current ? Number(current) : 0,
+        current_value: current ? Number(current) : 0,
         deadline: deadline || null,
-        milestones: [],
+        milestones: parseMilestones(milestonesText),
         recurrence,
         days_of_week: recurrence === 'custom' || recurrence === 'weekly' ? daysOfWeek : [],
         preferred_time: preferredTime || null,
@@ -131,7 +160,7 @@ export default function Goals() {
         reminder_enabled: reminderEnabled && Boolean(preferredTime),
         progress_mode: progressMode,
       });
-      setContent(''); setMetric(''); setTarget(''); setDeadline('');
+      setContent(''); setMetric(''); setUnit(''); setDirection('increase'); setTarget(''); setCurrent('0'); setMilestonesText(''); setDeadline('');
       setRecurrence('flexible'); setDaysOfWeek([]); setPreferredTime('');
       setDurationMinutes(''); setReminderEnabled(false); setCreating(false);
       setProgressMode('sessions');
@@ -173,8 +202,12 @@ export default function Goals() {
       content: editDraft.content.trim(),
       goal_type: editDraft.goalType,
       target_metric: editDraft.metric.trim() || null,
+      target_unit: editDraft.unit.trim() || null,
+      metric_direction: editDraft.direction,
       target_value: editDraft.target ? Number(editDraft.target) : null,
+      baseline_value: editingGoal.baseline_value ?? (editDraft.current ? Number(editDraft.current) : 0),
       current_value: editDraft.current ? Number(editDraft.current) : 0,
+      milestones: parseMilestones(editDraft.milestonesText),
       deadline: editDraft.deadline || null,
       recurrence: editDraft.recurrence,
       days_of_week: editDraft.recurrence === 'custom' || editDraft.recurrence === 'weekly' ? editDraft.daysOfWeek : [],
@@ -199,6 +232,26 @@ export default function Goals() {
       setNotice({ type: 'success', text: '目标已永久删除。' });
     } catch {
       setNotice({ type: 'error', text: '目标删除失败，请稍后重试。' });
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const recordProgress = async () => {
+    if (!progressGoal || !progressValue || !Number.isFinite(Number(progressValue))) return;
+    setBusyId(progressGoal.id);
+    setNotice(null);
+    try {
+      await api.post(`/goals/${progressGoal.id}/progress`, {
+        current_value: Number(progressValue),
+        note: progressNote.trim() || null,
+      });
+      await refresh();
+      await queryClient.invalidateQueries({ queryKey: ['goal-progress-timeline', progressGoal.id] });
+      setProgressGoal(null); setProgressValue(''); setProgressNote('');
+      setNotice({ type: 'success', text: '目标数值、里程碑和达成状态已同步更新。' });
+    } catch {
+      setNotice({ type: 'error', text: '进度记录失败，请检查数值后重试。' });
     } finally {
       setBusyId(null);
     }
@@ -269,8 +322,12 @@ export default function Goals() {
                   {Object.entries(labels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                 </select>
                 <input value={metric} onChange={(event) => setMetric(event.target.value)} placeholder="目标指标，如每周训练次数" className="rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
+                <input value={unit} onChange={(event) => setUnit(event.target.value)} placeholder="指标单位，如 km、kg、次" className="rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
+                <select aria-label="指标方向" value={direction} onChange={(event) => setDirection(event.target.value as Goal['metric_direction'])} className="rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30"><option value="increase">数值增加型（如累计里程）</option><option value="decrease">数值降低型（如体重）</option></select>
                 <input value={target} onChange={(event) => setTarget(event.target.value)} type="number" placeholder="目标值（可选）" className="rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
+                <input aria-label="初始数值" value={current} onChange={(event) => setCurrent(event.target.value)} type="number" min="0" step="any" placeholder="当前/初始数值" className="rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
                 <input value={deadline} onChange={(event) => setDeadline(event.target.value)} type="date" className="rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
+                <textarea aria-label="目标里程碑" rows={2} value={milestonesText} onChange={(event) => setMilestonesText(event.target.value)} placeholder={'里程碑（每行“名称|数值”）\n例如：累计 10 公里|10'} className="resize-none rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30 md:col-span-2" />
                 <select value={recurrence} onChange={(event) => setRecurrence(event.target.value as Goal['recurrence'])} className="rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30">
                   <option value="flexible">灵活安排</option><option value="daily">每天</option><option value="weekly">每周指定日</option><option value="custom">自定义执行日</option>
                 </select>
@@ -291,7 +348,7 @@ export default function Goals() {
               className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm"
               onMouseDown={(event) => { if (event.target === event.currentTarget) { setEditingGoal(null); setEditDraft(null); } }}>
               <motion.div initial={{ opacity: 0, y: 18, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 12, scale: 0.98 }}
-                className="w-full max-w-xl overflow-hidden rounded-[24px] border border-cyan-300/15 bg-slate-900 shadow-2xl">
+                className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-[24px] border border-cyan-300/15 bg-slate-900 shadow-2xl">
                 <div className="border-b border-white/[0.06] px-5 py-4">
                   <p className="text-[10px] uppercase tracking-[0.2em] text-cyan-300/60">Goal editor</p>
                   <h2 className="mt-1 text-base font-semibold text-white">编辑成长目标</h2>
@@ -316,6 +373,14 @@ export default function Goals() {
                       placeholder="例如：每周训练次数" className="w-full rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
                   </label>
                   <label>
+                    <span className="mb-1.5 block text-[10px] text-slate-500">指标单位</span>
+                    <input aria-label="指标单位" value={editDraft.unit} onChange={(event) => setEditDraft({ ...editDraft, unit: event.target.value })} placeholder="km、kg、次" className="w-full rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
+                  </label>
+                  <label className="md:col-span-2">
+                    <span className="mb-1.5 block text-[10px] text-slate-500">指标方向</span>
+                    <select aria-label="编辑指标方向" value={editDraft.direction} onChange={(event) => setEditDraft({ ...editDraft, direction: event.target.value as Goal['metric_direction'] })} className="w-full rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30"><option value="increase">数值增加型</option><option value="decrease">数值降低型</option></select>
+                  </label>
+                  <label>
                     <span className="mb-1.5 block text-[10px] text-slate-500">当前进度</span>
                     <input aria-label="当前进度" type="number" min="0" disabled={editDraft.progressMode === 'sessions'} value={editDraft.current} onChange={(event) => setEditDraft({ ...editDraft, current: event.target.value })}
                       className="w-full rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
@@ -324,6 +389,10 @@ export default function Goals() {
                     <span className="mb-1.5 block text-[10px] text-slate-500">目标值（可选）</span>
                     <input aria-label="目标值" type="number" min="0.01" step="any" value={editDraft.target} onChange={(event) => setEditDraft({ ...editDraft, target: event.target.value })}
                       className="w-full rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
+                  </label>
+                  <label className="md:col-span-2">
+                    <span className="mb-1.5 block text-[10px] text-slate-500">里程碑（每行“名称|数值”）</span>
+                    <textarea aria-label="编辑目标里程碑" rows={3} value={editDraft.milestonesText} onChange={(event) => setEditDraft({ ...editDraft, milestonesText: event.target.value })} className="w-full resize-none rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
                   </label>
                   <label className="md:col-span-2">
                     <span className="mb-1.5 block text-[10px] text-slate-500">进度记录方式</span>
@@ -356,6 +425,21 @@ export default function Goals() {
                   <button type="button" disabled={!editIsValid || busyId === editingGoal.id} onClick={() => void saveGoalEdit()}
                     className="rounded-xl bg-cyan-400 px-4 py-2.5 text-xs font-semibold text-slate-950 disabled:opacity-40">{busyId === editingGoal.id ? '保存中…' : '保存修改'}</button>
                 </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {progressGoal && (
+            <motion.div role="dialog" aria-modal="true" aria-label="记录目标进度" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm" onMouseDown={(event) => { if (event.target === event.currentTarget) setProgressGoal(null); }}>
+              <motion.div initial={{ opacity: 0, y: 14, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 10, scale: 0.98 }} className="w-full max-w-md rounded-[22px] border border-violet-400/15 bg-slate-900 p-5 shadow-2xl">
+                <p className="text-[10px] uppercase tracking-[0.2em] text-violet-300/60">Progress check-in</p>
+                <h2 className="mt-1 text-base font-semibold text-white">记录目标当前数值</h2>
+                <p className="mt-2 text-xs leading-5 text-slate-500">{progressGoal.content}</p>
+                <label className="mt-4 block"><span className="mb-1.5 block text-[10px] text-slate-500">当前数值（{progressGoal.target_unit || '无单位'}）</span><input autoFocus type="number" min="0" step="any" value={progressValue} onChange={(event) => setProgressValue(event.target.value)} className="w-full rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-violet-400/30" /></label>
+                <label className="mt-3 block"><span className="mb-1.5 block text-[10px] text-slate-500">备注（可选）</span><input value={progressNote} onChange={(event) => setProgressNote(event.target.value)} placeholder="例如：跑步机记录" className="w-full rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-violet-400/30" /></label>
+                <div className="mt-5 flex justify-end gap-2"><button type="button" onClick={() => setProgressGoal(null)} className="rounded-xl border border-white/[0.08] px-4 py-2.5 text-xs text-slate-400 hover:text-white">取消</button><button type="button" disabled={!progressValue || busyId === progressGoal.id} onClick={() => void recordProgress()} className="rounded-xl bg-violet-400 px-4 py-2.5 text-xs font-semibold text-slate-950 disabled:opacity-40">保存进度</button></div>
               </motion.div>
             </motion.div>
           )}
@@ -427,7 +511,7 @@ export default function Goals() {
         ) : (
           <div className="grid gap-4 md:grid-cols-2">
             {visibleGoals.map((goal, index) => {
-              const progress = goal.target_value ? Math.min(100, 100 * (goal.current_value ?? 0) / goal.target_value) : 0;
+              const progress = goalProgressPercent(goal);
               const status = statusMeta[goal.status];
               const weekly = progressSummaries[goal.id];
               return (
@@ -446,9 +530,11 @@ export default function Goals() {
                     {goal.reminder_enabled && <span className="rounded-full bg-violet-400/[0.07] px-2 py-1 text-violet-300">提前 {goal.reminder_minutes_before} 分钟提醒</span>}
                   </div>
                   {weekly && <div className="relative mt-4 rounded-xl border border-cyan-300/10 bg-cyan-400/[0.035] p-3"><div className="flex items-center justify-between text-[10px]"><span className="text-slate-400">本周执行</span><span className="font-medium text-cyan-300">{weekly.completed}/{weekly.scheduled_to_date || weekly.scheduled_total} 次</span></div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800"><motion.div initial={{ width: 0 }} animate={{ width: `${weekly.adherence ?? 0}%` }} className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-cyan-400" /></div><div className="mt-2 flex justify-between text-[9px] text-slate-600"><span>{weekly.adherence == null ? '本周尚未到执行日' : `到期达成率 ${weekly.adherence}%`}</span><span>累计 {weekly.completed_sessions} 次</span></div></div>}
-                  {goal.target_value != null && <div className="relative mt-4"><div className="flex justify-between text-[10px] text-slate-500"><span>{goal.target_metric || '目标进度'}</span><span>{goal.current_value ?? 0} / {goal.target_value}</span></div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800"><motion.div initial={{ width: 0 }} animate={{ width: `${progress}%` }} className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-violet-500" /></div></div>}
+                  {goal.target_value != null && <div className="relative mt-4"><div className="flex justify-between text-[10px] text-slate-500"><span>{goal.target_metric || '目标进度'} · {goal.metric_direction === 'decrease' ? '降低至' : '累计至'}</span><span>{goal.current_value ?? 0}{goal.target_unit || ''} / {goal.target_value}{goal.target_unit || ''}</span></div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800"><motion.div initial={{ width: 0 }} animate={{ width: `${progress}%` }} className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-violet-500" /></div></div>}
+                  {goal.milestones.length > 0 && <div className="relative mt-3 flex flex-wrap gap-1.5">{goal.milestones.map((milestone) => <span key={milestone.id} className={`rounded-full px-2 py-1 text-[9px] ${milestone.completed_at ? 'bg-emerald-400/[0.08] text-emerald-300' : 'bg-white/[0.04] text-slate-500'}`}>{milestone.completed_at ? '✓ ' : ''}{milestone.title}</span>)}</div>}
                   <div className="relative mt-5 flex flex-wrap gap-2 border-t border-white/[0.055] pt-4">
                     <button type="button" onClick={() => setTimelineGoal(goal)} className="rounded-lg bg-cyan-400/[0.06] px-2.5 py-1.5 text-[10px] text-cyan-300 hover:bg-cyan-400/[0.1]">执行记录</button>
+                    {goal.progress_mode === 'manual' && goal.status !== 'completed' && <button type="button" onClick={() => { setProgressGoal(goal); setProgressValue(String(goal.current_value ?? 0)); setProgressNote(''); }} className="rounded-lg bg-violet-400/[0.07] px-2.5 py-1.5 text-[10px] text-violet-300">记录进度</button>}
                     <button disabled={busyId === goal.id} type="button" onClick={() => editGoal(goal)} className="rounded-lg bg-white/[0.045] px-2.5 py-1.5 text-[10px] text-slate-400 hover:text-white">编辑</button>
                     {goal.status === 'active' && <button disabled={busyId === goal.id} type="button" onClick={() => void updateGoal(goal, { status: 'paused' })} className="rounded-lg bg-amber-400/[0.07] px-2.5 py-1.5 text-[10px] text-amber-300">暂停</button>}
                     {goal.status === 'paused' && <button disabled={busyId === goal.id} type="button" onClick={() => void updateGoal(goal, { status: 'active' })} className="rounded-lg bg-cyan-400/[0.07] px-2.5 py-1.5 text-[10px] text-cyan-300">恢复</button>}

@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     APP_TIMEZONE: str = "Asia/Shanghai"
     ENABLE_SCHEDULER: bool = True
+    SCHEDULER_IN_API: bool = True
+    SCHEDULER_PERSIST_JOBS: bool = True
+    SCHEDULER_REDIS_URL: str = ""
     MAX_UPLOAD_SIZE_MB: int = 8
 
     # Database
@@ -18,6 +21,7 @@ class Settings(BaseSettings):
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
+    RATE_LIMIT_STORAGE_URI: str = ""
 
     # JWT
     SECRET_KEY: str = "change-me-in-production"
@@ -109,6 +113,10 @@ class Settings(BaseSettings):
             raise RuntimeError("Production requires AI_API_KEY")
         if not self.CORS_ORIGINS or "*" in self.CORS_ORIGINS:
             raise RuntimeError("Production requires an explicit CORS_ORIGINS allowlist")
+        if not self.RATE_LIMIT_STORAGE_URI or self.RATE_LIMIT_STORAGE_URI == "memory://":
+            raise RuntimeError("Production requires a shared RATE_LIMIT_STORAGE_URI")
+        if self.ENABLE_SCHEDULER and not self.SCHEDULER_PERSIST_JOBS:
+            raise RuntimeError("Production scheduler requires persistent jobs")
         for origin in self.CORS_ORIGINS:
             parsed = urlparse(origin)
             if parsed.scheme != "https" or parsed.hostname in {"localhost", "127.0.0.1", "::1"}:

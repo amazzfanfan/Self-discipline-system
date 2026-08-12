@@ -81,7 +81,7 @@ flowchart LR
 ### 🤖 AI对话系统
 
 - **Agent Runtime**：Plan → Tool → Observation 的迭代执行循环
-- **八个受控工具**：任务、评分、体重、目标与长期记忆
+- **受控工具集**：任务、评分、体重、目标进度、资源约束与长期记忆
 - **安全护栏**：危险操作确认、参数校验、最大步数和重复调用阻断
 - **可观测流式响应**：SSE 实时输出 trace、正文与运行指标
 - **长期记忆**：向量召回、重要性衰减、语义重排、缓存隔离与删除能力
@@ -97,6 +97,7 @@ flowchart LR
 ### 🎯 成长目标闭环
 
 - **结构化计划**：支持执行频率、星期、具体时间、时长和提前提醒
+- **量化指标**：支持单位、增加/降低方向、初始值、目标值和阈值里程碑
 - **自动累计**：完成关联任务后幂等更新目标次数与数值进度
 - **周期达成率**：展示本周应执行、已完成、剩余次数和到期达成率
 - **执行时间线**：可查看每次任务完成或手动进度调整的来源与日期
@@ -243,6 +244,12 @@ uvicorn app.main:app --reload --port 8000
 python -m scripts.worker
 ```
 
+开发环境默认由 API 进程内置调度器；定时任务存储在 Redis，短暂重启后会按 misfire 策略补跑。多进程生产部署应只启动一个独立调度进程，并在所有 API 实例设置 `SCHEDULER_IN_API=false`：
+
+```bash
+python -m scripts.scheduler
+```
+
 #### 3. 前端配置
 
 ```bash
@@ -266,6 +273,10 @@ npm run dev
 |--------|------|------|
 | `DATABASE_URL` | PostgreSQL连接字符串 | `postgresql+asyncpg://postgres:postgres@localhost:5432/system_agent` |
 | `REDIS_URL` | Redis连接字符串 | `redis://localhost:6379/0` |
+| `RATE_LIMIT_STORAGE_URI` | 多实例共享限流存储；生产环境必填 | `redis://localhost:6379/0` |
+| `SCHEDULER_PERSIST_JOBS` | 将调度任务持久化到 Redis | `true` |
+| `SCHEDULER_IN_API` | 是否在 API 进程内运行调度器 | `true` |
+| `SCHEDULER_REDIS_URL` | 可选：调度器专用 Redis；留空复用 `REDIS_URL` | `redis://localhost:6379/0` |
 | `SECRET_KEY` | JWT密钥（请更换） | `your-secret-key-change-in-production` |
 | `AI_API_KEY` | AI模型API密钥 | `your-ai-api-key` |
 | `AI_BASE_URL` | 聊天模型API地址 | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
@@ -308,6 +319,7 @@ cd backend
 pip install -r requirements-dev.txt
 python -m pytest -q
 python -m ruff check app tests
+python -m scripts.evaluate_agent
 
 # 前端
 cd frontend

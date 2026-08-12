@@ -179,6 +179,29 @@ def _direct_operation_reply(run: AgentRunResult) -> str | None:
         return str(result.get("message") or "任务状态已更新。")
     if observation.tool == "record_weight":
         return f"体重已记录：**{result.get('weight_kg', '')} kg**。"
+    if observation.tool == "update_task_constraints":
+        conflicts = result.get("conflicting_tasks") or []
+        reply = str(result.get("message") or "任务可执行条件已更新。")
+        if conflicts:
+            lines = [
+                f"- {item.get('title', '')}（{item.get('reason', '与新条件冲突')}）"
+                for item in conflicts
+            ]
+            reply += "\n\n当前冲突任务：\n" + "\n".join(lines)
+        return reply
+    if observation.tool == "record_goal_progress":
+        goal = result.get("goal") or {}
+        unit = goal.get("target_unit") or ""
+        reply = (
+            f"目标 **{goal.get('content', '')}** 的进度已记录："
+            f"**{result.get('previous_value', 0)} → {result.get('current_value', 0)}{unit}**。"
+        )
+        milestones = result.get("completed_milestones") or []
+        if milestones:
+            reply += "\n\n已达成里程碑：" + "、".join(item.get("title", "") for item in milestones)
+        if result.get("goal_completed"):
+            reply += "\n\n目标值已达到，系统已将目标标记为完成。"
+        return reply
     return None
 
 

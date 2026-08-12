@@ -11,6 +11,7 @@ __pycache__/
 .pytest_cache/
 .coverage
 coverage.xml
+backend/evals/results/
 venv/
 .venv/
 *.egg-info/
