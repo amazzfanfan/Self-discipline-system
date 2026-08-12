@@ -203,6 +203,14 @@ async def update_preferences(
         "daily_task_budget": profile.daily_task_budget,
         "memory_enabled": bool(profile.memory_enabled),
         "notification_settings": profile.notification_settings or {},
+        "notification_quiet_start": (
+            profile.notification_quiet_start.strftime("%H:%M")
+            if profile.notification_quiet_start else None
+        ),
+        "notification_quiet_end": (
+            profile.notification_quiet_end.strftime("%H:%M")
+            if profile.notification_quiet_end else None
+        ),
     }
 
 
@@ -324,62 +332,65 @@ async def skin_analyze(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db, scope="function"),
 ):
-    """聊天界面上传图片进行肤质分析"""
+    """分析一次性聊天照片；只保留结构化结果，不保留原图。"""
     saved = await save_image_upload(file, f"{user.id}_skin")
-    
-    # 同一图片按内容哈希复用 Face++ 结果，不使用随机视觉模型兜底。
-    skin_result = await analyze_skin(saved.path, saved.sha256)
+    try:
+        # 同一图片按内容哈希复用 Face++ 结果，不使用随机视觉模型兜底。
+        skin_result = await analyze_skin(saved.path, saved.sha256)
 
-    ai_suggestions = []
-    if skin_result.source == "faceplusplus":
-        ai_suggestions = await generate_ai_suggestions(skin_result.issues, skin_result.skin_type_name)
-    skin_result.suggestions = ai_suggestions
-    
-    # 存储分析结果到用户档案
-    result = await db.execute(select(UserProfile).where(UserProfile.user_id == user.id))
-    profile = result.scalar_one_or_none()
-    if profile:
-        profile.skin_analysis = asdict(skin_result)
+        result = await db.execute(select(UserProfile).where(UserProfile.user_id == user.id))
+        profile = result.scalar_one_or_none()
+        constraints = profile.skincare_constraints if profile else None
+        ai_suggestions = []
+        if skin_result.source == "faceplusplus":
+            ai_suggestions = await generate_ai_suggestions(
+                skin_result.issues,
+                skin_result.skin_type_name,
+                constraints,
+            )
+        skin_result.suggestions = ai_suggestions
+
+        if profile:
+            profile.skin_analysis = asdict(skin_result)
+            await db.flush()
+
+        source_text = get_source_display(skin_result.source)
+        report = "【肤质分析报告】\n"
+        report += f"分析方式: {source_text}\n"
+        if skin_result.skin_score is None:
+            report += "本次未获得有效肤质结果，请稍后重试。\n"
+        else:
+            report += f"皮肤类型: {skin_result.skin_type_name}\n"
+            report += f"肤质评分: {skin_result.skin_score:.0f}/100\n"
+
+        if skin_result.skin_score is None:
+            pass
+        elif skin_result.issues:
+            report += f"存在问题: {', '.join(skin_result.issues)}\n"
+            report += "\n【护理建议】\n"
+            for i, suggestion in enumerate(ai_suggestions[:3], 1):
+                report += f"{i}. {suggestion}\n"
+        else:
+            report += "皮肤状态良好，继续保持！\n"
+
+        db.add(Conversation(user_id=user.id, role=RoleEnum.system, content=report))
         await db.flush()
-    
-    # 生成分析报告消息
-    source_text = get_source_display(skin_result.source)
-    
-    report = "【肤质分析报告】\n"
-    report += f"分析方式: {source_text}\n"
-    if skin_result.skin_score is None:
-        report += "本次未获得有效肤质结果，请稍后重试。\n"
-    else:
-        report += f"皮肤类型: {skin_result.skin_type_name}\n"
-        report += f"肤质评分: {skin_result.skin_score:.0f}/100\n"
-    
-    if skin_result.skin_score is None:
-        pass
-    elif skin_result.issues:
-        report += f"存在问题: {', '.join(skin_result.issues)}\n"
-        report += "\n【护理建议】\n"
-        for i, suggestion in enumerate(ai_suggestions[:3], 1):
-            report += f"{i}. {suggestion}\n"
-    else:
-        report += "皮肤状态良好，继续保持！\n"
-    
-    # 保存到对话记录
-    db.add(Conversation(user_id=user.id, role=RoleEnum.system, content=report))
-    await db.flush()
-    
-    return {
-        "source": skin_result.source,
-        "source_display": source_text,
-        "skin_type": skin_result.skin_type_name,
-        "skin_score": skin_result.skin_score,
-        "issues": skin_result.issues,
-        "suggestions": ai_suggestions,
-        "report": report,
-        "photo_url": saved.url,
-        "photo_quality": saved.quality,
-        "cached": skin_result.cached,
-        "error": skin_result.error,
-    }
+        return {
+            "source": skin_result.source,
+            "source_display": source_text,
+            "skin_type": skin_result.skin_type_name,
+            "skin_score": skin_result.skin_score,
+            "issues": skin_result.issues,
+            "suggestions": ai_suggestions,
+            "report": report,
+            "photo_url": None,
+            "photo_retained": False,
+            "photo_quality": saved.quality,
+            "cached": skin_result.cached,
+            "error": skin_result.error,
+        }
+    finally:
+        await delete_saved_image(saved.path)
 
 
 @router.post("/me/evaluate")

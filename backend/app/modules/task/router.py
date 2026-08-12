@@ -14,7 +14,10 @@ from app.services.cache_service import get_cached_tasks, set_cached_tasks, inval
 from app.core.time import local_today
 from app.services.task_state_service import apply_task_schedule, maintain_task_states
 from app.services.task_event_service import record_task_event
-from app.services.goal_progress_service import record_goal_task_completion
+from app.services.goal_progress_service import (
+    record_goal_task_completion,
+    revert_goal_task_completion,
+)
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
@@ -188,6 +191,51 @@ async def save_task_feedback(
         metadata={"feedback": body.feedback},
     )
     return {"message": "反馈已记录", "feedback": body.feedback}
+
+
+@router.post("/{task_id}/reopen")
+async def reopen_completed_task(
+    task_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    result = await db.execute(
+        select(Task)
+        .where(and_(Task.id == task_id, Task.user_id == user.id))
+        .with_for_update()
+    )
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(404, "Task not found")
+    if task.status != TaskStatusEnum.completed:
+        raise HTTPException(409, "Only completed tasks can be reopened")
+    if task.scheduled_date != local_today():
+        raise HTTPException(409, "Only today's completion can be corrected")
+
+    previous_status = task.status
+    task.status = TaskStatusEnum.pending
+    task.completed_at = None
+    goal_progress = await revert_goal_task_completion(db, task)
+    from app.services.score_service import rebuild_behavior_counters
+
+    behavior = await rebuild_behavior_counters(db, user.id, task.dimension)
+    await record_task_event(
+        db,
+        task,
+        "completion_reverted",
+        actor="user",
+        source="api",
+        reason="用户撤销了误标的完成记录",
+        from_status=previous_status,
+        to_status=task.status,
+    )
+    await invalidate_tasks(str(user.id))
+    await invalidate_scores(str(user.id))
+    return {
+        "message": "完成记录已撤销，任务恢复为待完成",
+        "goal_progress": goal_progress,
+        "behavior": behavior,
+    }
 
 
 @router.post("/{task_id}/defer")

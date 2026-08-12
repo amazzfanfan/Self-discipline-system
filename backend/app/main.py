@@ -6,14 +6,14 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
-from slowapi.util import get_remote_address
 from sqlalchemy import text
 
 from app.core.config import get_settings
 from app.core.database import async_session
+from app.core.rate_limit import limiter
 from app.modules.auth.router import router as auth_router
 from app.modules.behavior.router import router as behavior_router
 from app.modules.chat.router import router as chat_router
@@ -42,7 +42,6 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title=settings.APP_NAME, version="9.0.0", lifespan=lifespan)
 
-limiter = Limiter(key_func=get_remote_address, default_limits=["120/minute"])
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)

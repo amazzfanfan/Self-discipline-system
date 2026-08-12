@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
+import { hasBackgroundPushSubscription, isWithinQuietHours } from '../services/pushNotifications';
 import type { NotificationInboxResponse, UserNotification, UserProfile } from '../types';
 import { useNotification } from './notification-context';
 
@@ -37,10 +38,17 @@ export default function NotificationInbox() {
       return;
     }
     const incoming = data.items.filter((item) => !item.read_at && !knownIds.current?.has(item.id));
+    const quiet = isWithinQuietHours(
+      profile?.notification_quiet_start,
+      profile?.notification_quiet_end,
+    );
     for (const item of incoming) {
-      addNotification({ type: 'info', title: item.title, message: item.message, duration: 8000 });
+      if (!quiet) addNotification({ type: 'info', title: item.title, message: item.message, duration: 8000 });
       if (
+        !quiet
+        &&
         profile?.notification_settings?.browser_notifications
+        && !hasBackgroundPushSubscription()
         && 'Notification' in window
         && window.Notification.permission === 'granted'
       ) {
@@ -56,7 +64,14 @@ export default function NotificationInbox() {
       }
     }
     for (const item of data.items) knownIds.current.add(item.id);
-  }, [addNotification, data, profile?.notification_settings?.browser_notifications, queryClient]);
+  }, [
+    addNotification,
+    data,
+    profile?.notification_quiet_end,
+    profile?.notification_quiet_start,
+    profile?.notification_settings?.browser_notifications,
+    queryClient,
+  ]);
 
   const markRead = async (item: UserNotification) => {
     if (!item.read_at) await api.post(`/notifications/${item.id}/read`);

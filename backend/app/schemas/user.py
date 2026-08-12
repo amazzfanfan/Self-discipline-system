@@ -1,3 +1,4 @@
+from datetime import time
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -17,12 +18,23 @@ class ProfileUpdate(BaseModel):
     weight_kg: float | None = None
     age: int | None = None
     gender: str | None = None
+    skincare_constraints: "SkincareConstraints | None" = None
+
+
+class SkincareConstraints(BaseModel):
+    sensitive_skin: bool = False
+    pregnancy_or_breastfeeding: bool = False
+    skin_barrier_damaged: bool = False
+    prescription_treatment: bool = False
+    allergies: list[str] = Field(default_factory=list, max_length=20)
 
 
 class PreferenceUpdate(BaseModel):
     daily_task_budget: int | None = Field(default=None, ge=1, le=4)
     memory_enabled: bool | None = None
     notification_settings: dict[str, bool] | None = None
+    notification_quiet_start: time | None = None
+    notification_quiet_end: time | None = None
 
 
 class DeleteAccountRequest(BaseModel):
@@ -42,9 +54,12 @@ class ProfileResponse(BaseModel):
     side_photo_url: str | None
     questionnaire: dict[str, str] | None
     skin_analysis: dict | None  # face++ 肤质分析结果
+    skincare_constraints: dict
     daily_task_budget: int
     memory_enabled: int
     notification_settings: dict
+    notification_quiet_start: time | None
+    notification_quiet_end: time | None
 
 class EvaluateRequest(BaseModel):
     height_cm: float = Field(ge=100, le=250)

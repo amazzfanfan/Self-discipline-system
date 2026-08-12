@@ -9,10 +9,14 @@ playwright-report/
 __pycache__/
 *.pyc
 .pytest_cache/
+.coverage
+coverage.xml
 venv/
 .venv/
 *.egg-info/
 uploads/
 logs/
+backend/private_key.pem
+backend/public_key.pem
 .claude/
 .gstack/

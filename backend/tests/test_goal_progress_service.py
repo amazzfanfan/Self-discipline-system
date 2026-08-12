@@ -48,3 +48,41 @@ def test_flexible_goal_has_no_synthetic_schedule():
         date(2026, 8, 10),
         date(2026, 8, 16),
     ) == 0
+
+
+def test_paused_days_are_removed_from_expected_occurrences():
+    goal = _goal(created_at=datetime(2026, 8, 10, tzinfo=timezone.utc))
+    events = [
+        SimpleNamespace(
+            created_at=datetime(2026, 8, 11, 8, tzinfo=timezone.utc),
+            new_state={"status": "paused"},
+        ),
+        SimpleNamespace(
+            created_at=datetime(2026, 8, 13, 8, tzinfo=timezone.utc),
+            new_state={"status": "active"},
+        ),
+    ]
+
+    assert expected_goal_occurrences(
+        goal,
+        date(2026, 8, 10),
+        date(2026, 8, 14),
+        events,
+    ) == 3
+
+
+def test_completion_day_still_counts_as_an_expected_occurrence():
+    goal = _goal(created_at=datetime(2026, 8, 10, tzinfo=timezone.utc))
+    events = [
+        SimpleNamespace(
+            created_at=datetime(2026, 8, 12, 8, tzinfo=timezone.utc),
+            new_state={"status": "completed"},
+        )
+    ]
+
+    assert expected_goal_occurrences(
+        goal,
+        date(2026, 8, 10),
+        date(2026, 8, 14),
+        events,
+    ) == 3

@@ -17,6 +17,12 @@ from app.services.cache_service import enqueue_background_job
 from app.core.config import get_settings
 from app.services.goal_schedule_service import parse_goal_schedule
 from app.services.goal_progress_service import record_manual_goal_progress
+from app.services.goal_lifecycle_service import (
+    complete_goal_if_target_reached,
+    detect_goal_change_type,
+    goal_lifecycle_snapshot,
+    record_goal_lifecycle_event,
+)
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -102,6 +108,14 @@ class GoalService:
             )
 
             db.add(goal)
+            await db.flush()
+            record_goal_lifecycle_event(
+                db,
+                goal,
+                event_type="created",
+                previous_state={},
+                source=source,
+            )
             await db.commit()
 
             await enqueue_background_job(
@@ -154,6 +168,8 @@ class GoalService:
                 logger.warning(f"Goal {goal_id} not found for user {user_id}")
                 return None
 
+            previous_state = goal_lifecycle_snapshot(goal)
+
             if updates.get("content") and updates["content"] != goal.content:
                 parsed_schedule = parse_goal_schedule(updates["content"])
                 for key, value in parsed_schedule.items():
@@ -184,6 +200,7 @@ class GoalService:
                         content_changed = True
                     setattr(goal, key, value)
 
+            auto_completed = False
             if "current_value" in updates:
                 await record_manual_goal_progress(
                     db,
@@ -191,6 +208,11 @@ class GoalService:
                     previous_value=previous_current_value,
                     current_value=goal.current_value,
                 )
+            if {"current_value", "target_value"} & set(updates):
+                auto_completed = complete_goal_if_target_reached(
+                    db, goal, source="manual_progress"
+                )
+                planning_changed = planning_changed or auto_completed
 
             # 内容变化时先完成业务写入，向量在本地 Redis worker 中异步更新，
             # 避免一次远程 embedding 调用阻塞用户对话。
@@ -199,6 +221,17 @@ class GoalService:
                 goal.embedding_model = None
 
             goal.updated_at = datetime.now(timezone.utc)
+            current_state = goal_lifecycle_snapshot(goal)
+            change_type = detect_goal_change_type(previous_state, current_state)
+            if change_type and not auto_completed:
+                record_goal_lifecycle_event(
+                    db,
+                    goal,
+                    event_type=change_type,
+                    previous_state=previous_state,
+                    new_state=current_state,
+                    source="goal_update",
+                )
             await db.commit()
 
             if planning_changed:

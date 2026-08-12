@@ -1,16 +1,45 @@
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.config import get_settings
 from app.core.deps import get_current_user
-from app.models.notification import UserNotification
+from app.models.notification import PushSubscription, UserNotification
 from app.models.user import User
+from app.services.web_push_service import web_push_public_config
 
 
 router = APIRouter(prefix="/api/notifications", tags=["notifications"])
+settings = get_settings()
+
+
+class PushKeys(BaseModel):
+    p256dh: str = Field(min_length=20, max_length=255)
+    auth: str = Field(min_length=8, max_length=255)
+
+
+class PushSubscriptionBody(BaseModel):
+    endpoint: str = Field(min_length=20, max_length=4096)
+    keys: PushKeys
+
+
+class PushUnsubscribeBody(BaseModel):
+    endpoint: str = Field(min_length=20, max_length=4096)
+
+
+def _validate_push_endpoint(endpoint: str) -> None:
+    parsed = urlparse(endpoint)
+    hostname = (parsed.hostname or "").lower()
+    allowed = [item.lower().lstrip(".") for item in settings.WEB_PUSH_ALLOWED_HOST_SUFFIXES]
+    if parsed.scheme != "https" or not hostname or not any(
+        hostname == suffix or hostname.endswith(f".{suffix}") for suffix in allowed
+    ):
+        raise HTTPException(422, "Unsupported Web Push endpoint")
 
 
 def _payload(item: UserNotification) -> dict:
@@ -66,6 +95,58 @@ async def read_all_notifications(
     return {"updated": len(items)}
 
 
+@router.get("/push/config")
+async def get_push_config(user: User = Depends(get_current_user)):
+    del user
+    return web_push_public_config()
+
+
+@router.post("/push/subscriptions")
+async def subscribe_push(
+    body: PushSubscriptionBody,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    if not web_push_public_config()["enabled"]:
+        raise HTTPException(503, "Web Push is not configured on the server")
+    _validate_push_endpoint(body.endpoint)
+    subscription = await db.scalar(
+        select(PushSubscription).where(PushSubscription.endpoint == body.endpoint)
+    )
+    if subscription is None:
+        subscription = PushSubscription(endpoint=body.endpoint, user_id=user.id)
+        db.add(subscription)
+    elif subscription.user_id != user.id:
+        raise HTTPException(409, "Push subscription belongs to another account")
+    subscription.user_id = user.id
+    subscription.p256dh = body.keys.p256dh
+    subscription.auth = body.keys.auth
+    subscription.user_agent = (request.headers.get("user-agent") or "")[:300] or None
+    subscription.failure_count = 0
+    subscription.last_error = None
+    await db.flush()
+    return {"subscribed": True, "id": str(subscription.id)}
+
+
+@router.delete("/push/subscriptions")
+async def unsubscribe_push(
+    body: PushUnsubscribeBody,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    subscription = await db.scalar(
+        select(PushSubscription).where(
+            PushSubscription.endpoint == body.endpoint,
+            PushSubscription.user_id == user.id,
+        )
+    )
+    if subscription is None:
+        return {"removed": False}
+    await db.delete(subscription)
+    return {"removed": True}
+
+
 @router.post("/{notification_id}/read")
 async def read_notification(
     notification_id: str,
@@ -84,4 +165,3 @@ async def read_notification(
     if item.read_at is None:
         item.read_at = datetime.now(timezone.utc)
     return _payload(item)
-

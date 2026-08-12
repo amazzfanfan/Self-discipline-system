@@ -8,12 +8,17 @@ from pydantic import BaseModel, Field
 from datetime import date, time, timedelta
 from typing import Literal, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.models.user import User
+from app.models.behavior import DailyCheckIn
+from app.models.task import Task
 from app.services.goal_service import goal_service
 from app.core.time import local_today
+from app.services.adaptive_task_service import choose_task_budget
+from app.services.goal_schedule_service import goal_is_due
 from app.services.goal_progress_service import (
     build_goal_progress_summaries,
     get_goal_progress_timeline,
@@ -188,6 +193,62 @@ async def goal_progress_summary(
         period_end=end,
         as_of=min(today, end),
     )
+
+
+@router.get("/planning-status")
+async def goal_planning_status(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    """Explain which due goals entered today's finite task budget."""
+    today = local_today()
+    active_goals = await goal_service.get_user_goals(
+        db=db,
+        user_id=str(user.id),
+        status="active",
+    )
+    due_goals = [goal for goal in active_goals if goal_is_due(goal, today)]
+    linked_goal_ids = {
+        str(value)
+        for value in (
+            await db.execute(
+                select(Task.goal_id).where(
+                    Task.user_id == user.id,
+                    Task.scheduled_date == today,
+                    Task.goal_id.isnot(None),
+                )
+            )
+        ).scalars().all()
+        if value
+    }
+    checkin = await db.scalar(
+        select(DailyCheckIn).where(
+            DailyCheckIn.user_id == user.id,
+            DailyCheckIn.checkin_date == today,
+        )
+    )
+    configured_budget = int(user.profile.daily_task_budget if user.profile else 3)
+    effective_budget = choose_task_budget(configured_budget, checkin)
+    queued = [
+        {
+            "id": goal["id"],
+            "content": goal["content"],
+            "goal_type": goal["goal_type"],
+            "reason": "今日任务容量不足，将按最近执行时间公平轮换",
+        }
+        for goal in due_goals
+        if goal["id"] not in linked_goal_ids
+    ]
+    return {
+        "date": today.isoformat(),
+        "configured_budget": configured_budget,
+        "effective_budget": effective_budget,
+        "due_goal_count": len(due_goals),
+        "scheduled_goal_count": sum(goal["id"] in linked_goal_ids for goal in due_goals),
+        "queued_goal_count": len(queued),
+        "over_capacity": bool(queued),
+        "queued_goals": queued,
+    }
 
 
 @router.get("/{goal_id}/progress")

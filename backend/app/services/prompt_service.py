@@ -120,22 +120,27 @@ AI 的回复、分析、推荐一律不记住。问题和请求一律不记住�
     # 肤质护理建议提示词（从 faceplus_service.py 迁移）
     SKIN_SUGGESTION_PROMPT = (
         "用户肤质分析结果：皮肤类型为{skin_type_name}，检测到以下问题：{issues_str}。\n\n"
-        "请针对每个问题给出具体、可操作的护理建议，返回JSON格式：\n"
-        '{{"suggestions": ["建议1", "建议2", "建议3"]}}\n\n'
+        "用户安全限制：{constraints_text}。\n\n"
+        "请针对问题给出具体、可操作的日常护理建议，返回JSON格式：\n"
+        '{{"suggestions": [{{"text": "建议1", "risk_level": "low", "cautions": ["注意事项"]}}]}}\n\n'
         "要求：\n"
         "1. 每条建议要具体，包含具体的产品类型或操作方法\n"
         "2. 建议要结合用户的皮肤类型\n"
-        "3. 最多返回3条最重要的建议\n"
-        "4. 只返回JSON，不要其他内容"
+        "3. 最多返回3条最重要的建议，risk_level 只能是 low 或 moderate\n"
+        "4. 不得进行医疗诊断、承诺治疗效果或推荐处方药、口服药、注射和针刺\n"
+        "5. 必须遵守用户安全限制；无法安全建议时返回空数组\n"
+        "6. 只返回JSON，不要其他内容"
     )
 
     # 肤质任务提示词（从 faceplus_service.py 迁移）
     SKIN_TASK_PROMPT = (
         "用户肤质问题：{issues_str}，皮肤类型：{skin_type_name}。\n\n"
+        "用户安全限制：{constraints_text}。\n\n"
         "请生成1个今日护肤任务，要求：\n"
         "1. 具体可执行，有明确的完成标准\n"
         "2. 针对用户的具体问题\n"
-        "3. 20字以内\n\n"
+        "3. 20字以内\n"
+        "4. 遵守安全限制，不进行医疗诊断或推荐处方、口服、注射、针刺\n\n"
         '返回JSON格式：{{"task": "任务描述"}}'
     )
 
@@ -196,7 +201,12 @@ AI 的回复、分析、推荐一律不记住。问题和请求一律不记住�
         """
         return self.JUDGE_PROMPT.format(text=content)
 
-    def build_skin_suggestion_prompt(self, skin_type_name: str, issues_str: str) -> str:
+    def build_skin_suggestion_prompt(
+        self,
+        skin_type_name: str,
+        issues_str: str,
+        constraints_text: str = "未提供特殊限制",
+    ) -> str:
         """
         构建肤质护理建议提示词
         
@@ -208,10 +218,17 @@ AI 的回复、分析、推荐一律不记住。问题和请求一律不记住�
             肤质护理建议提示词
         """
         return self.SKIN_SUGGESTION_PROMPT.format(
-            skin_type_name=skin_type_name, issues_str=issues_str
+            skin_type_name=skin_type_name,
+            issues_str=issues_str,
+            constraints_text=constraints_text,
         )
 
-    def build_skin_task_prompt(self, issues_str: str, skin_type_name: str) -> str:
+    def build_skin_task_prompt(
+        self,
+        issues_str: str,
+        skin_type_name: str,
+        constraints_text: str = "未提供特殊限制",
+    ) -> str:
         """
         构建肤质任务提示词
         
@@ -223,7 +240,9 @@ AI 的回复、分析、推荐一律不记住。问题和请求一律不记住�
             肤质任务提示词
         """
         return self.SKIN_TASK_PROMPT.format(
-            issues_str=issues_str, skin_type_name=skin_type_name
+            issues_str=issues_str,
+            skin_type_name=skin_type_name,
+            constraints_text=constraints_text,
         )
     
     def build_task_prompt(

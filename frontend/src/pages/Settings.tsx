@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
+import { disableWebPush, enableWebPush } from '../services/pushNotifications';
 import ConfirmDialog from '../components/ConfirmDialog';
 import { useNotification } from '../components/notification-context';
 import { useAuthStore } from '../stores/authStore';
@@ -58,6 +59,26 @@ export default function Settings() {
       if (permission !== 'granted') {
         addNotification({ type: 'warning', title: '未获得通知权限', message: '请在浏览器地址栏的网站权限中允许通知。' });
         return;
+      }
+      try {
+        const result = await enableWebPush();
+        if (!result.background) {
+          addNotification({
+            type: 'warning',
+            title: '后台推送尚未配置',
+            message: '已开启页面内系统通知；服务端配置 VAPID 后，关闭页面也能收到提醒。',
+          });
+        }
+      } catch {
+        addNotification({ type: 'error', title: '订阅失败', message: '系统通知订阅没有保存，请稍后重试。' });
+        return;
+      }
+    }
+    if (key === 'browser_notifications' && !nextEnabled) {
+      try {
+        await disableWebPush();
+      } catch {
+        addNotification({ type: 'warning', title: '订阅清理失败', message: '偏好仍会关闭；浏览器端订阅将在下次设置时重新同步。' });
       }
     }
     await savePreferences({
@@ -150,7 +171,7 @@ export default function Settings() {
             ['task_reminders', '稍后任务到点提醒', '任务恢复为待完成时生成站内提醒'],
             ['daily_tasks', '每日任务提醒', '每天 08:00 汇总当天待办'],
             ['weekly_review', '每周复盘提醒', '每周一 09:00 提醒查看复盘'],
-            ['browser_notifications', '浏览器系统通知', '页面打开时同步显示系统级通知'],
+            ['browser_notifications', '浏览器系统通知', '配置 Web Push 后，页面关闭时也能收到任务提醒'],
           ].map(([key, label, description]) => (
             <div key={key} className="flex items-center justify-between border-b border-white/5 py-3 last:border-0">
               <span>
@@ -160,6 +181,27 @@ export default function Settings() {
               <Toggle enabled={notificationEnabled(key)} onClick={() => void toggleNotification(key)} />
             </div>
           ))}
+          <div className="mt-4 rounded-xl border border-white/5 bg-slate-950/45 p-4">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-sm text-slate-400">免打扰时段</p>
+                <p className="mt-1 text-[10px] leading-4 text-slate-600">时段内保留站内消息，但不弹出浏览器通知；结束后再投递后台推送。</p>
+              </div>
+              {(profile?.notification_quiet_start || profile?.notification_quiet_end) && (
+                <button type="button" onClick={() => void savePreferences({ notification_quiet_start: null, notification_quiet_end: null })}
+                  className="text-[10px] text-slate-500 transition hover:text-slate-300">清除</button>
+              )}
+            </div>
+            <div className="mt-3 grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+              <input type="time" aria-label="免打扰开始时间" value={(profile?.notification_quiet_start || '').slice(0, 5)}
+                onChange={(event) => void savePreferences({ notification_quiet_start: event.target.value || null })}
+                className="rounded-lg border border-white/5 bg-slate-900 px-3 py-2 text-xs text-slate-300 outline-none focus:border-cyan-400/25" />
+              <span className="text-xs text-slate-700">至</span>
+              <input type="time" aria-label="免打扰结束时间" value={(profile?.notification_quiet_end || '').slice(0, 5)}
+                onChange={(event) => void savePreferences({ notification_quiet_end: event.target.value || null })}
+                className="rounded-lg border border-white/5 bg-slate-900 px-3 py-2 text-xs text-slate-300 outline-none focus:border-cyan-400/25" />
+            </div>
+          </div>
         </motion.section>
 
         <motion.section initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.12 }}

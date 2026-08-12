@@ -166,6 +166,8 @@ export default function Tasks() {
 
   const completeTask = (task: Task) => runTaskAction(task.id, () => api.post(`/tasks/${task.id}/complete`), '完成记录和连续打卡已同步。');
 
+  const reopenTask = (task: Task) => runTaskAction(task.id, () => api.post(`/tasks/${task.id}/reopen`), '完成记录已撤销，任务和目标进度已恢复。');
+
   const feedbackTask = (taskId: string, feedback: 'too_easy' | 'just_right' | 'too_hard' | 'not_suitable') => runTaskAction(
     taskId,
     () => api.post(`/tasks/${taskId}/feedback`, { feedback }),
@@ -260,6 +262,12 @@ export default function Tasks() {
                     <button type="button" disabled={busyId === task.id} onClick={() => void resumeTask(task)}
                       className="rounded-lg border border-emerald-400/20 bg-emerald-400/5 px-3 py-1.5 text-[11px] text-emerald-300 transition hover:bg-emerald-400/10 disabled:opacity-50">
                       现在继续做
+                    </button>
+                  )}
+                  {task.status === 'completed' && task.scheduled_date === localDateKey(now) && (
+                    <button type="button" disabled={busyId === task.id} onClick={() => void reopenTask(task)}
+                      className="rounded-lg border border-amber-400/15 bg-amber-400/5 px-3 py-1.5 text-[11px] text-amber-300 transition hover:bg-amber-400/10 disabled:opacity-50">
+                      撤销完成
                     </button>
                   )}
                   <span className="ml-auto text-[10px] text-slate-600">难度反馈</span>

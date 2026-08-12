@@ -71,7 +71,7 @@ async def _exercise_api_contracts(monkeypatch):
                 goal_type="exercise",
                 recurrence="daily",
                 target_metric="sessions",
-                target_value=7,
+                target_value=1,
                 current_value=0,
                 progress_mode="sessions",
                 completed_sessions=0,
@@ -147,6 +147,7 @@ async def _exercise_api_contracts(monkeypatch):
                 await session.refresh(tracking_goal)
                 assert tracking_goal.completed_sessions == 1
                 assert tracking_goal.current_value == 1
+                assert tracking_goal.status == "completed"
                 progress_events = (
                     await session.execute(
                         select(GoalProgressEvent).where(
@@ -182,6 +183,21 @@ async def _exercise_api_contracts(monkeypatch):
                 )
                 assert goal_timeline_response.status_code == 200
                 assert goal_timeline_response.json()[0]["metadata"]["task_title"] == task.title
+
+                reopen_response = await client.post(f"/api/tasks/{task.id}/reopen")
+                assert reopen_response.status_code == 200
+                await session.refresh(task)
+                await session.refresh(tracking_goal)
+                assert task.status == TaskStatusEnum.pending
+                assert tracking_goal.completed_sessions == 0
+                assert tracking_goal.current_value == 0
+                assert tracking_goal.status == "active"
+                recomplete_response = await client.post(f"/api/tasks/{task.id}/complete")
+                assert recomplete_response.status_code == 200
+                await session.refresh(tracking_goal)
+                assert tracking_goal.completed_sessions == 1
+                assert tracking_goal.current_value == 1
+                assert tracking_goal.status == "completed"
 
                 metrics_response = await client.get("/api/behavior/metrics")
                 assert metrics_response.status_code == 200

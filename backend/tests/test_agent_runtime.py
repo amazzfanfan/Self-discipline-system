@@ -34,7 +34,7 @@ def test_fallback_planner_marks_explicit_completed_task():
     decision = runtime._fallback_decision("今天的跑步任务已经完成了", [])
 
     assert decision.tool == "complete_task"
-    assert decision.arguments == {"dimension": "exercise"}
+    assert decision.arguments == {"dimension": "exercise", "task_keyword": "跑步"}
 
 
 def test_future_completion_intent_does_not_mark_task_complete():
@@ -122,6 +122,16 @@ def test_skip_request_routes_to_guarded_tool_before_confirmation():
 
     assert decision.tool == "skip_task"
     assert decision.arguments == {"dimension": "sleep"}
+
+
+def test_fallback_planner_keeps_specific_task_keyword_for_same_dimension_tasks():
+    runtime = make_runtime()
+
+    complete = runtime._fallback_decision("我已经完成爬坡任务了", [])
+    skip = runtime._fallback_decision("跳过今天的睡眠冥想任务", [])
+
+    assert complete.arguments["task_keyword"] == "爬坡"
+    assert skip.arguments["task_keyword"] == "冥想"
 
 
 def test_today_task_query_is_routed_without_planner_model():

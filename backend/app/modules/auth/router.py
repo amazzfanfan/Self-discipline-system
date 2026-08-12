@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.database import get_db
+from app.core.rate_limit import limiter
 from app.core.security import (
     create_access_token,
     create_refresh_token,
@@ -65,7 +66,12 @@ async def _issue_session(response: Response, user_id: str) -> TokenResponse:
 
 
 @router.post("/register", status_code=201)
-async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db, scope="function")):
+@limiter.limit("3/minute")
+async def register(
+    request: Request,
+    req: RegisterRequest,
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
     email = str(req.email).strip().lower()
     existing = await db.execute(select(User).where(User.email == email))
     if existing.scalar_one_or_none():
@@ -84,7 +90,9 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db, scop
 
 
 @router.post("/login", response_model=TokenResponse)
+@limiter.limit("10/minute")
 async def login(
+    request: Request,
     req: LoginRequest,
     response: Response,
     db: AsyncSession = Depends(get_db, scope="function"),
@@ -101,6 +109,7 @@ async def login(
 
 
 @router.post("/refresh", response_model=TokenResponse)
+@limiter.limit("30/minute")
 async def refresh(request: Request, response: Response):
     token = request.cookies.get(settings.AUTH_COOKIE_NAME)
     payload = decode_token(token) if token else None

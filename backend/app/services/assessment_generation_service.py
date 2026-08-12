@@ -59,6 +59,7 @@ async def process_assessment_generation(assessment_run_id: str, user_id: str) ->
                 suggestions = await generate_ai_suggestions(
                     list(skin_analysis.get("issues") or []),
                     str(skin_analysis.get("skin_type_name") or "未知"),
+                    profile.skincare_constraints if profile else None,
                 )
                 suggestions = suggestions[:3]
                 profile.skin_analysis = {**skin_analysis, "suggestions": suggestions}

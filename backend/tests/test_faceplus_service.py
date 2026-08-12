@@ -66,3 +66,57 @@ def test_skin_suggestions_do_not_fall_back_to_default(monkeypatch):
         asyncio.run(
             faceplus_service.generate_ai_suggestions(["眼袋"], "中性")
         )
+
+
+def test_skin_suggestions_reject_pregnancy_retinoids(monkeypatch):
+    monkeypatch.setattr(
+        faceplus_service,
+        "chat_completion_with_fallback",
+        AsyncMock(
+            return_value='{"suggestions": [{"text": "晚间使用视黄醇精华", "cautions": []}]}'
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="pregnancy_retinoid"):
+        asyncio.run(
+            faceplus_service.generate_ai_suggestions(
+                ["细纹"],
+                "中性",
+                {"pregnancy_or_breastfeeding": True},
+            )
+        )
+
+
+def test_skin_suggestions_reject_known_allergen(monkeypatch):
+    monkeypatch.setattr(
+        faceplus_service,
+        "chat_completion_with_fallback",
+        AsyncMock(return_value='{"suggestions": ["使用烟酰胺精华改善暗沉"]}'),
+    )
+
+    with pytest.raises(RuntimeError, match="known_allergen"):
+        asyncio.run(
+            faceplus_service.generate_ai_suggestions(
+                ["暗沉"],
+                "中性",
+                {"allergies": ["烟酰胺"]},
+            )
+        )
+
+
+def test_sensitive_skin_suggestion_adds_patch_test(monkeypatch):
+    monkeypatch.setattr(
+        faceplus_service,
+        "chat_completion_with_fallback",
+        AsyncMock(return_value='{"suggestions": [{"text": "早间使用温和维C精华", "cautions": []}]}'),
+    )
+
+    result = asyncio.run(
+        faceplus_service.generate_ai_suggestions(
+            ["暗沉"],
+            "中性",
+            {"sensitive_skin": True},
+        )
+    )
+
+    assert "局部试用" in result[0]

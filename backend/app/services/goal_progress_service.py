@@ -6,8 +6,13 @@ from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import select
 
 from app.core.time import app_timezone, local_today
-from app.models.goal import Goal, GoalProgressEvent
+from app.models.goal import Goal, GoalLifecycleEvent, GoalProgressEvent
 from app.models.task import Task
+from app.services.goal_lifecycle_service import (
+    complete_goal_if_target_reached,
+    goal_lifecycle_snapshot,
+    record_goal_lifecycle_event,
+)
 
 
 def _date_value(value) -> date | None:
@@ -20,7 +25,33 @@ def _date_value(value) -> date | None:
     return date.fromisoformat(str(value)[:10])
 
 
-def expected_goal_occurrences(goal, start: date, end: date) -> int:
+def _active_on_date(goal, target: date, lifecycle_events: list | None = None) -> bool:
+    status = "active"
+    events = sorted(
+        lifecycle_events or [],
+        key=lambda item: getattr(item, "created_at", datetime.min.replace(tzinfo=timezone.utc)),
+    )
+    for event in events:
+        event_date = _date_value(event.created_at)
+        new_status = (event.new_state or {}).get("status", status)
+        if event_date and (
+            event_date < target
+            or (event_date == target and new_status in {"active", "paused"})
+        ):
+            status = new_status
+    if not events and getattr(goal, "status", "active") == "paused":
+        paused_from = _date_value(getattr(goal, "updated_at", None))
+        if paused_from and target >= paused_from:
+            status = "paused"
+    return status == "active"
+
+
+def expected_goal_occurrences(
+    goal,
+    start: date,
+    end: date,
+    lifecycle_events: list | None = None,
+) -> int:
     """Count scheduled occurrences, bounded by goal lifetime."""
     if end < start:
         return 0
@@ -37,12 +68,13 @@ def expected_goal_occurrences(goal, start: date, end: date) -> int:
     recurrence = getattr(goal, "recurrence", None) or "flexible"
     if recurrence == "flexible":
         return 0
+    dates = [start + timedelta(days=offset) for offset in range((end - start).days + 1)]
     if recurrence == "daily":
-        return (end - start).days + 1
+        return sum(_active_on_date(goal, item, lifecycle_events) for item in dates)
     days = set(getattr(goal, "days_of_week", None) or [])
     return sum(
-        (start + timedelta(days=offset)).weekday() in days
-        for offset in range((end - start).days + 1)
+        item.weekday() in days and _active_on_date(goal, item, lifecycle_events)
+        for item in dates
     )
 
 
@@ -66,39 +98,56 @@ async def record_goal_task_completion(db, task: Task) -> dict | None:
             GoalProgressEvent.event_type == "task_completed",
         )
     )
+    reverted = None
     if existing:
+        reverted = await db.scalar(
+            select(GoalProgressEvent).where(
+                GoalProgressEvent.goal_id == task.goal_id,
+                GoalProgressEvent.task_id == task.id,
+                GoalProgressEvent.event_type == "task_completion_reverted",
+            )
+        )
+    if existing and not reverted:
         return {
             "goal_id": str(existing.goal_id),
             "delta": existing.delta,
             "current_value": existing.current_value,
             "already_recorded": True,
         }
+    if reverted:
+        await db.delete(reverted)
     previous_value = float(goal.current_value or 0)
     goal.completed_sessions = (goal.completed_sessions or 0) + 1
     if (goal.progress_mode or "sessions") == "sessions":
         goal.current_value = previous_value + 1
     current_value = float(goal.current_value or previous_value)
     goal.last_progress_at = datetime.now(timezone.utc)
-    event = GoalProgressEvent(
+    event = existing if reverted else GoalProgressEvent(
         goal_id=goal.id,
         user_id=goal.user_id,
         task_id=task.id,
         event_type="task_completed",
-        delta=1,
-        previous_value=previous_value,
-        current_value=current_value,
-        event_date=task.scheduled_date,
-        source="task_completion",
-        event_metadata={
-            "task_title": task.title,
-            "dimension": (
-                task.dimension.value
-                if hasattr(task.dimension, "value")
-                else str(task.dimension)
-            ),
-        },
     )
-    db.add(event)
+    event.delta = 1
+    event.previous_value = previous_value
+    event.current_value = current_value
+    event.event_date = task.scheduled_date
+    event.source = "task_completion"
+    event.event_metadata = {
+        "task_title": task.title,
+        "dimension": (
+            task.dimension.value
+            if hasattr(task.dimension, "value")
+            else str(task.dimension)
+        ),
+    }
+    if reverted:
+        event.created_at = datetime.now(timezone.utc)
+    else:
+        db.add(event)
+    auto_completed = complete_goal_if_target_reached(
+        db, goal, source="task_completion"
+    )
     return {
         "goal_id": str(goal.id),
         "delta": 1,
@@ -106,6 +155,75 @@ async def record_goal_task_completion(db, task: Task) -> dict | None:
         "completed_sessions": goal.completed_sessions,
         "target_value": goal.target_value,
         "already_recorded": False,
+        "goal_completed": auto_completed,
+    }
+
+
+async def revert_goal_task_completion(db, task: Task) -> dict | None:
+    if not getattr(task, "goal_id", None):
+        return None
+    goal = await db.scalar(
+        select(Goal)
+        .where(Goal.id == task.goal_id, Goal.user_id == task.user_id)
+        .with_for_update()
+    )
+    if not goal:
+        return None
+    completed = await db.scalar(
+        select(GoalProgressEvent).where(
+            GoalProgressEvent.goal_id == task.goal_id,
+            GoalProgressEvent.task_id == task.id,
+            GoalProgressEvent.event_type == "task_completed",
+        )
+    )
+    if not completed:
+        return None
+    existing_revert = await db.scalar(
+        select(GoalProgressEvent).where(
+            GoalProgressEvent.goal_id == task.goal_id,
+            GoalProgressEvent.task_id == task.id,
+            GoalProgressEvent.event_type == "task_completion_reverted",
+        )
+    )
+    if existing_revert:
+        return {"goal_id": str(goal.id), "already_reverted": True}
+
+    previous_state = goal_lifecycle_snapshot(goal)
+    previous_value = float(goal.current_value or 0)
+    goal.completed_sessions = max(0, (goal.completed_sessions or 0) - 1)
+    if (goal.progress_mode or "sessions") == "sessions":
+        goal.current_value = max(0.0, previous_value - float(completed.delta or 1))
+    goal.last_progress_at = datetime.now(timezone.utc)
+    if goal.status == "completed" and float(goal.current_value or 0) < float(goal.target_value or 0):
+        goal.status = "active"
+        record_goal_lifecycle_event(
+            db,
+            goal,
+            event_type="completion_reverted",
+            previous_state=previous_state,
+            reason="关联任务完成记录已撤销",
+            actor="user",
+            source="task_reopen",
+        )
+    db.add(
+        GoalProgressEvent(
+            goal_id=goal.id,
+            user_id=goal.user_id,
+            task_id=task.id,
+            event_type="task_completion_reverted",
+            delta=-float(completed.delta or 1),
+            previous_value=previous_value,
+            current_value=float(goal.current_value or 0),
+            event_date=local_today(),
+            source="task_reopen",
+            event_metadata={"task_title": task.title},
+        )
+    )
+    return {
+        "goal_id": str(goal.id),
+        "current_value": goal.current_value,
+        "completed_sessions": goal.completed_sessions,
+        "already_reverted": False,
     }
 
 
@@ -161,6 +279,21 @@ async def build_goal_progress_summaries(
             )
         )
     ).scalars().all()
+    lifecycle_events = (
+        await db.execute(
+            select(GoalLifecycleEvent).where(
+                GoalLifecycleEvent.goal_id.in_(goal_ids),
+                GoalLifecycleEvent.created_at <= datetime.combine(
+                    period_end + timedelta(days=1),
+                    datetime.min.time(),
+                    tzinfo=app_timezone(),
+                ),
+            )
+        )
+    ).scalars().all()
+    lifecycle_by_goal: dict = defaultdict(list)
+    for event in lifecycle_events:
+        lifecycle_by_goal[event.goal_id].append(event)
     completed_by_goal: dict = defaultdict(int)
     for event in events:
         completed_by_goal[event.goal_id] += 1
@@ -181,9 +314,12 @@ async def build_goal_progress_summaries(
     effective_as_of = min(as_of or local_today(), period_end)
     summaries = {}
     for goal in goals:
-        scheduled_total = expected_goal_occurrences(goal, period_start, period_end)
+        goal_lifecycle = lifecycle_by_goal[goal.id]
+        scheduled_total = expected_goal_occurrences(
+            goal, period_start, period_end, goal_lifecycle
+        )
         scheduled_to_date = expected_goal_occurrences(
-            goal, period_start, effective_as_of
+            goal, period_start, effective_as_of, goal_lifecycle
         )
         if (goal.recurrence or "flexible") == "flexible":
             dates = planned_dates_by_goal[goal.id]
@@ -220,7 +356,7 @@ async def get_goal_progress_timeline(db, user_id, goal_id, *, limit: int = 30):
     )
     if not goal:
         return None
-    events = (
+    progress_events = (
         await db.execute(
             select(GoalProgressEvent)
             .where(GoalProgressEvent.goal_id == goal.id)
@@ -228,7 +364,15 @@ async def get_goal_progress_timeline(db, user_id, goal_id, *, limit: int = 30):
             .limit(limit)
         )
     ).scalars().all()
-    return [
+    lifecycle_events = (
+        await db.execute(
+            select(GoalLifecycleEvent)
+            .where(GoalLifecycleEvent.goal_id == goal.id)
+            .order_by(GoalLifecycleEvent.created_at.desc())
+            .limit(limit)
+        )
+    ).scalars().all()
+    progress_items = [
         {
             "id": str(event.id),
             "event_type": event.event_type,
@@ -240,5 +384,28 @@ async def get_goal_progress_timeline(db, user_id, goal_id, *, limit: int = 30):
             "metadata": event.event_metadata or {},
             "created_at": event.created_at.isoformat(),
         }
-        for event in events
+        for event in progress_events
     ]
+    lifecycle_items = [
+        {
+            "id": str(event.id),
+            "event_type": event.event_type,
+            "delta": 0,
+            "previous_value": (event.previous_state or {}).get("current_value"),
+            "current_value": (event.new_state or {}).get("current_value"),
+            "event_date": _date_value(event.created_at).isoformat(),
+            "source": event.source,
+            "metadata": {
+                "reason": event.reason,
+                "previous_state": event.previous_state or {},
+                "new_state": event.new_state or {},
+            },
+            "created_at": event.created_at.isoformat(),
+        }
+        for event in lifecycle_events
+    ]
+    return sorted(
+        progress_items + lifecycle_items,
+        key=lambda item: item["created_at"],
+        reverse=True,
+    )[:limit]

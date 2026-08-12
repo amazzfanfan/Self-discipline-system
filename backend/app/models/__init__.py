@@ -4,11 +4,11 @@ from app.models.task import Task, TaskEvent, TaskStatusEnum, DifficultyEnum
 from app.models.conversation import Conversation, RoleEnum
 from app.models.weight import WeightRecord
 from app.models.memory import Memory
-from app.models.goal import Goal, GoalProgressEvent, GoalType, GoalStatus, GoalSource
+from app.models.goal import Goal, GoalLifecycleEvent, GoalProgressEvent, GoalType, GoalStatus, GoalSource
 from app.models.assessment import AssessmentRun
 from app.models.behavior import DailyCheckIn, WeeklyReview
 from app.models.agent_run import AgentRun, AgentStep, PendingAction
-from app.models.notification import UserNotification
+from app.models.notification import PushSubscription, UserNotification
 
 __all__ = [
     "User", "UserProfile", "GenderEnum",
@@ -17,9 +17,9 @@ __all__ = [
     "Conversation", "RoleEnum",
     "WeightRecord",
     "Memory",
-    "Goal", "GoalProgressEvent", "GoalType", "GoalStatus", "GoalSource",
+    "Goal", "GoalLifecycleEvent", "GoalProgressEvent", "GoalType", "GoalStatus", "GoalSource",
     "AssessmentRun",
     "DailyCheckIn", "WeeklyReview",
     "AgentRun", "AgentStep", "PendingAction",
-    "UserNotification",
+    "UserNotification", "PushSubscription",
 ]

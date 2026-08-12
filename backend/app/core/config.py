@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
+from urllib.parse import urlparse
 
 
 class Settings(BaseSettings):
@@ -63,6 +64,19 @@ class Settings(BaseSettings):
     # Privacy and retention
     TRACE_RETENTION_DAYS: int = 30
     PHOTO_RETENTION_DAYS: int = 365
+    TEMP_UPLOAD_RETENTION_HOURS: int = 24
+    NOTIFICATION_RETENTION_DAYS: int = 90
+
+    # Optional Web Push delivery. Station notifications continue to work when unset.
+    WEB_PUSH_VAPID_PUBLIC_KEY: str = ""
+    WEB_PUSH_VAPID_PRIVATE_KEY: str = ""
+    WEB_PUSH_VAPID_EMAIL: str = ""
+    WEB_PUSH_ALLOWED_HOST_SUFFIXES: list[str] = [
+        "googleapis.com",
+        "push.services.mozilla.com",
+        "notify.windows.com",
+        "push.apple.com",
+    ]
 
     @property
     def chat_model(self) -> str:
@@ -73,12 +87,32 @@ class Settings(BaseSettings):
         return self.AI_ANALYSIS_MODEL or self.AI_MODEL
 
     def validate_runtime_security(self) -> None:
-        if self.ENVIRONMENT.lower() == "production" and self.SECRET_KEY in {
+        if self.ENVIRONMENT.lower() != "production":
+            return
+
+        weak_secrets = {
             "change-me-in-production",
             "your-secret-key-change-in-production",
             "local-development-secret-change-me",
-        }:
-            raise RuntimeError("Production requires a unique SECRET_KEY")
+            "zengfan",
+            "123456",
+            "admin",
+            "root",
+        }
+        if len(self.SECRET_KEY) < 32 or self.SECRET_KEY.lower() in weak_secrets:
+            raise RuntimeError("Production requires a random SECRET_KEY of at least 32 characters")
+        if self.DEBUG:
+            raise RuntimeError("Production must run with DEBUG=false")
+        if not self.AUTH_COOKIE_SECURE:
+            raise RuntimeError("Production requires AUTH_COOKIE_SECURE=true")
+        if not self.AI_API_KEY:
+            raise RuntimeError("Production requires AI_API_KEY")
+        if not self.CORS_ORIGINS or "*" in self.CORS_ORIGINS:
+            raise RuntimeError("Production requires an explicit CORS_ORIGINS allowlist")
+        for origin in self.CORS_ORIGINS:
+            parsed = urlparse(origin)
+            if parsed.scheme != "https" or parsed.hostname in {"localhost", "127.0.0.1", "::1"}:
+                raise RuntimeError("Production CORS origins must be non-local HTTPS origins")
 
 
 @lru_cache

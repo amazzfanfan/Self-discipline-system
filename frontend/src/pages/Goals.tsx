@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
 import api from '../services/api';
-import type { Dimension, Goal, GoalProgressEvent, GoalProgressSummary } from '../types';
+import type { Dimension, Goal, GoalPlanningStatus, GoalProgressEvent, GoalProgressSummary } from '../types';
 
 const labels: Record<Dimension, string> = {
   exercise: '运动', diet: '饮食', sleep: '睡眠', appearance: '形象管理',
@@ -84,6 +84,11 @@ export default function Goals() {
     queryFn: () => api.get('/goals/progress/summary').then((response) => response.data),
   });
 
+  const { data: planningStatus } = useQuery<GoalPlanningStatus>({
+    queryKey: ['goal-planning-status'],
+    queryFn: () => api.get('/goals/planning-status').then((response) => response.data),
+  });
+
   const { data: timeline = [], isLoading: timelineLoading } = useQuery<GoalProgressEvent[]>({
     queryKey: ['goal-progress-timeline', timelineGoal?.id],
     queryFn: () => api.get(`/goals/${timelineGoal?.id}/progress`).then((response) => response.data),
@@ -105,6 +110,7 @@ export default function Goals() {
   const refresh = () => Promise.all([
     queryClient.invalidateQueries({ queryKey: ['goals'] }),
     queryClient.invalidateQueries({ queryKey: ['goal-progress-summary'] }),
+    queryClient.invalidateQueries({ queryKey: ['goal-planning-status'] }),
   ]);
 
   const createGoal = async () => {
@@ -140,8 +146,11 @@ export default function Goals() {
     setBusyId(goal.id);
     setNotice(null);
     try {
-      await api.put(`/goals/${goal.id}`, updates);
-      await refresh();
+      const { data: updatedGoal } = await api.put<Goal>(`/goals/${goal.id}`, updates);
+      queryClient.setQueryData<Goal[]>(['goals'], (current = []) => (
+        current.map((item) => item.id === updatedGoal.id ? updatedGoal : item)
+      ));
+      void refresh();
       setNotice({ type: 'success', text: successText });
       return true;
     } catch {
@@ -224,6 +233,22 @@ export default function Goals() {
             {creating ? '收起表单' : '＋ 新建目标'}
           </motion.button>
         </div>
+
+        {planningStatus?.over_capacity && (
+          <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
+            className="mb-5 rounded-2xl border border-amber-400/15 bg-amber-400/[0.055] p-4">
+            <div className="flex items-start gap-3">
+              <span className="mt-0.5 text-amber-300">◷</span>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-amber-100">今日有 {planningStatus.queued_goal_count} 个目标正在排队</p>
+                <p className="mt-1 text-xs leading-5 text-amber-100/55">今日容量为 {planningStatus.effective_budget} 项。系统会优先安排等待更久的目标，不会再让最新目标永久覆盖旧目标。</p>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {planningStatus.queued_goals.map((goal) => <span key={goal.id} className="max-w-full truncate rounded-full bg-slate-950/40 px-2.5 py-1 text-[10px] text-amber-200/70">{goal.content}</span>)}
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        )}
 
         <AnimatePresence>
           {notice && (
@@ -361,7 +386,26 @@ export default function Goals() {
                 <div className="max-h-[55vh] space-y-2 overflow-y-auto p-5">
                   {timelineLoading && <p className="py-8 text-center text-xs text-slate-500">正在加载执行记录…</p>}
                   {!timelineLoading && timeline.length === 0 && <p className="py-8 text-center text-xs text-slate-500">完成关联任务后，记录会出现在这里。</p>}
-                  {timeline.map((event) => <div key={event.id} className="flex gap-3 rounded-xl border border-white/5 bg-slate-950/40 p-3"><span className={`mt-1 h-2 w-2 flex-shrink-0 rounded-full ${event.event_type === 'task_completed' ? 'bg-emerald-400' : 'bg-violet-400'}`} /><div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-3"><span className="text-xs font-medium text-slate-300">{event.event_type === 'task_completed' ? '完成关联任务' : '手动更新进度'}</span><span className="text-[9px] text-slate-600">{event.event_date}</span></div><p className="mt-1 text-[11px] text-slate-500">{event.metadata.task_title || `${event.previous_value ?? 0} → ${event.current_value ?? 0}`}</p></div></div>)}
+                  {timeline.map((event) => {
+                    const labels: Record<string, string> = {
+                      task_completed: '完成关联任务',
+                      task_completion_reverted: '撤销任务完成',
+                      manual_progress: '手动更新进度',
+                      created: '创建目标',
+                      status_changed: '目标状态变更',
+                      schedule_changed: '执行计划变更',
+                      content_changed: '目标内容变更',
+                      goal_updated: '目标设置变更',
+                      target_completed: '达到目标值',
+                      completion_reverted: '目标恢复进行中',
+                    };
+                    const positive = event.event_type === 'task_completed' || event.event_type === 'target_completed';
+                    const reverted = event.event_type === 'task_completion_reverted' || event.event_type === 'completion_reverted';
+                    const detail = event.metadata.task_title
+                      || (typeof event.metadata.reason === 'string' && event.metadata.reason)
+                      || `${event.previous_value ?? 0} → ${event.current_value ?? 0}`;
+                    return <div key={event.id} className="flex gap-3 rounded-xl border border-white/5 bg-slate-950/40 p-3"><span className={`mt-1 h-2 w-2 flex-shrink-0 rounded-full ${positive ? 'bg-emerald-400' : reverted ? 'bg-amber-400' : 'bg-violet-400'}`} /><div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-3"><span className="text-xs font-medium text-slate-300">{labels[event.event_type] || event.event_type}</span><span className="text-[9px] text-slate-600">{event.event_date}</span></div><p className="mt-1 text-[11px] text-slate-500">{detail}</p></div></div>;
+                  })}
                 </div>
               </motion.div>
             </motion.div>

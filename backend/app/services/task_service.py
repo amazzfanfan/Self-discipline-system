@@ -10,7 +10,39 @@ from app.services.task_event_service import record_task_event
 from app.services.goal_progress_service import record_goal_task_completion
 
 
-async def complete_task_by_dimension(db: AsyncSession, user_id: str, dimension: str) -> dict:
+def _resolve_task(tasks: list[Task], task_keyword: str | None, empty_message: str):
+    if not tasks:
+        return None, {"success": False, "message": empty_message}
+    candidates = tasks
+    if task_keyword:
+        keyword = "".join(task_keyword.lower().split())
+        candidates = [
+            task for task in tasks
+            if keyword in "".join(task.title.lower().split())
+        ]
+        if not candidates:
+            return None, {
+                "success": False,
+                "requires_clarification": True,
+                "message": f"没有找到包含“{task_keyword}”的任务，请从候选任务中选择",
+                "candidates": [task.title for task in tasks],
+            }
+    if len(candidates) > 1:
+        return None, {
+            "success": False,
+            "requires_clarification": True,
+            "message": "该维度今天有多项任务，请说明具体任务内容",
+            "candidates": [task.title for task in candidates],
+        }
+    return candidates[0], None
+
+
+async def complete_task_by_dimension(
+    db: AsyncSession,
+    user_id: str,
+    dimension: str,
+    task_keyword: str | None = None,
+) -> dict:
     """Complete today's pending task for a dimension. Returns result dict."""
     dim_enum = DimensionEnum(dimension)
     result = await db.execute(
@@ -27,9 +59,11 @@ async def complete_task_by_dimension(db: AsyncSession, user_id: str, dimension: 
             )
         ).with_for_update()
     )
-    task = result.scalars().first()
-    if not task:
-        return {"success": False, "message": "该维度今日无待完成任务"}
+    task, error = _resolve_task(
+        list(result.scalars().all()), task_keyword, "该维度今日无待完成任务"
+    )
+    if error:
+        return error
 
     previous_status = task.status
     task.status = TaskStatusEnum.completed
@@ -58,7 +92,12 @@ async def complete_task_by_dimension(db: AsyncSession, user_id: str, dimension: 
     }
 
 
-async def skip_task_by_dimension(db: AsyncSession, user_id: str, dimension: str) -> dict:
+async def skip_task_by_dimension(
+    db: AsyncSession,
+    user_id: str,
+    dimension: str,
+    task_keyword: str | None = None,
+) -> dict:
     """Mark today's pending task for a dimension as failed. Returns result dict."""
     dim_enum = DimensionEnum(dimension)
     result = await db.execute(
@@ -75,9 +114,11 @@ async def skip_task_by_dimension(db: AsyncSession, user_id: str, dimension: str)
             )
         ).with_for_update()
     )
-    task = result.scalars().first()
-    if not task:
-        return {"success": False, "message": "该维度今日无待完成任务"}
+    task, error = _resolve_task(
+        list(result.scalars().all()), task_keyword, "该维度今日无待完成任务"
+    )
+    if error:
+        return error
 
     previous_status = task.status
     task.status = TaskStatusEnum.failed
@@ -116,6 +157,7 @@ async def replace_task_by_dimension(
     dimension: str,
     title: str,
     reason: str | None = None,
+    task_keyword: str | None = None,
 ) -> dict:
     """Replace today's unfinished task and return an auditable before/after result."""
     dim_enum = DimensionEnum(dimension)
@@ -133,9 +175,13 @@ async def replace_task_by_dimension(
             )
         ).with_for_update()
     )
-    task = result.scalars().first()
-    if not task:
-        return {"success": False, "message": "该维度今日没有可修改的未完成任务"}
+    task, error = _resolve_task(
+        list(result.scalars().all()),
+        task_keyword,
+        "该维度今日没有可修改的未完成任务",
+    )
+    if error:
+        return error
 
     old_title = task.title
     previous_status = task.status
@@ -180,6 +226,7 @@ async def defer_task_by_dimension(
     deferred_until: datetime | None = None,
     target_date: date | None = None,
     reason: str | None = None,
+    task_keyword: str | None = None,
 ) -> dict:
     """Snooze, reschedule, or excuse today's task for a dimension."""
     dim_enum = DimensionEnum(dimension)
@@ -197,9 +244,11 @@ async def defer_task_by_dimension(
             )
         ).with_for_update()
     )
-    task = result.scalars().first()
-    if not task:
-        return {"success": False, "message": "该维度今日没有可调整的任务"}
+    task, error = _resolve_task(
+        list(result.scalars().all()), task_keyword, "该维度今日没有可调整的任务"
+    )
+    if error:
+        return error
     return await apply_task_schedule(
         db,
         task,
@@ -212,7 +261,12 @@ async def defer_task_by_dimension(
     )
 
 
-async def resume_task_by_dimension(db: AsyncSession, user_id: str, dimension: str) -> dict:
+async def resume_task_by_dimension(
+    db: AsyncSession,
+    user_id: str,
+    dimension: str,
+    task_keyword: str | None = None,
+) -> dict:
     """Return a deferred task to today's actionable queue."""
     dim_enum = DimensionEnum(dimension)
     result = await db.execute(
@@ -225,9 +279,11 @@ async def resume_task_by_dimension(db: AsyncSession, user_id: str, dimension: st
             )
         ).with_for_update()
     )
-    task = result.scalars().first()
-    if not task:
-        return {"success": False, "message": "该维度今日没有已暂缓任务"}
+    task, error = _resolve_task(
+        list(result.scalars().all()), task_keyword, "该维度今日没有已暂缓任务"
+    )
+    if error:
+        return error
     previous_status = task.status
     task.status = TaskStatusEnum.pending
     task.disposition = None

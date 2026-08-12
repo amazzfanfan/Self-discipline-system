@@ -338,6 +338,10 @@ class AgentRuntime:
         )
         if dimension and replacement_match:
             replacement = replacement_match.group(1).strip("。！？!? ")
+            source_text = re.split(
+                r"(?:改成|改为|换成|换为|替换为|调整为)", text, maxsplit=1
+            )[0]
+            task_keyword = self._extract_task_keyword(source_text)
             return PlannerDecision(
                 action="tool",
                 tool="replace_today_task",
@@ -345,6 +349,7 @@ class AgentRuntime:
                     "dimension": dimension,
                     "title": replacement,
                     "reason": "根据用户在对话中明确提出的新任务进行替换",
+                    **({"task_keyword": task_keyword} if task_keyword else {}),
                 },
                 reason="更新用户明确指定的今日任务",
             )
@@ -397,25 +402,38 @@ class AgentRuntime:
                 reason="删除用户指定的成长目标",
             )
         if dimension and has_explicit_completion(text):
+            task_keyword = self._extract_task_keyword(text)
             return PlannerDecision(
                 action="tool",
                 tool="complete_task",
-                arguments={"dimension": dimension},
+                arguments={
+                    "dimension": dimension,
+                    **({"task_keyword": task_keyword} if task_keyword else {}),
+                },
                 reason="用户明确报告已完成任务",
             )
         if dimension and re.search(r"(?:恢复|继续).{0,10}(?:任务|待办)|(?:任务|待办).{0,8}(?:恢复|继续)", text):
+            task_keyword = self._extract_task_keyword(text)
             return PlannerDecision(
                 action="tool",
                 tool="resume_today_task",
-                arguments={"dimension": dimension},
+                arguments={
+                    "dimension": dimension,
+                    **({"task_keyword": task_keyword} if task_keyword else {}),
+                },
                 reason="恢复今日暂缓任务",
             )
 
         if dimension and re.search(r"(?:今日|今天).{0,6}(?:免做|不做|不安排|先不做)", text):
+            task_keyword = self._extract_task_keyword(text)
             return PlannerDecision(
                 action="tool",
                 tool="defer_today_task",
-                arguments={"dimension": dimension, "mode": "excuse"},
+                arguments={
+                    "dimension": dimension,
+                    "mode": "excuse",
+                    **({"task_keyword": task_keyword} if task_keyword else {}),
+                },
                 reason="将任务设为今日免做且不计入完成率",
             )
         if dimension and re.search(r"(?:改到|推迟到|挪到).{0,8}(?:明天|后天|\d{4}-\d{1,2}-\d{1,2})", text):
@@ -434,6 +452,11 @@ class AgentRuntime:
                     "dimension": dimension,
                     "mode": "reschedule",
                     "target_date": target_date.isoformat(),
+                    **(
+                        {"task_keyword": self._extract_task_keyword(text)}
+                        if self._extract_task_keyword(text)
+                        else {}
+                    ),
                 },
                 reason="将今日任务改期到用户指定日期",
             )
@@ -451,6 +474,11 @@ class AgentRuntime:
                     "dimension": dimension,
                     "mode": "later",
                     "deferred_until": wake_at.isoformat(),
+                    **(
+                        {"task_keyword": self._extract_task_keyword(text)}
+                        if self._extract_task_keyword(text)
+                        else {}
+                    ),
                 },
                 reason="按用户指定的一小时后重新提醒",
             )
@@ -467,6 +495,11 @@ class AgentRuntime:
                     "dimension": dimension,
                     "mode": "later",
                     "deferred_until": wake_at.isoformat(),
+                    **(
+                        {"task_keyword": self._extract_task_keyword(text)}
+                        if self._extract_task_keyword(text)
+                        else {}
+                    ),
                 },
                 reason="按用户指定的今天时间重新提醒",
             )
@@ -476,10 +509,14 @@ class AgentRuntime:
                 reason="需要先明确任务调整方式：今天几点提醒、改到哪天，还是今日免做",
             )
         if dimension and re.search(r"(?:跳过|放弃).{0,12}(?:任务)?|(?:任务).{0,8}(?:跳过|放弃)", text):
+            task_keyword = self._extract_task_keyword(text)
             return PlannerDecision(
                 action="tool",
                 tool="skip_task",
-                arguments={"dimension": dimension},
+                arguments={
+                    "dimension": dimension,
+                    **({"task_keyword": task_keyword} if task_keyword else {}),
+                },
                 reason="处理用户跳过今日任务的请求",
             )
         if re.search(
@@ -505,7 +542,10 @@ class AgentRuntime:
     @staticmethod
     def _detect_dimension(text: str) -> str | None:
         keywords = {
-            "exercise": ("运动", "跑步", "快走", "健身", "锻炼", "游泳"),
+            "exercise": (
+                "运动", "跑步", "快走", "健身", "锻炼", "游泳",
+                "爬坡", "拉伸", "瑜伽", "骑行", "力量训练",
+            ),
             "diet": ("饮食", "三餐", "吃饭", "餐食", "含糖饮料", "饮料", "蔬菜", "水果"),
             "sleep": ("睡眠", "睡觉", "早睡", "作息"),
             "appearance": ("护肤", "皮肤", "外貌", "形象"),
@@ -530,6 +570,23 @@ class AgentRuntime:
         )
         cleaned = re.sub(r"\s+", " ", cleaned).strip(" ，。！？!?：:的")
         return cleaned[:80] or None
+
+    @staticmethod
+    def _extract_task_keyword(text: str) -> str | None:
+        """Keep the task-specific phrase so same-dimension tasks remain addressable."""
+        cleaned = re.sub(
+            r"(?:请|帮我|把|将|我的|我|这个|那个|今天的|今日的|今天|今日|今晚|"
+            r"任务|待办|已经|刚刚|刚才|完成|做完|搞定|打卡|跳过|放弃|"
+            r"恢复|继续|免做|不做|不安排|先不做|延后|暂缓|稍后再做|晚点再做|"
+            r"改一下|修改|更改|调整|"
+            r"改到|推迟到|挪到|一小时后|1小时后|明天|后天|"
+            r"运动|锻炼|饮食|睡眠|形象管理|形象|护肤|确认|了|啦|成功)",
+            " ",
+            text,
+        )
+        cleaned = re.sub(r"\d{1,2}(?:点|:\d{2})|\d{4}-\d{1,2}-\d{1,2}", " ", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" ，。！？!?：:的")
+        return cleaned[:100] if len(cleaned) >= 2 else None
 
     @staticmethod
     def _parse_json(content: str) -> dict[str, Any]:

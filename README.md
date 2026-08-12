@@ -276,6 +276,22 @@ npm run dev
 | `EMBEDDING_BASE_URL` | 百炼 Embedding API 地址 | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
 | `EMBEDDING_MODEL` | 远程向量模型 | `text-embedding-v4` |
 | `EMBEDDING_DIMENSION` | 输出维度，必须与 pgvector 字段一致 | `1536` |
+| `FACEPLUSPLUS_API_KEY` | Face++ 肤质检测 API Key | `...` |
+| `FACEPLUSPLUS_API_SECRET` | Face++ 肤质检测 API Secret | `...` |
+| `TEMP_UPLOAD_RETENTION_HOURS` | 未被引用临时图片的保留小时数 | `24` |
+| `NOTIFICATION_RETENTION_DAYS` | 站内通知保留天数 | `90` |
+| `WEB_PUSH_VAPID_PUBLIC_KEY` | 可选：浏览器后台推送的 applicationServerKey | `...` |
+| `WEB_PUSH_VAPID_PRIVATE_KEY` | 可选：VAPID 私钥内容或 PEM 路径 | `private_key.pem` |
+| `WEB_PUSH_VAPID_EMAIL` | 可选：Web Push 联系地址 | `mailto:you@example.com` |
+
+Web Push 未配置时，站内提醒和页面打开期间的浏览器通知仍可工作。需要关闭页面后也接收提醒时，可在 `backend` 目录生成 VAPID 密钥，并把私钥文件加入本地忽略列表：
+
+```bash
+python -m py_vapid --gen
+python -m py_vapid --applicationServerKey
+```
+
+将第二条命令输出写入 `WEB_PUSH_VAPID_PUBLIC_KEY`，私钥使用 `WEB_PUSH_VAPID_PRIVATE_KEY=private_key.pem`；不要提交私钥文件。
 
 从其他 Embedding 模型切换到 v4 后，需要重建已有数据，避免不同模型的向量混用：
 

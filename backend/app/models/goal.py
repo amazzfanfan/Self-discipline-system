@@ -177,3 +177,32 @@ class GoalProgressEvent(Base):
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
+
+
+class GoalLifecycleEvent(Base):
+    """Auditable changes to goal status, content, and planning fields."""
+
+    __tablename__ = "goal_lifecycle_events"
+    __table_args__ = (
+        Index("ix_goal_lifecycle_goal_created", "goal_id", "created_at"),
+        Index("ix_goal_lifecycle_user_created", "user_id", "created_at"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    goal_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("goals.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    event_type = Column(String(40), nullable=False)
+    previous_state = Column(JSON, nullable=False, default=dict)
+    new_state = Column(JSON, nullable=False, default=dict)
+    reason = Column(String(200))
+    actor = Column(String(20), nullable=False, default="user")
+    source = Column(String(30), nullable=False, default="api")
+    created_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )

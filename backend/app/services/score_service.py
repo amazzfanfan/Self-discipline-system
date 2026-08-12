@@ -59,3 +59,55 @@ async def record_negative(
 
     return {"dimension": dimension.value, "delta": 0.0, "reason": reason}
 
+
+async def rebuild_behavior_counters(
+    db: AsyncSession,
+    user_id: str,
+    dimension: DimensionEnum,
+) -> dict:
+    """Recompute mutable behavior counters after a completion correction."""
+    from app.models.task import Task, TaskStatusEnum
+
+    score_record = await db.scalar(
+        select(UserScore).where(
+            UserScore.user_id == user_id,
+            UserScore.dimension == dimension,
+        )
+    )
+    tasks = (
+        await db.execute(
+            select(Task).where(Task.user_id == user_id, Task.dimension == dimension)
+        )
+    ).scalars().all()
+    completed_dates = sorted(
+        {task.scheduled_date for task in tasks if task.status == TaskStatusEnum.completed}
+    )
+    negative_tasks = [
+        task
+        for task in tasks
+        if task.status == TaskStatusEnum.failed
+        and task.disposition in {"skipped", "expired"}
+    ]
+    score_record.total_positive_count = len(completed_dates)
+    score_record.total_negative_count = len(negative_tasks)
+    score_record.last_completed_date = completed_dates[-1] if completed_dates else None
+
+    streak = 0
+    if completed_dates:
+        last_completed = completed_dates[-1]
+        if not any(task.scheduled_date >= last_completed for task in negative_tasks):
+            streak = 1
+            cursor = last_completed
+            completed_set = set(completed_dates)
+            while cursor - timedelta(days=1) in completed_set:
+                cursor -= timedelta(days=1)
+                streak += 1
+    score_record.streak_days = streak
+    score_record.last_score_change = datetime.now(timezone.utc)
+    return {
+        "dimension": dimension.value,
+        "streak": streak,
+        "completed_days": len(completed_dates),
+        "missed_tasks": len(negative_tasks),
+    }
+

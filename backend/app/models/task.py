@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, DateTime, Date, Time, ForeignKey, Text, Integer, JSON, Enum as SAEnum, UniqueConstraint, Index
+from sqlalchemy import Column, String, DateTime, Date, Time, ForeignKey, Text, Integer, JSON, Enum as SAEnum, Index, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.core.database import Base
@@ -24,14 +24,6 @@ class DifficultyEnum(str, enum.Enum):
 
 class Task(Base):
     __tablename__ = "tasks"
-    __table_args__ = (
-        UniqueConstraint(
-            "user_id",
-            "dimension",
-            "scheduled_date",
-            name="uq_tasks_user_dimension_date",
-        ),
-    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
@@ -61,6 +53,25 @@ class Task(Base):
     adaptation_metadata = Column(JSON, nullable=False, default=dict)
     completed_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        Index(
+            "uq_tasks_user_goal_date",
+            "user_id",
+            "goal_id",
+            "scheduled_date",
+            unique=True,
+            postgresql_where=text("goal_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_tasks_user_baseline_dimension_date",
+            "user_id",
+            "dimension",
+            "scheduled_date",
+            unique=True,
+            postgresql_where=text("goal_id IS NULL"),
+        ),
+    )
 
     user = relationship("User", back_populates="tasks")
     events = relationship("TaskEvent", back_populates="task", cascade="all, delete-orphan")

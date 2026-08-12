@@ -34,6 +34,13 @@ interface ProfileData {
   side_photo_url: string | null;
   questionnaire: Record<string, string> | null;
   skin_analysis: Record<string, unknown> | null;
+  skincare_constraints: {
+    sensitive_skin: boolean;
+    pregnancy_or_breastfeeding: boolean;
+    skin_barrier_damaged: boolean;
+    prescription_treatment: boolean;
+    allergies: string[];
+  };
 }
 
 interface ProfilePayload {
@@ -99,6 +106,13 @@ export default function Profile() {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({ height_cm: '', weight_kg: '', age: '', gender: 'male' });
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [safetyForm, setSafetyForm] = useState({
+    sensitive_skin: false,
+    pregnancy_or_breastfeeding: false,
+    skin_barrier_damaged: false,
+    prescription_treatment: false,
+    allergies: '',
+  });
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Goal management state
@@ -116,6 +130,17 @@ export default function Profile() {
         weight_kg: p.weight_kg?.toString() || '',
         age: p.age?.toString() || '',
         gender: p.gender || 'male',
+      });
+      const constraints = p.skincare_constraints || {
+        sensitive_skin: false,
+        pregnancy_or_breastfeeding: false,
+        skin_barrier_damaged: false,
+        prescription_treatment: false,
+        allergies: [],
+      };
+      setSafetyForm({
+        ...constraints,
+        allergies: constraints.allergies.join('、'),
       });
       return p;
     }),
@@ -176,6 +201,23 @@ export default function Profile() {
       setUploadingPhoto(false);
       addNotification({ type: 'error', title: '照片上传失败', message: '请检查图片格式和大小后重试。' });
     },
+  });
+
+  const safetyMutation = useMutation({
+    mutationFn: () => api.put('/users/me/profile', {
+      skincare_constraints: {
+        sensitive_skin: safetyForm.sensitive_skin,
+        pregnancy_or_breastfeeding: safetyForm.pregnancy_or_breastfeeding,
+        skin_barrier_damaged: safetyForm.skin_barrier_damaged,
+        prescription_treatment: safetyForm.prescription_treatment,
+        allergies: safetyForm.allergies.split(/[、,，]/).map((item) => item.trim()).filter(Boolean),
+      },
+    }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['profile'] });
+      addNotification({ type: 'success', title: '护理限制已保存', message: '后续 AI 护理建议和形象任务都会执行安全校验。' });
+    },
+    onError: () => addNotification({ type: 'error', title: '保存失败', message: '护理限制没有更新，请稍后重试。' }),
   });
 
   // Goal mutations
@@ -398,6 +440,44 @@ export default function Profile() {
             )}
           </motion.div>
         </div>
+
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.08 }}
+          className="mb-4 rounded-2xl border border-amber-400/10 bg-slate-900 p-5">
+          <div className="mb-4">
+            <h2 className="text-base font-semibold text-slate-300">护理安全限制</h2>
+            <p className="mt-1 text-xs leading-5 text-slate-500">这些信息只用于约束 AI 护理建议，不参与状态评分，也不会交给 Face++。</p>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {[
+              ['sensitive_skin', '敏感肌或容易刺痛'],
+              ['skin_barrier_damaged', '当前屏障受损或明显泛红'],
+              ['pregnancy_or_breastfeeding', '孕期或哺乳期'],
+              ['prescription_treatment', '正在接受皮肤处方治疗'],
+            ].map(([key, label]) => (
+              <label key={key} className="flex cursor-pointer items-center gap-3 rounded-xl border border-white/5 bg-slate-950/40 px-3 py-3 text-sm text-slate-400">
+                <input type="checkbox"
+                  checked={Boolean(safetyForm[key as keyof typeof safetyForm])}
+                  onChange={(event) => setSafetyForm({ ...safetyForm, [key]: event.target.checked })}
+                  className="h-4 w-4 accent-cyan-400" />
+                {label}
+              </label>
+            ))}
+          </div>
+          <label className="mt-3 block text-xs text-slate-500">
+            已知过敏成分
+            <input value={safetyForm.allergies}
+              onChange={(event) => setSafetyForm({ ...safetyForm, allergies: event.target.value })}
+              placeholder="例如：烟酰胺、香精；多个成分用顿号分隔"
+              className="mt-2 w-full rounded-xl border border-white/5 bg-slate-950/50 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
+          </label>
+          <div className="mt-4 flex items-center justify-between gap-3">
+            <p className="text-[11px] text-slate-600">命中禁忌的 AI 输出会被拒绝，不会用固定护理模板代替。</p>
+            <button type="button" onClick={() => safetyMutation.mutate()} disabled={safetyMutation.isPending}
+              className="shrink-0 rounded-xl bg-cyan-400/10 px-4 py-2.5 text-xs font-medium text-cyan-300 disabled:opacity-50">
+              {safetyMutation.isPending ? '保存中...' : '保存限制'}
+            </button>
+          </div>
+        </motion.div>
 
         {/* Goals Management */}
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}

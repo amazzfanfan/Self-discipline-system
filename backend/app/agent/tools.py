@@ -66,6 +66,11 @@ class DimensionArgs(BaseModel):
     dimension: Literal["exercise", "diet", "sleep", "appearance"] = Field(
         description="任务维度"
     )
+    task_keyword: str | None = Field(
+        default=None,
+        max_length=100,
+        description="同一维度有多项任务时，用标题关键词定位具体任务",
+    )
 
 
 class WeightArgs(BaseModel):
@@ -96,6 +101,7 @@ class TaskReplaceArgs(BaseModel):
     )
     title: str = Field(min_length=2, max_length=200, description="用户明确要求的新任务内容")
     reason: str | None = Field(default=None, max_length=500, description="修改原因")
+    task_keyword: str | None = Field(default=None, max_length=100)
 
 
 class TaskScheduleArgs(DimensionArgs):
@@ -197,7 +203,9 @@ class ToolRegistry:
             return {"tasks": tasks, "count": len(tasks)}
 
         async def complete(args: DimensionArgs) -> dict[str, Any]:
-            result = await complete_task_by_dimension(self.db, self.user_id, args.dimension)
+            result = await complete_task_by_dimension(
+                self.db, self.user_id, args.dimension, args.task_keyword
+            )
             if result.get("success"):
                 await self.db.commit()
                 await invalidate_tasks(self.user_id)
@@ -205,7 +213,9 @@ class ToolRegistry:
             return result
 
         async def skip(args: DimensionArgs) -> dict[str, Any]:
-            result = await skip_task_by_dimension(self.db, self.user_id, args.dimension)
+            result = await skip_task_by_dimension(
+                self.db, self.user_id, args.dimension, args.task_keyword
+            )
             if result.get("success"):
                 await self.db.commit()
                 await invalidate_tasks(self.user_id)
@@ -219,6 +229,7 @@ class ToolRegistry:
                 args.dimension,
                 args.title,
                 args.reason,
+                args.task_keyword,
             )
             if result.get("success"):
                 await self.db.commit()
@@ -234,6 +245,7 @@ class ToolRegistry:
                 deferred_until=args.deferred_until,
                 target_date=args.target_date,
                 reason=args.reason,
+                task_keyword=args.task_keyword,
             )
             if result.get("success"):
                 await self.db.commit()
@@ -241,7 +253,9 @@ class ToolRegistry:
             return result
 
         async def resume_task(args: DimensionArgs) -> dict[str, Any]:
-            result = await resume_task_by_dimension(self.db, self.user_id, args.dimension)
+            result = await resume_task_by_dimension(
+                self.db, self.user_id, args.dimension, args.task_keyword
+            )
             if result.get("success"):
                 await self.db.commit()
                 await invalidate_tasks(self.user_id)
@@ -532,6 +546,10 @@ class ToolRegistry:
             result = tool.handler(parsed)
             if inspect.isawaitable(result):
                 result = await result
+            if result.get("requires_clarification"):
+                return result, False, "clarification_required", int(
+                    (time.perf_counter() - started) * 1000
+                )
             success = bool(result.get("success", True))
             return result, success, "completed" if success else "tool_error", int(
                 (time.perf_counter() - started) * 1000

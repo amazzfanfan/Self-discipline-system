@@ -16,9 +16,18 @@ export interface UserProfile {
   avatar_url: string | null;
   front_photo_url: string | null;
   side_photo_url: string | null;
+  skincare_constraints?: {
+    sensitive_skin: boolean;
+    pregnancy_or_breastfeeding: boolean;
+    skin_barrier_damaged: boolean;
+    prescription_treatment: boolean;
+    allergies: string[];
+  };
   daily_task_budget?: number;
   memory_enabled?: number;
   notification_settings?: Record<string, boolean>;
+  notification_quiet_start?: string | null;
+  notification_quiet_end?: string | null;
 }
 
 export interface UserScore {
@@ -204,7 +213,7 @@ export interface GoalProgressSummary {
 
 export interface GoalProgressEvent {
   id: string;
-  event_type: 'task_completed' | 'manual_progress';
+  event_type: 'task_completed' | 'task_completion_reverted' | 'manual_progress' | 'created' | 'status_changed' | 'schedule_changed' | 'content_changed' | 'goal_updated' | 'target_completed' | 'completion_reverted';
   delta: number;
   previous_value: number | null;
   current_value: number | null;
@@ -212,6 +221,22 @@ export interface GoalProgressEvent {
   source: string;
   metadata: { task_title?: string; dimension?: Dimension; [key: string]: unknown };
   created_at: string;
+}
+
+export interface GoalPlanningStatus {
+  date: string;
+  configured_budget: number;
+  effective_budget: number;
+  due_goal_count: number;
+  scheduled_goal_count: number;
+  queued_goal_count: number;
+  over_capacity: boolean;
+  queued_goals: Array<{
+    id: string;
+    content: string;
+    goal_type: Dimension;
+    reason: string;
+  }>;
 }
 
 export interface Conversation {

@@ -56,6 +56,10 @@ test('a goal can be paused and edited without disappearing', async ({ page }) =>
       await route.fulfill({ json: { 'goal-1': { goal_id: 'goal-1', content: goal.content, goal_type: 'exercise', period_start: '2026-08-10', period_end: '2026-08-16', scheduled_total: 7, scheduled_to_date: 3, completed: 2, remaining_to_date: 1, adherence: 66.7, completed_sessions: 2, current_value: 2, target_value: null, progress_mode: 'sessions' } } });
       return;
     }
+    if (path === '/api/goals/planning-status') {
+      await route.fulfill({ json: { date: '2026-08-12', configured_budget: 3, effective_budget: 3, scheduled_goal_ids: ['goal-1'], queued_goals: [], due_goal_count: 1 } });
+      return;
+    }
     if (path === '/api/goals/goal-1/progress') {
       await route.fulfill({ json: [{ id: 'event-1', event_type: 'task_completed', delta: 1, previous_value: 1, current_value: 2, event_date: '2026-08-12', source: 'task_completion', metadata: { task_title: '跑步机爬坡走40分钟' }, created_at: now }] });
       return;
@@ -87,6 +91,6 @@ test('a goal can be paused and edited without disappearing', async ({ page }) =>
   await dialog.getByLabel('目标内容').fill('每晚20:00跑步机爬坡走45分钟');
   await dialog.getByRole('button', { name: '保存修改' }).click();
 
-  await expect(page.getByText('每晚20:00跑步机爬坡走45分钟')).toBeVisible();
   await expect(dialog).toBeHidden();
+  await expect(page.getByRole('heading', { name: '每晚20:00跑步机爬坡走45分钟' })).toBeVisible();
 });

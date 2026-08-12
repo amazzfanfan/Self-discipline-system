@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, DateTime, ForeignKey, Numeric, Integer, Enum as SAEnum, JSON
+from sqlalchemy import Column, String, DateTime, ForeignKey, Numeric, Integer, Time, Enum as SAEnum, JSON
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.core.database import Base
@@ -47,9 +47,12 @@ class UserProfile(Base):
     ai_profile_score = Column(JSON)
     questionnaire = Column(JSON, nullable=True)
     skin_analysis = Column(JSON, nullable=True)  # face++ 肤质分析结果
+    skincare_constraints = Column(JSON, nullable=False, default=dict)
     daily_task_budget = Column(Integer, nullable=False, default=3)
     memory_enabled = Column(Integer, nullable=False, default=1)
     notification_settings = Column(JSON, nullable=False, default=dict)
+    notification_quiet_start = Column(Time)
+    notification_quiet_end = Column(Time)
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     user = relationship("User", back_populates="profile")

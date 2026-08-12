@@ -50,6 +50,58 @@ DIMENSION_LABELS = {
 }
 
 
+def _goal_timestamp(goal: dict, field: str) -> float:
+    value = goal.get(field)
+    if not value:
+        return 0.0
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def select_daily_planning_slots(
+    due_goals: list[dict],
+    scores: dict,
+    signals_by_dimension: dict,
+    task_budget: int,
+) -> list[tuple[DimensionEnum, dict | None]]:
+    """Select goal and baseline task slots within the user's daily capacity."""
+    def goal_priority(goal: dict) -> tuple:
+        dim = DimensionEnum(goal["goal_type"])
+        dimension_score = dimension_priority(
+            baseline=float(scores[dim].baseline_score) if dim in scores else 100.0,
+            has_goal=True,
+            signals=signals_by_dimension[dim],
+        )
+        last_activity = _goal_timestamp(goal, "last_progress_at") or _goal_timestamp(
+            goal, "created_at"
+        )
+        return (-dimension_score, last_activity, -float(goal.get("importance_score") or 0.5))
+
+    ordered_goals = sorted(due_goals, key=goal_priority)
+    slots: list[tuple[DimensionEnum, dict | None]] = [
+        (DimensionEnum(goal["goal_type"]), goal)
+        for goal in ordered_goals[:task_budget]
+    ]
+    goal_dimensions = {dim for dim, _ in slots}
+    ordered_dimensions = sorted(
+        TASKS_PER_DIMENSION,
+        key=lambda dim: dimension_priority(
+            baseline=float(scores[dim].baseline_score) if dim in scores else 100.0,
+            has_goal=dim in goal_dimensions,
+            signals=signals_by_dimension[dim],
+        ),
+        reverse=True,
+    )
+    for dim in ordered_dimensions:
+        if len(slots) >= task_budget:
+            break
+        if dim not in goal_dimensions:
+            slots.append((dim, None))
+    return slots
+
+
 async def generate_tasks_for_user(
     user_id,
     nickname: str,
@@ -67,8 +119,13 @@ async def generate_tasks_for_user(
             )
         )
         existing_tasks = existing_result.scalars().all()
-        existing_by_dimension = {task.dimension: task for task in existing_tasks}
-        existing_dimensions = set(existing_by_dimension)
+        existing_by_slot = {
+            (
+                task.dimension,
+                str(task.goal_id) if task.goal_id else None,
+            ): task
+            for task in existing_tasks
+        }
         scores_result = await session.execute(select(UserScore).where(UserScore.user_id == user_id))
         scores = {s.dimension: s for s in scores_result.scalars().all()}
 
@@ -110,8 +167,23 @@ async def generate_tasks_for_user(
         )
         checkin = checkin_result.scalar_one_or_none()
 
-        # 获取用户目标并按类型分组
-        goals_by_type = {}
+        configured_budget = int(profile.daily_task_budget if profile else 3)
+        task_budget = choose_task_budget(configured_budget, checkin)
+        history_by_dimension = {
+            dim: [task for task in recent_tasks if task.dimension == dim]
+            for dim in TASKS_PER_DIMENSION
+        }
+        signals_by_dimension = {
+            dim: analyze_history(
+                history_by_dimension[dim],
+                events_by_dimension[dim],
+            )
+            for dim in TASKS_PER_DIMENSION
+        }
+
+        # Every due goal is a candidate. The daily budget caps the total rather
+        # than silently discarding all but the newest goal in a dimension.
+        due_goals = []
         try:
             user_goals = await goal_service.get_user_goals(
                 db=session,
@@ -126,94 +198,94 @@ async def generate_tasks_for_user(
                 period_end=week_start + timedelta(days=6),
                 as_of=today,
             )
-            # 按目标类型分组，每个类型取今天实际需要执行的最新目标。
             for goal in user_goals:
                 goal_type = goal.get("goal_type")
-                if (
-                    goal_type
-                    and goal_type not in goals_by_type
-                    and goal_is_due(goal, today)
-                ):
-                    goals_by_type[goal_type] = {
+                if goal_type and goal_is_due(goal, today):
+                    due_goals.append({
                         **goal,
                         "progress_summary": progress_summaries.get(goal["id"]),
-                    }
-            print(f"[任务生成] 用户 {user_id} 有 {len(user_goals)} 个活跃目标，覆盖类型: {list(goals_by_type.keys())}")
-        except Exception as e:
-            print(f"[任务生成] 获取用户目标失败: {e}")
-
-        configured_budget = int(profile.daily_task_budget if profile else 3)
-        task_budget = choose_task_budget(configured_budget, checkin)
-        history_by_dimension = {
-            dim: [task for task in recent_tasks if task.dimension == dim]
-            for dim in TASKS_PER_DIMENSION
-        }
-        signals_by_dimension = {
-            dim: analyze_history(
-                history_by_dimension[dim],
-                events_by_dimension[dim],
+                    })
+            logger.info(
+                "User %s has %s active goals and %s due today",
+                user_id,
+                len(user_goals),
+                len(due_goals),
             )
-            for dim in TASKS_PER_DIMENSION
-        }
-        ordered_dimensions = sorted(
-            TASKS_PER_DIMENSION,
-            key=lambda dim: dimension_priority(
-                baseline=float(scores[dim].baseline_score) if dim in scores else 100.0,
-                has_goal=dim.value in goals_by_type,
-                signals=signals_by_dimension[dim],
-            ),
-            reverse=True,
+        except Exception as e:
+            logger.exception("Failed to load goals for task generation: %s", e)
+
+        target_slots = select_daily_planning_slots(
+            due_goals,
+            scores,
+            signals_by_dimension,
+            task_budget,
         )
-        target_dimensions = set(ordered_dimensions[:task_budget])
-        if not regenerate_pending and target_dimensions.issubset(existing_dimensions):
-            for dim in target_dimensions:
-                task = existing_by_dimension[dim]
-                if (
-                    task.status in {TaskStatusEnum.pending, TaskStatusEnum.in_progress}
-                    and (task.adaptation_metadata or {}).get("version") != ADAPTATION_VERSION
-                ):
-                    score_record = scores.get(dim)
-                    if not score_record:
-                        continue
-                    adaptation = decide_adaptation(
-                        baseline=float(score_record.baseline_score),
-                        signals=signals_by_dimension[dim],
-                        checkin=checkin,
-                        task_budget=task_budget,
-                    )
-                    task.difficulty = adaptation.difficulty
-                    task.estimated_minutes = adaptation.estimated_minutes
-                    task.rationale = adaptation.rationale
-                    task.adaptation_metadata = adaptation.metadata
-                    goal = goals_by_type.get(dim.value)
-                    if goal:
-                        task.goal_id = goal["id"]
-                        task.scheduled_time = (
-                            clock_time.fromisoformat(goal["preferred_time"])
-                            if goal.get("preferred_time")
-                            else None
-                        )
-                    await record_task_event(
-                        session,
-                        task,
-                        "adapted",
-                        actor="system",
-                        source="scheduler",
-                        reason=adaptation.rationale,
-                        from_status=task.status,
-                        to_status=task.status,
-                        metadata={"version": ADAPTATION_VERSION},
-                    )
-            return
+
+        assigned_tasks: dict[tuple[DimensionEnum, str | None], Task] = {}
+        claimed_task_ids = set()
+        for dim, goal in target_slots:
+            key = (dim, goal["id"] if goal else None)
+            task = existing_by_slot.get(key)
+            if task:
+                assigned_tasks[key] = task
+                claimed_task_ids.add(task.id)
+
+        # When goals are created or edited during the day, reuse pending
+        # system-generated slots before creating extras beyond the daily budget.
+        if regenerate_pending:
+            reusable = [
+                task
+                for task in existing_tasks
+                if task.id not in claimed_task_ids
+                and task.status == TaskStatusEnum.pending
+                and task.source != "chat_modified"
+            ]
+            for dim, goal in target_slots:
+                key = (dim, goal["id"] if goal else None)
+                if key in assigned_tasks:
+                    continue
+                task = next((item for item in reusable if item.dimension == dim), None)
+                if task is None and reusable:
+                    task = reusable[0]
+                if task:
+                    reusable.remove(task)
+                    assigned_tasks[key] = task
+                    claimed_task_ids.add(task.id)
 
         task_specs = []
-        for dim in TASKS_PER_DIMENSION:
-            if dim not in target_dimensions:
-                continue
-            existing_task = existing_by_dimension.get(dim)
+        for dim, goal in target_slots:
+            key = (dim, goal["id"] if goal else None)
+            existing_task = assigned_tasks.get(key)
             if existing_task and not (
                 regenerate_pending and existing_task.status == TaskStatusEnum.pending
             ):
+                if (
+                    existing_task.status in {TaskStatusEnum.pending, TaskStatusEnum.in_progress}
+                    and (existing_task.adaptation_metadata or {}).get("version") != ADAPTATION_VERSION
+                ):
+                    score_record = scores.get(dim)
+                    if score_record:
+                        adaptation = decide_adaptation(
+                            baseline=float(score_record.baseline_score),
+                            signals=signals_by_dimension[dim],
+                            checkin=checkin,
+                            task_budget=task_budget,
+                        )
+                        existing_task.difficulty = adaptation.difficulty
+                        existing_task.estimated_minutes = adaptation.estimated_minutes
+                        existing_task.rationale = adaptation.rationale
+                        existing_task.adaptation_metadata = adaptation.metadata
+                        await record_task_event(
+                            session,
+                            existing_task,
+                            "adapted",
+                            actor="system",
+                            source="scheduler",
+                            reason=adaptation.rationale,
+                            from_status=existing_task.status,
+                            to_status=existing_task.status,
+                            metadata={"version": ADAPTATION_VERSION},
+                        )
                 continue
             score_record = scores.get(dim)
             if not score_record:
@@ -229,7 +301,6 @@ async def generate_tasks_for_user(
             )
             difficulty = adaptation.difficulty
 
-            goal = goals_by_type.get(dim.value)
             goal_content = goal_planning_context(goal) if goal else None
             if goal:
                 logger.info(
@@ -257,7 +328,10 @@ async def generate_tasks_for_user(
                 and isinstance(skin_analysis, dict)
                 and skin_analysis.get("source") == "faceplusplus"
             ):
-                return await _generate_skin_based_task(skin_analysis)
+                return await _generate_skin_based_task(
+                    skin_analysis,
+                    profile.skincare_constraints if profile else None,
+                )
             adaptation = spec["adaptation"]
             signals = adaptation.metadata["signals"]
             adaptation_notes = (
@@ -303,6 +377,9 @@ async def generate_tasks_for_user(
             )
             if task:
                 previous_title = task.title
+                previous_dimension = task.dimension
+                previous_goal_id = str(task.goal_id) if task.goal_id else None
+                task.dimension = dim
                 task.title = task_title
                 task.rationale = rationale
                 task.estimated_minutes = estimated_minutes
@@ -323,7 +400,10 @@ async def generate_tasks_for_user(
                     metadata={
                         "old_title": previous_title,
                         "new_title": task_title,
+                        "old_dimension": previous_dimension.value,
+                        "new_dimension": dim.value,
                         "version": ADAPTATION_VERSION,
+                        "old_goal_id": previous_goal_id,
                         "goal_id": goal["id"] if goal else None,
                     },
                 )
@@ -423,13 +503,16 @@ async def generate_tasks_for_user(
             await release_lock(lock_name, token)
 
 
-async def _generate_skin_based_task(skin_analysis: dict) -> str:
+async def _generate_skin_based_task(
+    skin_analysis: dict,
+    constraints: dict | None = None,
+) -> str:
     """根据肤质分析结果生成护肤任务（使用AI动态生成）"""
     issues = skin_analysis.get("issues", [])
     skin_type = skin_analysis.get("skin_type_name", "")
     
     # 调用AI生成个性化护肤任务
-    return await generate_skin_task_ai(issues, skin_type)
+    return await generate_skin_task_ai(issues, skin_type, constraints)
 
 
 async def daily_task_generation():
@@ -563,6 +646,23 @@ async def weekly_review_reminders():
         await db.commit()
 
 
+async def privacy_retention_cleanup():
+    """Delete expired operational data and stale local uploads."""
+    from app.services.retention_service import cleanup_expired_data
+
+    result = await cleanup_expired_data()
+    logger.info("Privacy retention cleanup completed: %s", result)
+
+
+async def web_push_delivery():
+    """Deliver newly-created station notifications to subscribed browsers."""
+    from app.services.web_push_service import deliver_pending_web_push
+
+    result = await deliver_pending_web_push()
+    if result.get("enabled") and (result.get("sent") or result.get("failed")):
+        logger.info("Web Push delivery completed: %s", result)
+
+
 def start_scheduler():
     # 每天凌晨 0:00（北京时间）为所有用户生成任务
     # 注意：如果服务器此时未运行，任务会在用户首次查询时自动生成（见 task router）
@@ -608,5 +708,25 @@ def start_scheduler():
         minute=0,
         id="weekly_review_reminders",
         replace_existing=True,
+    )
+    scheduler.add_job(
+        privacy_retention_cleanup,
+        "cron",
+        hour=3,
+        minute=30,
+        id="privacy_retention_cleanup",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+    scheduler.add_job(
+        web_push_delivery,
+        "interval",
+        minutes=1,
+        id="web_push_delivery",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
     scheduler.start()

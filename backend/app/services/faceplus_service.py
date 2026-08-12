@@ -13,6 +13,10 @@ from typing import Optional
 from dataclasses import asdict, dataclass
 from app.core.config import get_settings
 from app.services.prompt_service import prompt_service
+from app.services.skin_safety_service import (
+    skincare_constraints_text,
+    validate_skin_suggestions,
+)
 from app.services.llm_service import chat_completion_with_fallback
 from app.services.cache_service import get_cached_skin_analysis, set_cached_skin_analysis
 from app.services.upload_service import sha256_file
@@ -281,7 +285,11 @@ def get_source_display(source: str) -> str:
     return source_map.get(source, source)
 
 
-async def generate_ai_suggestions(issues: list[str], skin_type_name: str) -> list[str]:
+async def generate_ai_suggestions(
+    issues: list[str],
+    skin_type_name: str,
+    constraints: dict | None = None,
+) -> list[str]:
     """根据肤质问题列表，调用AI生成个性化护理建议
     
     Args:
@@ -292,7 +300,11 @@ async def generate_ai_suggestions(issues: list[str], skin_type_name: str) -> lis
         AI生成的护理建议列表
     """
     issues_str = "、".join(issues) if issues else "未检测到明显问题"
-    prompt = prompt_service.build_skin_suggestion_prompt(skin_type_name, issues_str)
+    prompt = prompt_service.build_skin_suggestion_prompt(
+        skin_type_name,
+        issues_str,
+        skincare_constraints_text(constraints),
+    )
 
     content = await chat_completion_with_fallback(
         messages=[{"role": "user", "content": prompt}],
@@ -305,17 +317,16 @@ async def generate_ai_suggestions(issues: list[str], skin_type_name: str) -> lis
     parsed = json.loads(content)
     if not isinstance(parsed, dict):
         raise RuntimeError("AI skin suggestion response is not a JSON object")
-    suggestions = parsed.get("suggestions", [])
-    if not isinstance(suggestions, list):
-        raise RuntimeError("AI skin suggestion response has no suggestions array")
-    cleaned = [str(item).strip() for item in suggestions if str(item).strip()]
-    if not cleaned:
-        raise RuntimeError("AI skin suggestion response is empty")
+    cleaned = validate_skin_suggestions(parsed.get("suggestions"), constraints)
     logger.info("AI skin suggestions generated: count=%s", len(cleaned[:3]))
     return cleaned[:3]
 
 
-async def generate_skin_task_ai(issues: list[str], skin_type_name: str) -> str:
+async def generate_skin_task_ai(
+    issues: list[str],
+    skin_type_name: str,
+    constraints: dict | None = None,
+) -> str:
     """根据肤质分析结果，调用AI生成个性化护肤任务
     
     Args:
@@ -326,7 +337,11 @@ async def generate_skin_task_ai(issues: list[str], skin_type_name: str) -> str:
         AI生成的护肤任务描述
     """
     issues_str = "、".join(issues[:2]) if issues else "未检测到明显问题"
-    prompt = prompt_service.build_skin_task_prompt(issues_str, skin_type_name)
+    prompt = prompt_service.build_skin_task_prompt(
+        issues_str,
+        skin_type_name,
+        skincare_constraints_text(constraints),
+    )
 
     content = await chat_completion_with_fallback(
         messages=[{"role": "user", "content": prompt}],
@@ -342,5 +357,6 @@ async def generate_skin_task_ai(issues: list[str], skin_type_name: str) -> str:
     task = str(parsed.get("task", "")).strip()
     if not task or len(task) >= 100:
         raise RuntimeError("AI skin task response has no valid task")
+    task = validate_skin_suggestions([task], constraints, limit=1)[0]
     logger.info("AI skin task generated")
     return task

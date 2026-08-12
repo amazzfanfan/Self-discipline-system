@@ -6,9 +6,9 @@ from app.models.agent_run import AgentRun, AgentStep, PendingAction
 from app.models.assessment import AssessmentRun
 from app.models.behavior import DailyCheckIn, WeeklyReview
 from app.models.conversation import Conversation
-from app.models.goal import Goal, GoalProgressEvent
+from app.models.goal import Goal, GoalLifecycleEvent, GoalProgressEvent
 from app.models.memory import Memory
-from app.models.notification import UserNotification
+from app.models.notification import PushSubscription, UserNotification
 from app.models.score import ScoreHistory, UserScore
 from app.models.task import Task, TaskEvent
 from app.models.user import User, UserProfile
@@ -30,12 +30,14 @@ async def export_user_data(db, user: User) -> dict:
     memories = await all_items(Memory)
     goals = await all_items(Goal)
     goal_progress_events = await all_items(GoalProgressEvent)
+    goal_lifecycle_events = await all_items(GoalLifecycleEvent)
     weights = await all_items(WeightRecord)
     assessments = await all_items(AssessmentRun)
     checkins = await all_items(DailyCheckIn)
     reviews = await all_items(WeeklyReview)
     runs = await all_items(AgentRun)
     notifications = await all_items(UserNotification)
+    push_subscriptions = await all_items(PushSubscription)
     return {
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "account": {
@@ -51,8 +53,18 @@ async def export_user_data(db, user: User) -> dict:
             "gender": profile.gender.value if profile and profile.gender else None,
             "questionnaire": profile.questionnaire if profile else None,
             "skin_analysis": profile.skin_analysis if profile else None,
+            "skincare_constraints": profile.skincare_constraints if profile else {},
             "memory_enabled": bool(profile.memory_enabled) if profile else True,
             "daily_task_budget": profile.daily_task_budget if profile else 3,
+            "notification_settings": profile.notification_settings if profile else {},
+            "notification_quiet_start": (
+                profile.notification_quiet_start.strftime("%H:%M")
+                if profile and profile.notification_quiet_start else None
+            ),
+            "notification_quiet_end": (
+                profile.notification_quiet_end.strftime("%H:%M")
+                if profile and profile.notification_quiet_end else None
+            ),
         },
         "scores": [
             {
@@ -113,6 +125,20 @@ async def export_user_data(db, user: User) -> dict:
             }
             for item in goal_progress_events
         ],
+        "goal_lifecycle_events": [
+            {
+                "id": str(item.id),
+                "goal_id": str(item.goal_id),
+                "event_type": item.event_type,
+                "previous_state": item.previous_state,
+                "new_state": item.new_state,
+                "reason": item.reason,
+                "actor": item.actor,
+                "source": item.source,
+                "created_at": item.created_at.isoformat(),
+            }
+            for item in goal_lifecycle_events
+        ],
         "weights": [
             {"weight_kg": float(item.weight_kg), "recorded_at": item.recorded_at.isoformat()}
             for item in weights
@@ -157,6 +183,14 @@ async def export_user_data(db, user: User) -> dict:
             }
             for item in notifications
         ],
+        "push_subscriptions": [
+            {
+                "endpoint": item.endpoint,
+                "user_agent": item.user_agent,
+                "created_at": item.created_at.isoformat(),
+            }
+            for item in push_subscriptions
+        ],
     }
 
 
@@ -187,6 +221,7 @@ async def delete_user_account(db, user: User) -> None:
         WeightRecord,
         DailyCheckIn,
         WeeklyReview,
+        PushSubscription,
         UserNotification,
         UserScore,
         UserProfile,
