@@ -1,11 +1,14 @@
 import asyncio
 import uuid
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.agent.runtime import AgentRuntime
 from app.agent.tools import ToolRegistry
 from app.agent.types import PlannerDecision
+from app.models.score import DimensionEnum
+from app.modules.chat.router import _confirmed_request, approve_pending_action
 
 
 def run(coro):
@@ -49,6 +52,57 @@ def test_fallback_planner_persists_task_resource_constraints():
     assert available.arguments == {"available_items": ["跑步机"]}
     assert avoided.arguments == {"avoid_activities": ["深蹲"]}
     assert duration.arguments == {"max_task_minutes": 20}
+
+
+def test_fallback_planner_extracts_only_resource_from_question_suffix():
+    runtime = make_runtime()
+
+    decision = runtime._fallback_decision("形象任务，我没有眼霜怎么办？", [])
+
+    assert decision.tool == "update_task_constraints"
+    assert decision.arguments == {"unavailable_items": ["眼霜"]}
+
+
+def test_constraint_tool_proposes_ai_replacement_for_single_conflict():
+    user_id = uuid.uuid4()
+    profile = SimpleNamespace(
+        task_constraints={"unavailable_items": ["眼霜怎么办"]},
+        skincare_constraints={},
+        skin_analysis={},
+    )
+    task = SimpleNamespace(
+        id=uuid.uuid4(),
+        title="晚间涂抹淡斑眼霜，轻柔按摩至吸收。",
+        dimension=DimensionEnum.appearance,
+    )
+    task_result = MagicMock()
+    task_result.scalars.return_value.all.return_value = [task]
+    db = MagicMock()
+    db.scalar = AsyncMock(return_value=profile)
+    db.execute = AsyncMock(return_value=task_result)
+    db.commit = AsyncMock()
+    db.rollback = AsyncMock()
+    registry = ToolRegistry(db, str(user_id))
+
+    with patch(
+        "app.agent.tools.generate_ai_task_replacement",
+        new=AsyncMock(return_value="洁面后冷敷眼周3分钟，并提前20分钟入睡。"),
+    ):
+        result, success, status, _ = run(
+            registry.execute(
+                "update_task_constraints",
+                {"unavailable_items": ["眼霜"]},
+                "形象任务，我没有眼霜怎么办？",
+            )
+        )
+
+    assert success is True
+    assert status == "completed"
+    assert profile.task_constraints["unavailable_items"] == ["眼霜"]
+    assert result["conflicting_tasks"][0]["title"] == task.title
+    assert result["suggested_replacement"] == "洁面后冷敷眼周3分钟，并提前20分钟入睡。"
+    assert result["proposed_action"]["tool"] == "replace_today_task"
+    assert result["proposed_action"]["arguments"]["dimension"] == "appearance"
 
 
 def test_fallback_planner_records_numeric_goal_progress():
@@ -311,3 +365,125 @@ def test_runtime_stops_after_confirmation_guardrail():
     assert len(result.observations) == 1
     assert result.observations[0].status == "approval_required"
     assert any(event.title == "需要用户确认" for event in result.trace)
+
+
+def test_runtime_turns_ai_replacement_proposal_into_pending_action():
+    runtime = make_runtime()
+    runtime.audit_enabled = True
+    runtime._plan = AsyncMock(
+        return_value=PlannerDecision(
+            action="tool",
+            tool="update_task_constraints",
+            arguments={"unavailable_items": ["眼霜"]},
+            reason="记录不可用物品",
+        )
+    )
+    proposal = {
+        "tool": "replace_today_task",
+        "arguments": {
+            "dimension": "appearance",
+            "title": "洁面后冷敷眼周3分钟",
+            "task_keyword": "晚间涂抹淡斑眼霜",
+        },
+    }
+    runtime.registry.execute = AsyncMock(
+        return_value=(
+            {
+                "success": True,
+                "message": "已生成替代候选",
+                "proposed_action": proposal,
+            },
+            True,
+            "completed",
+            12,
+        )
+    )
+    runtime.registry.has = MagicMock(return_value=True)
+    pending = {
+        "action_id": "pending-1",
+        "tool": "replace_today_task",
+        "arguments": proposal["arguments"],
+        "status": "pending",
+        "expires_at": "2099-01-01T00:00:00+00:00",
+    }
+
+    with (
+        patch("app.agent.runtime.start_agent_run", new=AsyncMock(return_value=uuid.uuid4())),
+        patch("app.agent.runtime.append_agent_event", new=AsyncMock()),
+        patch("app.agent.runtime.create_pending_action", new=AsyncMock(return_value=pending)) as create,
+        patch("app.agent.runtime.finish_agent_run", new=AsyncMock()),
+    ):
+        result = run(runtime.run("形象任务，我没有眼霜怎么办？"))
+
+    assert result.pending_action == pending
+    assert result.observations[0].status == "proposal_ready"
+    assert any(event.title == "等待确认 AI 替代任务" for event in result.trace)
+    assert create.await_args.args[2] == "replace_today_task"
+    assert create.await_args.args[3]["title"] == "洁面后冷敷眼周3分钟"
+
+
+def test_confirmed_ai_replacement_request_passes_write_guard():
+    action = SimpleNamespace(
+        tool_name="replace_today_task",
+        original_request="形象任务，我没有眼霜怎么办？",
+        arguments={
+            "dimension": "appearance",
+            "title": "洁面后冷敷眼周3分钟",
+            "task_keyword": "晚间涂抹淡斑眼霜",
+        },
+    )
+    confirmation = _confirmed_request(action, "确认执行")
+    registry = ToolRegistry(MagicMock(), str(uuid.uuid4()))
+
+    allowed, reason, status = registry._guard(
+        registry._tools["replace_today_task"],
+        confirmation,
+    )
+
+    assert allowed is True
+    assert reason == ""
+    assert status == ""
+    assert "确认将任务改成洁面后冷敷眼周3分钟" in confirmation
+
+
+def test_approve_button_executes_ai_replacement_pending_action():
+    user = SimpleNamespace(id=uuid.uuid4())
+    action = SimpleNamespace(
+        action_id="pending-1",
+        tool_name="replace_today_task",
+        original_request="形象任务，我没有眼霜怎么办？",
+        arguments={
+            "dimension": "appearance",
+            "title": "洁面后冷敷眼周3分钟",
+            "task_keyword": "晚间涂抹淡斑眼霜",
+        },
+        status="pending",
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        resolved_at=None,
+    )
+    db = MagicMock()
+    db.flush = AsyncMock()
+    registry = MagicMock()
+    registry.execute = AsyncMock(
+        return_value=(
+            {
+                "success": True,
+                "old_title": "晚间涂抹淡斑眼霜，轻柔按摩至吸收。",
+                "new_title": "洁面后冷敷眼周3分钟",
+            },
+            True,
+            "completed",
+            8,
+        )
+    )
+
+    with (
+        patch("app.modules.chat.router.get_pending_action", new=AsyncMock(return_value=action)),
+        patch("app.modules.chat.router.ToolRegistry", return_value=registry),
+    ):
+        response = run(approve_pending_action("pending-1", user=user, db=db))
+
+    assert response["success"] is True
+    assert action.status == "approved"
+    confirmation = registry.execute.await_args.args[2]
+    assert "确认将任务改成洁面后冷敷眼周3分钟" in confirmation

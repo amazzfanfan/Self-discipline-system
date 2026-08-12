@@ -1,5 +1,7 @@
 from app.services.task_constraint_service import (
     merge_task_constraints,
+    normalize_task_constraints,
+    sanitize_constraint_phrase,
     task_constraints_text,
     validate_task_feasibility,
 )
@@ -32,3 +34,11 @@ def test_new_availability_overrides_old_unavailable_item():
 
     assert result["available_items"] == ["瑜伽垫"]
     assert result["unavailable_items"] == []
+
+
+def test_conversational_suffix_is_not_saved_as_part_of_resource():
+    assert sanitize_constraint_phrase("眼霜怎么办") == "眼霜"
+    assert sanitize_constraint_phrase("瑜伽垫可以吗") == "瑜伽垫"
+    assert normalize_task_constraints({"unavailable_items": ["眼霜怎么办"]})[
+        "unavailable_items"
+    ] == ["眼霜"]

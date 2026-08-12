@@ -11,13 +11,28 @@ LIST_FIELDS = (
 )
 
 
+def sanitize_constraint_phrase(value: object) -> str:
+    """Extract the resource/activity itself from a conversational phrase."""
+    text = str(value or "").strip()
+    text = re.split(r"[，。！？!?；;,.]", text, maxsplit=1)[0]
+    text = re.split(
+        r"(?:该)?怎么办(?:呀|呢|啊)?$|"
+        r"怎么(?:办|处理|替换|调整)(?:呀|呢|啊)?$|"
+        r"(?:可以|能不能|是否可以|可不可以).*$|"
+        r"(?:行吗|可以吗|好吗|吗|呢|呀|啊)$",
+        text,
+        maxsplit=1,
+    )[0]
+    return text.strip(" 的了呢吗呀啊？?！!，,。")[:50]
+
+
 def normalize_task_constraints(value: dict | None) -> dict:
     source = value or {}
     normalized = {
         field: list(dict.fromkeys(
-            str(item).strip()[:50]
+            sanitize_constraint_phrase(item)
             for item in source.get(field, [])
-            if str(item).strip()
+            if sanitize_constraint_phrase(item)
         ))[:30]
         for field in LIST_FIELDS
     }
@@ -32,7 +47,11 @@ def normalize_task_constraints(value: dict | None) -> dict:
 def merge_task_constraints(current: dict | None, updates: dict) -> dict:
     merged = normalize_task_constraints(current)
     for field in LIST_FIELDS:
-        additions = [str(item).strip() for item in updates.get(field, []) if str(item).strip()]
+        additions = [
+            sanitize_constraint_phrase(item)
+            for item in updates.get(field, [])
+            if sanitize_constraint_phrase(item)
+        ]
         if additions:
             merged[field] = list(dict.fromkeys([*merged[field], *additions]))[:30]
     if "max_task_minutes" in updates and updates["max_task_minutes"] is not None:
@@ -43,9 +62,9 @@ def merge_task_constraints(current: dict | None, updates: dict) -> dict:
     for item in merged["available_items"]:
         merged["unavailable_items"] = [old for old in merged["unavailable_items"] if old != item]
     unavailable_updates = {
-        str(item).strip()
+        sanitize_constraint_phrase(item)
         for item in updates.get("unavailable_items", [])
-        if str(item).strip()
+        if sanitize_constraint_phrase(item)
     }
     for item in unavailable_updates:
         merged["available_items"] = [old for old in merged["available_items"] if old != item]

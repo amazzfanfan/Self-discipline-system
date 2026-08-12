@@ -36,6 +36,7 @@ from app.services.task_constraint_service import (
     merge_task_constraints,
     validate_task_feasibility,
 )
+from app.services.task_replacement_service import generate_ai_task_replacement
 from app.services.weight_service import record_weight
 
 
@@ -500,12 +501,14 @@ class ToolRegistry:
                 )
             )
             conflicting_tasks = []
+            conflicting_task_models = []
             for task in task_result.scalars().all():
                 feasible, reason = validate_task_feasibility(
                     task.title,
                     profile.task_constraints,
                 )
                 if not feasible:
+                    conflicting_task_models.append(task)
                     conflicting_tasks.append(
                         {
                             "id": str(task.id),
@@ -516,16 +519,44 @@ class ToolRegistry:
                     )
             await self.db.commit()
             message = "任务可执行条件已更新，后续 AI 生成任务时会遵守这些限制。"
+            proposed_action = None
+            suggested_replacement = None
+            replacement_error = None
             if conflicting_tasks:
-                message += (
-                    "检测到今日已有任务与新条件冲突；系统没有擅自编造替代任务。"
-                    "请直接说明要改成的具体内容，或让 Agent 基于现有条件生成替代方案。"
-                )
+                message += "检测到今日已有任务与新条件冲突。"
+                if len(conflicting_task_models) == 1:
+                    conflict = conflicting_task_models[0]
+                    try:
+                        suggested_replacement = await generate_ai_task_replacement(
+                            self.db,
+                            user_id=self.user_id,
+                            task=conflict,
+                            profile=profile,
+                        )
+                        proposed_action = {
+                            "tool": "replace_today_task",
+                            "arguments": {
+                                "dimension": conflict.dimension.value,
+                                "title": suggested_replacement,
+                                "reason": "用户缺少原任务所需物品，采用 AI 生成的可执行替代任务",
+                                "task_keyword": conflict.title[:100],
+                            },
+                        }
+                        message += "AI 已生成一个替代候选，确认后才会修改今日任务。"
+                    except Exception as exc:
+                        logger.warning("AI task replacement generation failed: %s", exc)
+                        replacement_error = "AI 暂时无法生成满足当前条件的替代任务，请稍后重试。"
+                        message += replacement_error
+                else:
+                    message += "存在多个冲突任务，请先说明要替换哪一项。"
             return {
                 "success": True,
                 "message": message,
                 "task_constraints": profile.task_constraints,
                 "conflicting_tasks": conflicting_tasks,
+                "suggested_replacement": suggested_replacement,
+                "proposed_action": proposed_action,
+                "replacement_error": replacement_error,
             }
 
         definitions = [

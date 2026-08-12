@@ -70,6 +70,7 @@ function PendingActionCard({ action }: { action: PendingAction }) {
   const status = action.status === 'pending' ? optimisticStatus : action.status;
   const dimension = typeof action.arguments.dimension === 'string' ? action.arguments.dimension : '';
   const goalKeyword = typeof action.arguments.goal_keyword === 'string' ? action.arguments.goal_keyword : '';
+  const replacementTitle = typeof action.arguments.title === 'string' ? action.arguments.title : '';
   const dimensionLabel: Record<string, string> = {
     exercise: '运动', diet: '饮食', sleep: '睡眠', appearance: '形象管理',
   };
@@ -82,12 +83,13 @@ function PendingActionCard({ action }: { action: PendingAction }) {
         success?: boolean;
         action_status?: PendingAction['status'];
         result?: { message?: string };
+        reply?: string | null;
       }>(`/chat/actions/${action.action_id}/${decision}`);
       if (decision === 'reject') {
         setStatus('rejected');
       } else if (response.data.success) {
         setStatus('approved');
-        setFeedback('操作已执行，相关页面已经同步。');
+        setFeedback(response.data.reply ?? '操作已执行，相关页面已经同步。');
       } else {
         setStatus(response.data.action_status ?? 'failed');
         setFeedback(response.data.result?.message ?? '操作执行失败，请重新发起。');
@@ -129,7 +131,11 @@ function PendingActionCard({ action }: { action: PendingAction }) {
       <p className="mt-1 text-[11px] text-slate-500">
         {action.tool === 'skip_task'
           ? `跳过${dimensionLabel[dimension] ?? dimension}任务`
-          : action.tool === 'delete_goal' ? `删除包含“${goalKeyword}”的目标` : action.tool}
+          : action.tool === 'delete_goal'
+            ? `删除包含“${goalKeyword}”的目标`
+            : action.tool === 'replace_today_task'
+              ? `将${dimensionLabel[dimension] ?? dimension}任务替换为“${replacementTitle}”`
+              : action.tool}
       </p>
       {status === 'pending' ? (
         <div className="mt-3 flex gap-2">

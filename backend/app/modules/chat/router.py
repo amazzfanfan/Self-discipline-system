@@ -71,11 +71,18 @@ async def _find_contextual_confirmation(
         return action
     if action.tool_name == "delete_goal" and text in {"删除", "继续", "确认", "确认执行", "执行", "确定", "是", "是的"}:
         return action
+    if action.tool_name == "replace_today_task" and text in {"继续", "确认", "确认执行", "执行", "确定", "是", "是的"}:
+        return action
     return None
 
 
 def _confirmed_request(action: PendingAction, content: str) -> str:
-    suffix = "确认跳过任务" if action.tool_name == "skip_task" else "确认删除目标"
+    suffixes = {
+        "skip_task": "确认跳过任务",
+        "delete_goal": "确认删除目标",
+        "replace_today_task": f"确认将任务改成{action.arguments.get('title', 'AI 生成的替代任务')}",
+    }
+    suffix = suffixes.get(action.tool_name, "确认执行操作")
     return f"{action.original_request}\n用户随后回复“{content.strip()}”，已明确{suffix}"
 
 
@@ -118,6 +125,8 @@ def _direct_operation_reply(run: AgentRunResult) -> str | None:
     observation = run.observations[0]
     if observation.status == "approval_required":
         return str(observation.result.get("message") or "该操作需要你的明确确认。")
+    if observation.status == "proposal_ready" and not run.pending_action:
+        return "替代任务候选已经生成，但确认请求保存失败；本次没有修改任务，请重新发起。"
     if observation.status == "clarification_required":
         return str(observation.result.get("message") or "请补充执行该操作所需的信息。")
     if not observation.success:
@@ -188,6 +197,14 @@ def _direct_operation_reply(run: AgentRunResult) -> str | None:
                 for item in conflicts
             ]
             reply += "\n\n当前冲突任务：\n" + "\n".join(lines)
+        replacement = result.get("suggested_replacement")
+        if replacement and run.pending_action:
+            reply += (
+                f"\n\nAI 生成的替代候选：**{replacement}**"
+                "\n\n点击“确认执行”后才会修改今日任务；取消则保留原任务。"
+            )
+        elif result.get("replacement_error"):
+            reply += f"\n\n{result['replacement_error']}原任务暂未修改。"
         return reply
     if observation.tool == "record_goal_progress":
         goal = result.get("goal") or {}
@@ -475,11 +492,7 @@ async def approve_pending_action(
 
     action.status = "executing"
     await db.flush()
-    confirmation = f"{action.original_request}\n用户已明确确认执行该操作"
-    if action.tool_name == "skip_task":
-        confirmation += "，确认跳过任务"
-    elif action.tool_name == "delete_goal":
-        confirmation += "，确认删除目标"
+    confirmation = _confirmed_request(action, "确认执行")
     result, success, status, duration_ms = await ToolRegistry(db, str(user.id)).execute(
         action.tool_name,
         action.arguments,

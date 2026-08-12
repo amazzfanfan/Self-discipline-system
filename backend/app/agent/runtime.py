@@ -22,6 +22,7 @@ from app.models.user import User
 from app.core.time import local_now
 from app.services.context_builder import ContextBuilder
 from app.services.llm_service import chat_completion_with_fallback
+from app.services.task_constraint_service import sanitize_constraint_phrase
 from app.services.agent_audit_service import (
     append_agent_event,
     create_pending_action,
@@ -150,18 +151,34 @@ class AgentRuntime:
             result, success, status, duration_ms = await self.registry.execute(
                 decision.tool, decision.arguments, user_message
             )
-            if status == "approval_required" and self.audit_enabled:
+            pending_tool = decision.tool
+            pending_arguments = decision.arguments
+            pending_request = user_message
+            proposed_action = result.get("proposed_action") if isinstance(result, dict) else None
+            if success and status == "completed" and isinstance(proposed_action, dict):
+                proposed_tool = proposed_action.get("tool")
+                proposed_arguments = proposed_action.get("arguments")
+                if self.registry.has(str(proposed_tool)) and isinstance(proposed_arguments, dict):
+                    pending_tool = str(proposed_tool)
+                    pending_arguments = proposed_arguments
+                    pending_request = (
+                        f"{user_message}\n系统已基于用户约束生成 AI 替代候选，等待用户确认"
+                    )
+                    status = "proposal_ready"
+            if status in {"approval_required", "proposal_ready"} and self.audit_enabled:
                 try:
                     self.pending_action = await create_pending_action(
                         self.audit_run_id,
                         self.user.id,
-                        decision.tool,
-                        decision.arguments,
-                        user_message,
+                        pending_tool,
+                        pending_arguments,
+                        pending_request,
                     )
                     result = {**result, "pending_action": self.pending_action}
                 except Exception:
                     logger.exception("Failed to persist pending Agent action")
+                    if status == "proposal_ready":
+                        status = "completed"
             observation = ToolObservation(
                 tool=decision.tool,
                 arguments=decision.arguments,
@@ -171,14 +188,18 @@ class AgentRuntime:
             )
             observations.append(observation)
 
-            guarded = status in {"approval_required", "clarification_required"}
+            guarded = status in {"approval_required", "clarification_required", "proposal_ready"}
             event_type = "guardrail" if guarded else "tool_result"
             await self._emit(
                 trace,
                 AgentTraceEvent(
                     type=event_type,
                     title=(
-                        ("需要用户确认" if status == "approval_required" else "需要补充信息")
+                        (
+                            "等待确认 AI 替代任务"
+                            if status == "proposal_ready"
+                            else ("需要用户确认" if status == "approval_required" else "需要补充信息")
+                        )
                         if guarded
                         else ("工具执行完成" if success else "工具返回异常")
                     ),
@@ -222,7 +243,7 @@ class AgentRuntime:
         }
         can_reply_without_context = len(observations) == 1 and (
             observations[0].tool in direct_receipt_tools
-            or observations[0].status in {"approval_required", "clarification_required"}
+            or observations[0].status in {"approval_required", "clarification_required", "proposal_ready"}
         )
         if can_reply_without_context:
             response_messages = []
@@ -325,7 +346,9 @@ class AgentRuntime:
             text,
         )
         if unavailable_match:
-            item = unavailable_match.group(1).strip(" 的")
+            item = sanitize_constraint_phrase(unavailable_match.group(1))
+            if not item:
+                return PlannerDecision(action="respond", reason="需要明确不可用的物品或器材")
             return PlannerDecision(
                 action="tool",
                 tool="update_task_constraints",
@@ -334,7 +357,9 @@ class AgentRuntime:
             )
         avoid_match = re.search(r"(?:我)?(?:不能做|避免)\s*([^，。！？!?]{1,30})", text)
         if avoid_match:
-            activity = avoid_match.group(1).strip(" 的")
+            activity = sanitize_constraint_phrase(avoid_match.group(1))
+            if not activity:
+                return PlannerDecision(action="respond", reason="需要明确应避免的活动")
             return PlannerDecision(
                 action="tool",
                 tool="update_task_constraints",
@@ -346,7 +371,9 @@ class AgentRuntime:
             text,
         )
         if available_match:
-            item = available_match.group(1).strip(" 的")
+            item = sanitize_constraint_phrase(available_match.group(1))
+            if not item:
+                return PlannerDecision(action="respond", reason="需要明确可用的物品或器材")
             return PlannerDecision(
                 action="tool",
                 tool="update_task_constraints",
