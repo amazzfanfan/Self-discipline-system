@@ -152,6 +152,10 @@ export interface WeeklyReview {
     average_energy: number | null;
     average_stress: number | null;
     suggested_focus: Dimension | null;
+    goal_progress: GoalProgressSummary[];
+    goal_scheduled: number;
+    goal_completed: number;
+    goal_adherence: number | null;
   };
   next_week_plan: Record<string, unknown>;
   confirmed: boolean;
@@ -164,6 +168,9 @@ export interface Goal {
   target_metric: string | null;
   target_value: number | null;
   current_value: number | null;
+  progress_mode: 'sessions' | 'manual';
+  completed_sessions: number;
+  last_progress_at: string | null;
   deadline: string | null;
   milestones: Array<{ title?: string; completed?: boolean }>;
   recurrence: 'flexible' | 'daily' | 'weekly' | 'custom';
@@ -175,6 +182,35 @@ export interface Goal {
   reminder_minutes_before: number;
   status: 'active' | 'completed' | 'paused';
   source: 'manual' | 'chat';
+  created_at: string;
+}
+
+export interface GoalProgressSummary {
+  goal_id: string;
+  content: string;
+  goal_type: Dimension;
+  period_start: string;
+  period_end: string;
+  scheduled_total: number;
+  scheduled_to_date: number;
+  completed: number;
+  remaining_to_date: number;
+  adherence: number | null;
+  completed_sessions: number;
+  current_value: number | null;
+  target_value: number | null;
+  progress_mode: 'sessions' | 'manual';
+}
+
+export interface GoalProgressEvent {
+  id: string;
+  event_type: 'task_completed' | 'manual_progress';
+  delta: number;
+  previous_value: number | null;
+  current_value: number | null;
+  event_date: string;
+  source: string;
+  metadata: { task_title?: string; dimension?: Dimension; [key: string]: unknown };
   created_at: string;
 }
 

@@ -82,4 +82,17 @@ def goal_planning_context(goal: dict) -> str:
         parts.append(f"计划时间：{goal['preferred_time']}")
     if goal.get("duration_minutes"):
         parts.append(f"计划时长：{goal['duration_minutes']} 分钟")
+    progress = goal.get("progress_summary") or {}
+    if progress.get("scheduled_to_date"):
+        parts.append(
+            "本周截至今天："
+            f"计划 {progress['scheduled_to_date']} 次，"
+            f"已完成 {progress.get('completed', 0)} 次"
+        )
+    if goal.get("completed_sessions"):
+        parts.append(f"累计完成：{goal['completed_sessions']} 次")
+    if goal.get("target_value") is not None:
+        parts.append(
+            f"目标进度：{goal.get('current_value') or 0}/{goal['target_value']}"
+        )
     return "；".join(parts)

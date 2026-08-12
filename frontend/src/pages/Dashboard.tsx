@@ -285,6 +285,12 @@ export default function Dashboard() {
                     今日免做 {weeklyReview.summary.excused_tasks || 0} 项 · 改期 {weeklyReview.summary.rescheduled_tasks || 0} 项
                   </p>
                 ) : null}
+                {weeklyReview.summary.goal_scheduled > 0 && (
+                  <div className="mt-3 rounded-xl border border-violet-300/10 bg-slate-950/30 px-3 py-2">
+                    <p className="text-[10px] text-violet-200/80">成长目标完成 {weeklyReview.summary.goal_completed}/{weeklyReview.summary.goal_scheduled} 次 · 达成率 {weeklyReview.summary.goal_adherence ?? 0}%</p>
+                    <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[9px] text-slate-600">{weeklyReview.summary.goal_progress.map((goal) => <span key={goal.goal_id}>{DIM_LABELS[goal.goal_type]} {goal.completed}/{goal.scheduled_to_date}</span>)}</div>
+                  </div>
+                )}
               </div>
               <div className="text-right text-xs text-slate-500">
                 {weeklyReview.summary.suggested_focus

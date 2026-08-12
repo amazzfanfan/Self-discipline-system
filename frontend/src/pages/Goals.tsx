@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
 import api from '../services/api';
-import type { Dimension, Goal } from '../types';
+import type { Dimension, Goal, GoalProgressEvent, GoalProgressSummary } from '../types';
 
 const labels: Record<Dimension, string> = {
   exercise: '运动', diet: '饮食', sleep: '睡眠', appearance: '形象管理',
@@ -34,6 +34,7 @@ type GoalDraft = {
   preferredTime: string;
   durationMinutes: string;
   reminderEnabled: boolean;
+  progressMode: Goal['progress_mode'];
 };
 
 const draftFromGoal = (goal: Goal): GoalDraft => ({
@@ -48,6 +49,7 @@ const draftFromGoal = (goal: Goal): GoalDraft => ({
   preferredTime: goal.preferred_time ?? '',
   durationMinutes: goal.duration_minutes == null ? '' : String(goal.duration_minutes),
   reminderEnabled: goal.reminder_enabled ?? false,
+  progressMode: goal.progress_mode ?? 'sessions',
 });
 
 export default function Goals() {
@@ -64,15 +66,28 @@ export default function Goals() {
   const [preferredTime, setPreferredTime] = useState('');
   const [durationMinutes, setDurationMinutes] = useState('');
   const [reminderEnabled, setReminderEnabled] = useState(false);
+  const [progressMode, setProgressMode] = useState<Goal['progress_mode']>('sessions');
   const [busyId, setBusyId] = useState<string | null>(null);
   const [editingGoal, setEditingGoal] = useState<Goal | null>(null);
   const [editDraft, setEditDraft] = useState<GoalDraft | null>(null);
   const [deleteCandidate, setDeleteCandidate] = useState<Goal | null>(null);
+  const [timelineGoal, setTimelineGoal] = useState<Goal | null>(null);
   const [notice, setNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const { data: goals = [], isLoading } = useQuery<Goal[]>({
     queryKey: ['goals'],
     queryFn: () => api.get('/goals').then((response) => response.data),
+  });
+
+  const { data: progressSummaries = {} } = useQuery<Record<string, GoalProgressSummary>>({
+    queryKey: ['goal-progress-summary'],
+    queryFn: () => api.get('/goals/progress/summary').then((response) => response.data),
+  });
+
+  const { data: timeline = [], isLoading: timelineLoading } = useQuery<GoalProgressEvent[]>({
+    queryKey: ['goal-progress-timeline', timelineGoal?.id],
+    queryFn: () => api.get(`/goals/${timelineGoal?.id}/progress`).then((response) => response.data),
+    enabled: Boolean(timelineGoal),
   });
 
   const visibleGoals = useMemo(
@@ -87,7 +102,10 @@ export default function Goals() {
     completed: goals.filter((goal) => goal.status === 'completed').length,
   }), [goals]);
 
-  const refresh = () => queryClient.invalidateQueries({ queryKey: ['goals'] });
+  const refresh = () => Promise.all([
+    queryClient.invalidateQueries({ queryKey: ['goals'] }),
+    queryClient.invalidateQueries({ queryKey: ['goal-progress-summary'] }),
+  ]);
 
   const createGoal = async () => {
     setNotice(null);
@@ -105,10 +123,12 @@ export default function Goals() {
         preferred_time: preferredTime || null,
         duration_minutes: durationMinutes ? Number(durationMinutes) : null,
         reminder_enabled: reminderEnabled && Boolean(preferredTime),
+        progress_mode: progressMode,
       });
       setContent(''); setMetric(''); setTarget(''); setDeadline('');
       setRecurrence('flexible'); setDaysOfWeek([]); setPreferredTime('');
       setDurationMinutes(''); setReminderEnabled(false); setCreating(false);
+      setProgressMode('sessions');
       setNotice({ type: 'success', text: '目标已创建，并会参与后续任务规划。' });
       await refresh();
     } catch {
@@ -152,6 +172,7 @@ export default function Goals() {
       preferred_time: editDraft.preferredTime || null,
       duration_minutes: editDraft.durationMinutes ? Number(editDraft.durationMinutes) : null,
       reminder_enabled: editDraft.reminderEnabled && Boolean(editDraft.preferredTime),
+      progress_mode: editDraft.progressMode,
     }, '目标内容和进度已保存。');
     if (saved) {
       setEditingGoal(null);
@@ -231,6 +252,7 @@ export default function Goals() {
                 <input aria-label="计划时间" value={preferredTime} onChange={(event) => setPreferredTime(event.target.value)} type="time" className="rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
                 <input aria-label="计划时长" value={durationMinutes} onChange={(event) => setDurationMinutes(event.target.value)} min="1" max="600" type="number" placeholder="计划时长（分钟）" className="rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
                 <label className="flex items-center gap-2 rounded-xl border border-white/[0.06] bg-slate-950/50 px-3.5 py-3 text-xs text-slate-400"><input type="checkbox" checked={reminderEnabled} disabled={!preferredTime} onChange={(event) => setReminderEnabled(event.target.checked)} />执行前提醒</label>
+                <select aria-label="进度记录方式" value={progressMode} onChange={(event) => setProgressMode(event.target.value as Goal['progress_mode'])} className="rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30 md:col-span-2"><option value="sessions">完成关联任务时自动累计</option><option value="manual">手动维护数值进度</option></select>
                 {(recurrence === 'weekly' || recurrence === 'custom') && <div className="flex flex-wrap gap-2 md:col-span-2">{weekdays.map((day, index) => <button key={day} type="button" onClick={() => setDaysOfWeek((value) => value.includes(index) ? value.filter((item) => item !== index) : [...value, index].sort())} className={`h-9 w-9 rounded-lg text-xs ${daysOfWeek.includes(index) ? 'bg-cyan-400 text-slate-950' : 'bg-slate-950/70 text-slate-500'}`}>{day}</button>)}</div>}
                 <div className="md:col-span-2"><button disabled={!content.trim() || ((recurrence === 'weekly' || recurrence === 'custom') && daysOfWeek.length === 0)} type="button" onClick={() => void createGoal()} className="rounded-xl bg-cyan-400 px-4 py-2.5 text-xs font-semibold text-slate-950 disabled:opacity-40">创建并纳入计划</button></div>
               </div>
@@ -270,13 +292,17 @@ export default function Goals() {
                   </label>
                   <label>
                     <span className="mb-1.5 block text-[10px] text-slate-500">当前进度</span>
-                    <input aria-label="当前进度" type="number" min="0" value={editDraft.current} onChange={(event) => setEditDraft({ ...editDraft, current: event.target.value })}
+                    <input aria-label="当前进度" type="number" min="0" disabled={editDraft.progressMode === 'sessions'} value={editDraft.current} onChange={(event) => setEditDraft({ ...editDraft, current: event.target.value })}
                       className="w-full rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
                   </label>
                   <label>
                     <span className="mb-1.5 block text-[10px] text-slate-500">目标值（可选）</span>
                     <input aria-label="目标值" type="number" min="0.01" step="any" value={editDraft.target} onChange={(event) => setEditDraft({ ...editDraft, target: event.target.value })}
                       className="w-full rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30" />
+                  </label>
+                  <label className="md:col-span-2">
+                    <span className="mb-1.5 block text-[10px] text-slate-500">进度记录方式</span>
+                    <select aria-label="编辑进度记录方式" value={editDraft.progressMode} onChange={(event) => setEditDraft({ ...editDraft, progressMode: event.target.value as Goal['progress_mode'] })} className="w-full rounded-xl border border-white/[0.06] bg-slate-950/70 px-3.5 py-3 text-sm text-white outline-none focus:border-cyan-400/30"><option value="sessions">完成关联任务时自动累计</option><option value="manual">手动维护数值进度</option></select>
                   </label>
                   <label className="md:col-span-2">
                     <span className="mb-1.5 block text-[10px] text-slate-500">截止日期（可选）</span>
@@ -327,6 +353,21 @@ export default function Goals() {
           )}
         </AnimatePresence>
 
+        <AnimatePresence>
+          {timelineGoal && (
+            <motion.div role="dialog" aria-modal="true" aria-label="目标执行记录" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm" onMouseDown={(event) => { if (event.target === event.currentTarget) setTimelineGoal(null); }}>
+              <motion.div initial={{ opacity: 0, y: 18, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 12, scale: 0.98 }} className="max-h-[75vh] w-full max-w-lg overflow-hidden rounded-[24px] border border-cyan-300/15 bg-slate-900 shadow-2xl">
+                <div className="flex items-start justify-between border-b border-white/[0.06] px-5 py-4"><div><p className="text-[10px] uppercase tracking-[0.2em] text-cyan-300/60">Execution history</p><h2 className="mt-1 text-base font-semibold text-white">执行记录</h2><p className="mt-1 line-clamp-1 text-[11px] text-slate-500">{timelineGoal.content}</p></div><button type="button" onClick={() => setTimelineGoal(null)} className="rounded-lg p-2 text-slate-500 hover:bg-white/5 hover:text-white">×</button></div>
+                <div className="max-h-[55vh] space-y-2 overflow-y-auto p-5">
+                  {timelineLoading && <p className="py-8 text-center text-xs text-slate-500">正在加载执行记录…</p>}
+                  {!timelineLoading && timeline.length === 0 && <p className="py-8 text-center text-xs text-slate-500">完成关联任务后，记录会出现在这里。</p>}
+                  {timeline.map((event) => <div key={event.id} className="flex gap-3 rounded-xl border border-white/5 bg-slate-950/40 p-3"><span className={`mt-1 h-2 w-2 flex-shrink-0 rounded-full ${event.event_type === 'task_completed' ? 'bg-emerald-400' : 'bg-violet-400'}`} /><div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-3"><span className="text-xs font-medium text-slate-300">{event.event_type === 'task_completed' ? '完成关联任务' : '手动更新进度'}</span><span className="text-[9px] text-slate-600">{event.event_date}</span></div><p className="mt-1 text-[11px] text-slate-500">{event.metadata.task_title || `${event.previous_value ?? 0} → ${event.current_value ?? 0}`}</p></div></div>)}
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         <div className="mb-5 flex max-w-full gap-1 overflow-x-auto rounded-2xl border border-white/[0.06] bg-white/[0.025] p-1.5">
           {tabs.map((tab) => <button key={tab.value} type="button" onClick={() => setStatusFilter(tab.value)} className={`relative flex-shrink-0 rounded-xl px-3.5 py-2 text-[11px] transition-colors ${statusFilter === tab.value ? 'text-white' : 'text-slate-500 hover:text-slate-300'}`}>{statusFilter === tab.value && <motion.div layoutId="goal-status-tab" className="absolute inset-0 rounded-xl border border-cyan-300/15 bg-cyan-400/[0.08]" />}<span className="relative">{tab.label} <span className="ml-1 text-[9px] opacity-60">{counts[tab.value]}</span></span></button>)}
         </div>
@@ -344,6 +385,7 @@ export default function Goals() {
             {visibleGoals.map((goal, index) => {
               const progress = goal.target_value ? Math.min(100, 100 * (goal.current_value ?? 0) / goal.target_value) : 0;
               const status = statusMeta[goal.status];
+              const weekly = progressSummaries[goal.id];
               return (
                 <motion.article key={goal.id} layout initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.04 }} className="group relative overflow-hidden rounded-[22px] border border-white/[0.07] bg-slate-900/70 p-5 shadow-xl backdrop-blur-xl transition-colors hover:border-cyan-300/15">
                   <div className="absolute -right-8 -top-10 h-28 w-28 rounded-full bg-cyan-400/[0.05] blur-3xl" />
@@ -359,8 +401,10 @@ export default function Goals() {
                     {goal.duration_minutes && <span className="rounded-full bg-white/[0.04] px-2 py-1 text-slate-400">{goal.duration_minutes} 分钟</span>}
                     {goal.reminder_enabled && <span className="rounded-full bg-violet-400/[0.07] px-2 py-1 text-violet-300">提前 {goal.reminder_minutes_before} 分钟提醒</span>}
                   </div>
+                  {weekly && <div className="relative mt-4 rounded-xl border border-cyan-300/10 bg-cyan-400/[0.035] p-3"><div className="flex items-center justify-between text-[10px]"><span className="text-slate-400">本周执行</span><span className="font-medium text-cyan-300">{weekly.completed}/{weekly.scheduled_to_date || weekly.scheduled_total} 次</span></div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800"><motion.div initial={{ width: 0 }} animate={{ width: `${weekly.adherence ?? 0}%` }} className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-cyan-400" /></div><div className="mt-2 flex justify-between text-[9px] text-slate-600"><span>{weekly.adherence == null ? '本周尚未到执行日' : `到期达成率 ${weekly.adherence}%`}</span><span>累计 {weekly.completed_sessions} 次</span></div></div>}
                   {goal.target_value != null && <div className="relative mt-4"><div className="flex justify-between text-[10px] text-slate-500"><span>{goal.target_metric || '目标进度'}</span><span>{goal.current_value ?? 0} / {goal.target_value}</span></div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800"><motion.div initial={{ width: 0 }} animate={{ width: `${progress}%` }} className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-violet-500" /></div></div>}
                   <div className="relative mt-5 flex flex-wrap gap-2 border-t border-white/[0.055] pt-4">
+                    <button type="button" onClick={() => setTimelineGoal(goal)} className="rounded-lg bg-cyan-400/[0.06] px-2.5 py-1.5 text-[10px] text-cyan-300 hover:bg-cyan-400/[0.1]">执行记录</button>
                     <button disabled={busyId === goal.id} type="button" onClick={() => editGoal(goal)} className="rounded-lg bg-white/[0.045] px-2.5 py-1.5 text-[10px] text-slate-400 hover:text-white">编辑</button>
                     {goal.status === 'active' && <button disabled={busyId === goal.id} type="button" onClick={() => void updateGoal(goal, { status: 'paused' })} className="rounded-lg bg-amber-400/[0.07] px-2.5 py-1.5 text-[10px] text-amber-300">暂停</button>}
                     {goal.status === 'paused' && <button disabled={busyId === goal.id} type="button" onClick={() => void updateGoal(goal, { status: 'active' })} className="rounded-lg bg-cyan-400/[0.07] px-2.5 py-1.5 text-[10px] text-cyan-300">恢复</button>}

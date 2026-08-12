@@ -7,6 +7,7 @@ from app.services.score_service import record_task_completion, record_negative
 from app.core.time import local_today
 from app.services.task_state_service import apply_task_schedule, maintain_task_states
 from app.services.task_event_service import record_task_event
+from app.services.goal_progress_service import record_goal_task_completion
 
 
 async def complete_task_by_dimension(db: AsyncSession, user_id: str, dimension: str) -> dict:
@@ -24,7 +25,7 @@ async def complete_task_by_dimension(db: AsyncSession, user_id: str, dimension: 
                     TaskStatusEnum.deferred,
                 ]),
             )
-        )
+        ).with_for_update()
     )
     task = result.scalars().first()
     if not task:
@@ -38,6 +39,7 @@ async def complete_task_by_dimension(db: AsyncSession, user_id: str, dimension: 
     task.deferred_until = None
 
     score_change = await record_task_completion(db, user_id, dim_enum, task.scheduled_date)
+    goal_progress = await record_goal_task_completion(db, task)
     await record_task_event(
         db,
         task,
@@ -52,6 +54,7 @@ async def complete_task_by_dimension(db: AsyncSession, user_id: str, dimension: 
         "message": f"任务已完成：{task.title}",
         "task_title": task.title,
         "score_change": score_change,
+        "goal_progress": goal_progress,
     }
 
 
@@ -70,7 +73,7 @@ async def skip_task_by_dimension(db: AsyncSession, user_id: str, dimension: str)
                     TaskStatusEnum.deferred,
                 ]),
             )
-        )
+        ).with_for_update()
     )
     task = result.scalars().first()
     if not task:
@@ -128,7 +131,7 @@ async def replace_task_by_dimension(
                     TaskStatusEnum.deferred,
                 ]),
             )
-        )
+        ).with_for_update()
     )
     task = result.scalars().first()
     if not task:
@@ -192,7 +195,7 @@ async def defer_task_by_dimension(
                     TaskStatusEnum.deferred,
                 ]),
             )
-        )
+        ).with_for_update()
     )
     task = result.scalars().first()
     if not task:
@@ -220,7 +223,7 @@ async def resume_task_by_dimension(db: AsyncSession, user_id: str, dimension: st
                 Task.dimension == dim_enum,
                 Task.status == TaskStatusEnum.deferred,
             )
-        )
+        ).with_for_update()
     )
     task = result.scalars().first()
     if not task:

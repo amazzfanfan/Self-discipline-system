@@ -19,6 +19,7 @@ from sqlalchemy import (
     String,
     Text,
     Time,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from pgvector.sqlalchemy import Vector
@@ -62,6 +63,9 @@ class Goal(Base):
     target_metric = Column(String(100))
     target_value = Column(Float)
     current_value = Column(Float)
+    progress_mode = Column(String(20), nullable=False, default="sessions")
+    completed_sessions = Column(Integer, nullable=False, default=0)
+    last_progress_at = Column(DateTime(timezone=True))
     deadline = Column(Date)
     milestones = Column(JSON, nullable=False, default=list)
     recurrence = Column(String(20), nullable=False, default="flexible")
@@ -110,6 +114,11 @@ class Goal(Base):
             "target_metric": self.target_metric,
             "target_value": self.target_value,
             "current_value": self.current_value,
+            "progress_mode": self.progress_mode,
+            "completed_sessions": self.completed_sessions or 0,
+            "last_progress_at": (
+                self.last_progress_at.isoformat() if self.last_progress_at else None
+            ),
             "deadline": self.deadline.isoformat() if self.deadline else None,
             "milestones": self.milestones or [],
             "recurrence": self.recurrence,
@@ -128,3 +137,43 @@ class Goal(Base):
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
+
+
+class GoalProgressEvent(Base):
+    """Immutable evidence that changed a goal's execution progress."""
+
+    __tablename__ = "goal_progress_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "goal_id",
+            "task_id",
+            "event_type",
+            name="uq_goal_progress_task_event",
+        ),
+        Index("ix_goal_progress_goal_created", "goal_id", "created_at"),
+        Index("ix_goal_progress_user_date", "user_id", "event_date"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    goal_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("goals.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    task_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("tasks.id", ondelete="SET NULL"),
+    )
+    event_type = Column(String(32), nullable=False)
+    delta = Column(Float, nullable=False, default=0)
+    previous_value = Column(Float)
+    current_value = Column(Float)
+    event_date = Column(Date, nullable=False)
+    source = Column(String(30), nullable=False, default="system")
+    event_metadata = Column(JSON, nullable=False, default=dict)
+    created_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )

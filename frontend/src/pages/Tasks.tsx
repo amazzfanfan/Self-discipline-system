@@ -112,6 +112,8 @@ export default function Tasks() {
       queryClient.invalidateQueries({ queryKey: ['today-tasks'] }),
       queryClient.invalidateQueries({ queryKey: ['behavior-metrics'] }),
       queryClient.invalidateQueries({ queryKey: ['weekly-review'] }),
+      queryClient.invalidateQueries({ queryKey: ['goals'] }),
+      queryClient.invalidateQueries({ queryKey: ['goal-progress-summary'] }),
     ]);
   };
 

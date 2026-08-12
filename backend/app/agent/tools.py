@@ -5,7 +5,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, time as clock_time
+from datetime import date, datetime, time as clock_time, timedelta
 from typing import Any, Awaitable, Callable, Literal
 
 from pydantic import BaseModel, Field, ValidationError
@@ -16,6 +16,8 @@ from app.models.goal import Goal
 from app.models.score import UserScore
 from app.services.cache_service import invalidate_scores, invalidate_tasks
 from app.services.goal_service import goal_service
+from app.services.goal_progress_service import build_goal_progress_summaries
+from app.core.time import local_today
 from app.services.memory_service import MemoryService
 from app.services.task_service import (
     complete_task_by_dimension,
@@ -254,12 +256,25 @@ class ToolRegistry:
             goals = await goal_service.get_user_goals(
                 db=self.db, user_id=self.user_id, status=args.status
             )
+            today = local_today()
+            week_start = today - timedelta(days=today.weekday())
+            progress = await build_goal_progress_summaries(
+                self.db,
+                self.user_id,
+                period_start=week_start,
+                period_end=week_start + timedelta(days=6),
+                as_of=today,
+            )
             slim = [
                 {
                     "id": goal["id"],
                     "content": goal["content"],
                     "goal_type": goal["goal_type"],
                     "status": goal["status"],
+                    "current_value": goal["current_value"],
+                    "target_value": goal["target_value"],
+                    "completed_sessions": goal["completed_sessions"],
+                    "this_week": progress.get(goal["id"]),
                 }
                 for goal in goals[:10]
             ]

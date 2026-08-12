@@ -13,10 +13,12 @@ from app.core.deps import get_current_user
 from app.core.time import local_today
 from app.main import app
 from app.models.assessment import AssessmentRun
+from app.models.goal import Goal, GoalProgressEvent
 from app.models.notification import UserNotification
 from app.models.score import DimensionEnum, UserScore
 from app.models.task import DifficultyEnum, Task, TaskEvent, TaskStatusEnum
 from app.models.user import User, UserProfile
+from app.services.goal_progress_service import record_goal_task_completion
 
 
 pytestmark = pytest.mark.skipif(
@@ -62,6 +64,21 @@ async def _exercise_api_contracts(monkeypatch):
                         baseline_score=60,
                     )
                 )
+            tracking_goal = Goal(
+                id=uuid.uuid4(),
+                user_id=user.id,
+                content="每天完成一次快走",
+                goal_type="exercise",
+                recurrence="daily",
+                target_metric="sessions",
+                target_value=7,
+                current_value=0,
+                progress_mode="sessions",
+                completed_sessions=0,
+                status="active",
+            )
+            session.add(tracking_goal)
+            await session.flush()
             task = Task(
                 id=uuid.uuid4(),
                 user_id=user.id,
@@ -70,6 +87,7 @@ async def _exercise_api_contracts(monkeypatch):
                 difficulty=DifficultyEnum.easy,
                 scheduled_date=local_today(),
                 status=TaskStatusEnum.pending,
+                goal_id=tracking_goal.id,
             )
             session.add(task)
             assessment = AssessmentRun(
@@ -126,6 +144,24 @@ async def _exercise_api_contracts(monkeypatch):
                 )
                 assert exercise_score.streak_days == 1
                 assert exercise_score.last_completed_date == local_today()
+                await session.refresh(tracking_goal)
+                assert tracking_goal.completed_sessions == 1
+                assert tracking_goal.current_value == 1
+                progress_events = (
+                    await session.execute(
+                        select(GoalProgressEvent).where(
+                            GoalProgressEvent.goal_id == tracking_goal.id
+                        )
+                    )
+                ).scalars().all()
+                assert [event.event_type for event in progress_events] == [
+                    "task_completed"
+                ]
+                assert complete_response.json()["goal_progress"]["delta"] == 1
+                replayed_progress = await record_goal_task_completion(session, task)
+                assert replayed_progress["already_recorded"] is True
+                await session.refresh(tracking_goal)
+                assert tracking_goal.completed_sessions == 1
                 task_events = (
                     await session.execute(
                         select(TaskEvent).where(TaskEvent.task_id == task.id)
@@ -135,10 +171,25 @@ async def _exercise_api_contracts(monkeypatch):
                 timeline_response = await client.get(f"/api/tasks/{task.id}/events")
                 assert timeline_response.status_code == 200
                 assert timeline_response.json()[0]["source"] == "api"
+                goal_summary_response = await client.get("/api/goals/progress/summary")
+                assert goal_summary_response.status_code == 200
+                tracking_summary = goal_summary_response.json()[str(tracking_goal.id)]
+                assert tracking_summary["completed"] == 1
+                assert tracking_summary["scheduled_to_date"] == 1
+                assert tracking_summary["adherence"] == 100
+                goal_timeline_response = await client.get(
+                    f"/api/goals/{tracking_goal.id}/progress"
+                )
+                assert goal_timeline_response.status_code == 200
+                assert goal_timeline_response.json()[0]["metadata"]["task_title"] == task.title
 
                 metrics_response = await client.get("/api/behavior/metrics")
                 assert metrics_response.status_code == 200
                 assert metrics_response.json()["overall"]["sample_count_7d"] == 1
+                weekly_response = await client.get("/api/behavior/weekly-review")
+                assert weekly_response.status_code == 200
+                assert "goal_progress" in weekly_response.json()["summary"]
+                assert "goal_adherence" in weekly_response.json()["summary"]
 
                 goal_response = await client.post(
                     "/api/goals",
@@ -157,6 +208,15 @@ async def _exercise_api_contracts(monkeypatch):
                 goal_id = goal_response.json()["id"]
                 assert goal_response.json()["preferred_time"] == "20:00"
                 assert goal_response.json()["duration_minutes"] == 40
+                manual_progress_response = await client.put(
+                    f"/api/goals/{goal_id}",
+                    json={"progress_mode": "manual", "current_value": 3},
+                )
+                assert manual_progress_response.status_code == 200
+                assert manual_progress_response.json()["current_value"] == 3
+                manual_timeline = await client.get(f"/api/goals/{goal_id}/progress")
+                assert manual_timeline.status_code == 200
+                assert manual_timeline.json()[0]["event_type"] == "manual_progress"
                 pause_response = await client.put(
                     f"/api/goals/{goal_id}",
                     json={"status": "paused"},

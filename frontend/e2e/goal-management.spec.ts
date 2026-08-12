@@ -10,6 +10,9 @@ test('a goal can be paused and edited without disappearing', async ({ page }) =>
     target_metric: null,
     target_value: null,
     current_value: null,
+    progress_mode: 'sessions',
+    completed_sessions: 2,
+    last_progress_at: now,
     deadline: null,
     milestones: [],
     importance_score: 0.5,
@@ -17,6 +20,13 @@ test('a goal can be paused and edited without disappearing', async ({ page }) =>
     source: 'chat',
     created_at: now,
     updated_at: now,
+    recurrence: 'daily',
+    days_of_week: [],
+    preferred_time: '20:00',
+    duration_minutes: 40,
+    start_date: null,
+    reminder_enabled: true,
+    reminder_minutes_before: 30,
   };
 
   await page.route('**/api/**', async (route) => {
@@ -42,6 +52,14 @@ test('a goal can be paused and edited without disappearing', async ({ page }) =>
       await route.fulfill({ json: [goal] });
       return;
     }
+    if (path === '/api/goals/progress/summary') {
+      await route.fulfill({ json: { 'goal-1': { goal_id: 'goal-1', content: goal.content, goal_type: 'exercise', period_start: '2026-08-10', period_end: '2026-08-16', scheduled_total: 7, scheduled_to_date: 3, completed: 2, remaining_to_date: 1, adherence: 66.7, completed_sessions: 2, current_value: 2, target_value: null, progress_mode: 'sessions' } } });
+      return;
+    }
+    if (path === '/api/goals/goal-1/progress') {
+      await route.fulfill({ json: [{ id: 'event-1', event_type: 'task_completed', delta: 1, previous_value: 1, current_value: 2, event_date: '2026-08-12', source: 'task_completion', metadata: { task_title: '跑步机爬坡走40分钟' }, created_at: now }] });
+      return;
+    }
     if (path === '/api/goals/goal-1' && request.method() === 'PUT') {
       goal = { ...goal, ...(request.postDataJSON() as Partial<typeof goal>), updated_at: now };
       await route.fulfill({ json: goal });
@@ -53,6 +71,11 @@ test('a goal can be paused and edited without disappearing', async ({ page }) =>
   await page.goto('/goals');
   await expect(page.getByRole('heading', { name: '成长目标' })).toBeVisible();
   await expect(page.getByText(goal.content)).toBeVisible();
+  await expect(page.getByText('2/3 次')).toBeVisible();
+  await page.getByRole('button', { name: '执行记录' }).click();
+  const timeline = page.getByRole('dialog', { name: '目标执行记录' });
+  await expect(timeline.getByText('跑步机爬坡走40分钟')).toBeVisible();
+  await timeline.getByRole('button', { name: '×' }).click();
 
   await page.getByRole('button', { name: '暂停', exact: true }).click();
   await expect(page.getByText('已暂停', { exact: true })).toBeVisible();

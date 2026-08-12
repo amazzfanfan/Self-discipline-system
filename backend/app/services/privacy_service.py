@@ -6,7 +6,7 @@ from app.models.agent_run import AgentRun, AgentStep, PendingAction
 from app.models.assessment import AssessmentRun
 from app.models.behavior import DailyCheckIn, WeeklyReview
 from app.models.conversation import Conversation
-from app.models.goal import Goal
+from app.models.goal import Goal, GoalProgressEvent
 from app.models.memory import Memory
 from app.models.notification import UserNotification
 from app.models.score import ScoreHistory, UserScore
@@ -29,6 +29,7 @@ async def export_user_data(db, user: User) -> dict:
     conversations = await all_items(Conversation)
     memories = await all_items(Memory)
     goals = await all_items(Goal)
+    goal_progress_events = await all_items(GoalProgressEvent)
     weights = await all_items(WeightRecord)
     assessments = await all_items(AssessmentRun)
     checkins = await all_items(DailyCheckIn)
@@ -96,6 +97,22 @@ async def export_user_data(db, user: User) -> dict:
         ],
         "memories": [item.to_dict() | {"content": item.content} for item in memories],
         "goals": [item.to_dict() for item in goals],
+        "goal_progress_events": [
+            {
+                "id": str(item.id),
+                "goal_id": str(item.goal_id),
+                "task_id": str(item.task_id) if item.task_id else None,
+                "event_type": item.event_type,
+                "delta": item.delta,
+                "previous_value": item.previous_value,
+                "current_value": item.current_value,
+                "event_date": item.event_date.isoformat(),
+                "source": item.source,
+                "metadata": item.event_metadata,
+                "created_at": item.created_at.isoformat(),
+            }
+            for item in goal_progress_events
+        ],
         "weights": [
             {"weight_kg": float(item.weight_kg), "recorded_at": item.recorded_at.isoformat()}
             for item in weights

@@ -98,6 +98,7 @@ function PendingActionCard({ action }: { action: PendingAction }) {
         queryClient.invalidateQueries({ queryKey: ['tasks'] }),
         queryClient.invalidateQueries({ queryKey: ['behavior-metrics'] }),
         queryClient.invalidateQueries({ queryKey: ['goals'] }),
+        queryClient.invalidateQueries({ queryKey: ['goal-progress-summary'] }),
       ]);
     } catch {
       try {
@@ -257,6 +258,7 @@ export default function Chat() {
         queryClient.invalidateQueries({ queryKey: ['tasks'] }),
         queryClient.invalidateQueries({ queryKey: ['scores'] }),
         queryClient.invalidateQueries({ queryKey: ['goals'] }),
+        queryClient.invalidateQueries({ queryKey: ['goal-progress-summary'] }),
       ]);
     } catch (error: unknown) {
       if (error instanceof DOMException && error.name === 'AbortError') {

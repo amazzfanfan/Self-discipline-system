@@ -5,7 +5,7 @@ Goals Router - 目标管理 API
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from datetime import date, time
+from datetime import date, time, timedelta
 from typing import Literal, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +13,11 @@ from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.models.user import User
 from app.services.goal_service import goal_service
+from app.core.time import local_today
+from app.services.goal_progress_service import (
+    build_goal_progress_summaries,
+    get_goal_progress_timeline,
+)
 
 router = APIRouter(prefix="/api/goals", tags=["goals"])
 
@@ -39,6 +44,7 @@ class GoalCreateRequest(BaseModel):
     start_date: Optional[date] = None
     reminder_enabled: Optional[bool] = None
     reminder_minutes_before: int = Field(default=30, ge=0, le=1440)
+    progress_mode: Literal["sessions", "manual"] = "sessions"
 
 
 class GoalUpdateRequest(BaseModel):
@@ -65,6 +71,7 @@ class GoalUpdateRequest(BaseModel):
     start_date: Optional[date] = None
     reminder_enabled: Optional[bool] = None
     reminder_minutes_before: Optional[int] = Field(default=None, ge=0, le=1440)
+    progress_mode: Optional[Literal["sessions", "manual"]] = None
 
 
 class GoalResponse(BaseModel):
@@ -85,6 +92,9 @@ class GoalResponse(BaseModel):
     start_date: Optional[str] = None
     reminder_enabled: bool
     reminder_minutes_before: int
+    progress_mode: str
+    completed_sessions: int
+    last_progress_at: Optional[str] = None
     importance_score: Optional[float] = None
     status: str
     source: str
@@ -119,6 +129,7 @@ async def create_goal(
         start_date=body.start_date,
         reminder_enabled=body.reminder_enabled,
         reminder_minutes_before=body.reminder_minutes_before,
+        progress_mode=body.progress_mode,
         source="manual",
     )
     return goal.to_dict()
@@ -160,6 +171,43 @@ async def search_goals(
     return goals
 
 
+@router.get("/progress/summary")
+async def goal_progress_summary(
+    week_start: Optional[date] = Query(default=None),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    """Return one-query execution summaries for all goals in a week."""
+    today = local_today()
+    start = week_start or (today - timedelta(days=today.weekday()))
+    end = start + timedelta(days=6)
+    return await build_goal_progress_summaries(
+        db,
+        user.id,
+        period_start=start,
+        period_end=end,
+        as_of=min(today, end),
+    )
+
+
+@router.get("/{goal_id}/progress")
+async def goal_progress_timeline(
+    goal_id: str,
+    limit: int = Query(default=30, ge=1, le=100),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    timeline = await get_goal_progress_timeline(
+        db,
+        user.id,
+        goal_id,
+        limit=limit,
+    )
+    if timeline is None:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    return timeline
+
+
 @router.put("/{goal_id}", response_model=GoalResponse)
 async def update_goal(
     goal_id: str,
@@ -178,6 +226,7 @@ async def update_goal(
         "recurrence",
         "reminder_enabled",
         "reminder_minutes_before",
+        "progress_mode",
     )
     if any(updates.get(field) is None for field in required_fields if field in updates):
         raise HTTPException(status_code=422, detail="required goal fields cannot be null")

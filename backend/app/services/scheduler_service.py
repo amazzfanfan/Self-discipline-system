@@ -29,6 +29,7 @@ from app.services.adaptive_task_service import (
 )
 from app.services.behavior_service import last_completed_week_start
 from app.services.goal_schedule_service import goal_is_due, goal_planning_context
+from app.services.goal_progress_service import build_goal_progress_summaries
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -117,6 +118,14 @@ async def generate_tasks_for_user(
                 user_id=user_id,
                 status=GoalStatus.active.value
             )
+            week_start = today - timedelta(days=today.weekday())
+            progress_summaries = await build_goal_progress_summaries(
+                session,
+                user_id,
+                period_start=week_start,
+                period_end=week_start + timedelta(days=6),
+                as_of=today,
+            )
             # 按目标类型分组，每个类型取今天实际需要执行的最新目标。
             for goal in user_goals:
                 goal_type = goal.get("goal_type")
@@ -125,7 +134,10 @@ async def generate_tasks_for_user(
                     and goal_type not in goals_by_type
                     and goal_is_due(goal, today)
                 ):
-                    goals_by_type[goal_type] = goal
+                    goals_by_type[goal_type] = {
+                        **goal,
+                        "progress_summary": progress_summaries.get(goal["id"]),
+                    }
             print(f"[任务生成] 用户 {user_id} 有 {len(user_goals)} 个活跃目标，覆盖类型: {list(goals_by_type.keys())}")
         except Exception as e:
             print(f"[任务生成] 获取用户目标失败: {e}")

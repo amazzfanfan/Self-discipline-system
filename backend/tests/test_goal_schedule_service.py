@@ -32,3 +32,23 @@ def test_weekday_goal_is_due_only_on_selected_days():
     assert goal_is_due(goal, date(2026, 8, 15)) is False
     assert "计划时间：18:30" in goal_planning_context(goal)
     assert "计划时长：30 分钟" in goal_planning_context(goal)
+
+
+def test_planning_context_contains_execution_progress():
+    goal = {
+        "content": "每天快走",
+        "recurrence": "daily",
+        "days_of_week": [],
+        "preferred_time": "20:00",
+        "duration_minutes": 40,
+        "completed_sessions": 5,
+        "current_value": 5,
+        "target_value": 10,
+        "progress_summary": {"scheduled_to_date": 3, "completed": 2},
+    }
+
+    context = goal_planning_context(goal)
+
+    assert "本周截至今天：计划 3 次，已完成 2 次" in context
+    assert "累计完成：5 次" in context
+    assert "目标进度：5/10" in context

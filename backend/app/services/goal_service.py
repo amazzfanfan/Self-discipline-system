@@ -16,6 +16,7 @@ from app.services.llm_service import get_embedding
 from app.services.cache_service import enqueue_background_job
 from app.core.config import get_settings
 from app.services.goal_schedule_service import parse_goal_schedule
+from app.services.goal_progress_service import record_manual_goal_progress
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -46,6 +47,7 @@ class GoalService:
         start_date: date | None = None,
         reminder_enabled: bool | None = None,
         reminder_minutes_before: int = 30,
+        progress_mode: str = "sessions",
         source: str = "manual",
     ) -> Goal:
         """
@@ -92,6 +94,7 @@ class GoalService:
                     bool(resolved_time) if reminder_enabled is None else reminder_enabled
                 ),
                 reminder_minutes_before=reminder_minutes_before,
+                progress_mode=progress_mode,
                 embedding=None,
                 embedding_model=None,
                 source=source,
@@ -160,6 +163,7 @@ class GoalService:
 
             # 更新字段
             content_changed = False
+            previous_current_value = goal.current_value
             planning_changed = bool(
                 set(updates)
                 & {
@@ -179,6 +183,14 @@ class GoalService:
                     if key == "content" and value != goal.content:
                         content_changed = True
                     setattr(goal, key, value)
+
+            if "current_value" in updates:
+                await record_manual_goal_progress(
+                    db,
+                    goal,
+                    previous_value=previous_current_value,
+                    current_value=goal.current_value,
+                )
 
             # 内容变化时先完成业务写入，向量在本地 Redis worker 中异步更新，
             # 避免一次远程 embedding 调用阻塞用户对话。

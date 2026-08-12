@@ -8,6 +8,7 @@ from app.core.time import local_today
 from app.models.behavior import DailyCheckIn, WeeklyReview
 from app.models.score import DimensionEnum, UserScore
 from app.models.task import Task, TaskStatusEnum
+from app.services.goal_progress_service import build_goal_progress_summaries
 
 
 def current_week_start():
@@ -137,6 +138,20 @@ async def build_weekly_review(
         for key, value in by_dimension.items()
     }
     weakest = min(dimension_rates, key=dimension_rates.get) if dimension_rates else None
+    goal_progress_map = await build_goal_progress_summaries(
+        db,
+        user_id,
+        period_start=week_start,
+        period_end=week_end,
+        as_of=week_end,
+    )
+    goal_progress = [
+        item
+        for item in goal_progress_map.values()
+        if item["scheduled_total"] > 0 or item["completed"] > 0
+    ]
+    goal_scheduled = sum(item["scheduled_to_date"] for item in goal_progress)
+    goal_completed = sum(item["completed"] for item in goal_progress)
     summary = {
         "week_start": week_start.isoformat(),
         "week_end": week_end.isoformat(),
@@ -151,6 +166,14 @@ async def build_weekly_review(
         "average_energy": round(sum(item.energy for item in checkins) / len(checkins), 1) if checkins else None,
         "average_stress": round(sum(item.stress for item in checkins) / len(checkins), 1) if checkins else None,
         "suggested_focus": weakest,
+        "goal_progress": goal_progress,
+        "goal_scheduled": goal_scheduled,
+        "goal_completed": goal_completed,
+        "goal_adherence": (
+            round(min(100.0, 100 * goal_completed / goal_scheduled), 1)
+            if goal_scheduled
+            else None
+        ),
     }
     existing_result = await db.execute(
         select(WeeklyReview).where(WeeklyReview.user_id == user_id, WeeklyReview.week_start == week_start)

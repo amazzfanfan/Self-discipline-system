@@ -14,6 +14,7 @@ from app.services.cache_service import get_cached_tasks, set_cached_tasks, inval
 from app.core.time import local_today
 from app.services.task_state_service import apply_task_schedule, maintain_task_states
 from app.services.task_event_service import record_task_event
+from app.services.goal_progress_service import record_goal_task_completion
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
@@ -120,7 +121,11 @@ async def get_today_tasks(user: User = Depends(get_current_user), db: AsyncSessi
 
 @router.post("/{task_id}/complete")
 async def complete_task(task_id: str, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db, scope="function")):
-    result = await db.execute(select(Task).where(and_(Task.id == task_id, Task.user_id == user.id)))
+    result = await db.execute(
+        select(Task)
+        .where(and_(Task.id == task_id, Task.user_id == user.id))
+        .with_for_update()
+    )
     task = result.scalar_one_or_none()
     if not task:
         raise HTTPException(404, "Task not found")
@@ -136,6 +141,7 @@ async def complete_task(task_id: str, user: User = Depends(get_current_user), db
 
     from app.services.score_service import record_task_completion
     score_change = await record_task_completion(db, user.id, task.dimension, task.scheduled_date)
+    goal_progress = await record_goal_task_completion(db, task)
     await record_task_event(
         db,
         task,
@@ -153,6 +159,7 @@ async def complete_task(task_id: str, user: User = Depends(get_current_user), db
     return {
         "message": "任务完成",
         "score_change": score_change,
+        "goal_progress": goal_progress,
     }
 
 
@@ -163,7 +170,11 @@ async def save_task_feedback(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db, scope="function"),
 ):
-    result = await db.execute(select(Task).where(and_(Task.id == task_id, Task.user_id == user.id)))
+    result = await db.execute(
+        select(Task)
+        .where(and_(Task.id == task_id, Task.user_id == user.id))
+        .with_for_update()
+    )
     task = result.scalar_one_or_none()
     if not task:
         raise HTTPException(404, "Task not found")
@@ -185,7 +196,11 @@ async def defer_task(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db, scope="function"),
 ):
-    result = await db.execute(select(Task).where(and_(Task.id == task_id, Task.user_id == user.id)))
+    result = await db.execute(
+        select(Task)
+        .where(and_(Task.id == task_id, Task.user_id == user.id))
+        .with_for_update()
+    )
     task = result.scalar_one_or_none()
     if not task:
         raise HTTPException(404, "Task not found")
@@ -203,7 +218,11 @@ async def schedule_task(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db, scope="function"),
 ):
-    result = await db.execute(select(Task).where(and_(Task.id == task_id, Task.user_id == user.id)))
+    result = await db.execute(
+        select(Task)
+        .where(and_(Task.id == task_id, Task.user_id == user.id))
+        .with_for_update()
+    )
     task = result.scalar_one_or_none()
     if not task:
         raise HTTPException(404, "Task not found")
@@ -227,7 +246,11 @@ async def resume_task(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db, scope="function"),
 ):
-    result = await db.execute(select(Task).where(and_(Task.id == task_id, Task.user_id == user.id)))
+    result = await db.execute(
+        select(Task)
+        .where(and_(Task.id == task_id, Task.user_id == user.id))
+        .with_for_update()
+    )
     task = result.scalar_one_or_none()
     if not task:
         raise HTTPException(404, "Task not found")

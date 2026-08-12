@@ -46,3 +46,5 @@ def test_goal_schedule_fields_are_validated():
         GoalCreateRequest(content="周一快走", days_of_week=[7])
     with pytest.raises(ValidationError):
         GoalUpdateRequest(duration_minutes=0)
+    with pytest.raises(ValidationError):
+        GoalUpdateRequest(progress_mode="automatic")
