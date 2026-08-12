@@ -372,8 +372,9 @@ export default function Profile() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           {/* Photo card */}
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
-            className="bg-slate-900 rounded-2xl p-5 border border-slate-800 flex flex-col items-center">
-            <div className="w-full aspect-square rounded-xl overflow-hidden bg-slate-800 mb-3 relative group">
+            whileHover={{ y: -4, rotateY: 2, rotateX: -1 }} style={{ transformPerspective: 900 }}
+            className="hologram-card bg-slate-900 rounded-2xl p-5 border border-slate-800 flex flex-col items-center">
+            <div className="hologram-avatar w-full aspect-square rounded-xl overflow-hidden bg-slate-800 mb-3 relative group">
               {profile?.avatar_url ? (
                 <PrivateImage
                   src={profile.avatar_url}
@@ -409,7 +410,7 @@ export default function Profile() {
           {/* Body data card */}
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.05 }}
-            className="md:col-span-2 bg-slate-900 rounded-2xl p-5 border border-slate-800">
+            className="lift-surface md:col-span-2 bg-slate-900 rounded-2xl p-5 border border-slate-800">
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-base font-semibold text-slate-300">身体数据</h2>
               {!editing && (
@@ -491,7 +492,7 @@ export default function Profile() {
         </div>
 
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.08 }}
-          className="mb-4 rounded-2xl border border-amber-400/10 bg-slate-900 p-5">
+          className="lift-surface mb-4 rounded-2xl border border-amber-400/10 bg-slate-900 p-5">
           <div className="mb-4">
             <h2 className="text-base font-semibold text-slate-300">护理安全限制</h2>
             <p className="mt-1 text-xs leading-5 text-slate-500">这些信息只用于约束 AI 护理建议，不参与状态评分，也不会交给 Face++。</p>
@@ -529,7 +530,7 @@ export default function Profile() {
         </motion.div>
 
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.09 }}
-          className="mb-4 rounded-2xl border border-cyan-400/10 bg-slate-900 p-5">
+          className="lift-surface mb-4 rounded-2xl border border-cyan-400/10 bg-slate-900 p-5">
           <div className="mb-4">
             <h2 className="text-base font-semibold text-slate-300">任务可执行条件</h2>
             <p className="mt-1 text-xs leading-5 text-slate-500">记录你实际拥有的物品、器材和时间条件，避免 AI 发布无法执行的任务。</p>

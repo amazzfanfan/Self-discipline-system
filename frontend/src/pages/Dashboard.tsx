@@ -3,9 +3,9 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
-import ScoreRing from '../components/ScoreRing';
-import DimensionBar from '../components/DimensionBar';
 import CheckInPanel from '../components/CheckInPanel';
+import DepthPanel from '../components/DepthPanel';
+import GrowthCore from '../components/GrowthCore';
 import { useNotification } from '../components/notification-context';
 import type { AssessmentRun, BehaviorMetrics, Task, UserScore, WeeklyReview } from '../types';
 
@@ -125,7 +125,6 @@ export default function Dashboard() {
   }, [tasks, addNotification]);
 
   const avgScore = scores?.length ? scores.reduce((total, score) => total + score.score, 0) / scores.length : 0;
-  const momentum = behaviorMetrics?.overall.momentum ?? null;
   const completedCount = tasks?.filter((task) => task.status === 'completed').length || 0;
   const totalCount = tasks?.filter((task) => task.disposition !== 'excused').length || 0;
   const maxStreak = scores ? Math.max(...scores.map((score) => score.streak_days), 0) : 0;
@@ -147,55 +146,35 @@ export default function Dashboard() {
           </button>
         </motion.div>
 
-        <CheckInPanel />
+        <motion.div initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} className="mb-4">
+          <DepthPanel className="rounded-[28px]" glow="rgba(34, 211, 238, 0.17)">
+            <GrowthCore scores={scores} metrics={behaviorMetrics} />
+          </DepthPanel>
+        </motion.div>
 
-        {/* Top section: Score + Stats */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
-          {/* Score overview */}
-          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
-            className="lg:col-span-2 bg-slate-900 rounded-2xl p-6 border border-slate-800 flex items-center gap-8">
-            <ScoreRing score={momentum} label="成长动量" />
-            <div className="flex-1 min-w-0">
-              {scores?.map((s) => (
-                <DimensionBar key={s.dimension} dimension={s.dimension}
-                  score={s.score} streak={s.streak_days} threshold={7} />
-              ))}
+        <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div className="lift-surface rounded-2xl border border-emerald-400/10 bg-slate-900/80 p-4">
+            <div className="text-[10px] uppercase tracking-[0.16em] text-slate-600">Today</div>
+            <div className="mt-2 text-2xl font-semibold text-white">{tasksLoading ? '—' : completedCount}<span className="text-sm text-slate-600"> / {tasksLoading ? '—' : totalCount}</span></div>
+            <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-800">
+              <div className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-cyan-400 transition-all duration-500"
+                style={{ width: totalCount > 0 ? `${(completedCount / totalCount) * 100}%` : '0%' }} />
             </div>
-          </motion.div>
-
-          {/* Stats cards */}
-          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.1 }}
-            className="flex flex-col gap-4">
-            <div className="bg-slate-900 rounded-2xl p-5 border border-slate-800 flex-1">
-              <div className="text-slate-500 text-xs mb-1">今日完成</div>
-              <div className="text-3xl font-bold text-white">{tasksLoading ? '—' : completedCount}<span className="text-lg text-slate-500">/{tasksLoading ? '—' : totalCount}</span></div>
-              <div className="mt-2 h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                <div className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400 rounded-full transition-all duration-500"
-                  style={{ width: totalCount > 0 ? `${(completedCount / totalCount) * 100}%` : '0%' }} />
-              </div>
-            </div>
-            <div className="bg-slate-900 rounded-2xl p-5 border border-slate-800 flex-1">
-              <div className="text-slate-500 text-xs mb-1">近 7 天完成率</div>
-              <div className="text-3xl font-bold text-white">
-                {behaviorMetrics?.overall.adherence_7d == null
-                  ? <span className="text-lg text-slate-500">暂无数据</span>
-                  : <>{behaviorMetrics.overall.adherence_7d}<span className="text-lg text-slate-500">%</span></>}
-              </div>
-              <div className="mt-1 text-xs text-slate-600">有效样本 {behaviorMetrics?.overall.sample_count_7d ?? 0} 项</div>
-              <div className="text-slate-600 text-xs mt-1">最长连续 {maxStreak} 天</div>
-            </div>
-            <div className="bg-slate-900 rounded-2xl p-5 border border-slate-800 flex-1">
-              <div className="text-slate-500 text-xs mb-1">画像均值 · 仅供参考</div>
-              <div className="text-3xl font-bold bg-gradient-to-r from-blue-400 to-violet-400 bg-clip-text text-transparent">
-                {avgScore.toFixed(1)}
-              </div>
-              <div className="text-slate-600 text-xs mt-1">
-                行为维度请分别查看，不代表医学结论
-              </div>
-            </div>
-          </motion.div>
+            <p className="mt-2 text-[10px] text-slate-600">今日任务完成进度</p>
+          </div>
+          <div className="lift-surface rounded-2xl border border-cyan-400/10 bg-slate-900/80 p-4">
+            <div className="text-[10px] uppercase tracking-[0.16em] text-slate-600">7 Day Adherence</div>
+            <div className="mt-2 text-2xl font-semibold text-cyan-300">{behaviorMetrics?.overall.adherence_7d == null ? '—' : `${behaviorMetrics.overall.adherence_7d}%`}</div>
+            <p className="mt-3 text-[10px] text-slate-600">有效样本 {behaviorMetrics?.overall.sample_count_7d ?? 0} 项 · 最长连续 {maxStreak} 天</p>
+          </div>
+          <div className="lift-surface rounded-2xl border border-violet-400/10 bg-slate-900/80 p-4">
+            <div className="text-[10px] uppercase tracking-[0.16em] text-slate-600">Stable Baseline</div>
+            <div className="mt-2 bg-gradient-to-r from-blue-300 to-violet-300 bg-clip-text text-2xl font-semibold text-transparent">{avgScore.toFixed(1)}</div>
+            <p className="mt-3 text-[10px] text-slate-600">结构化问卷画像均值 · 不代表医学结论</p>
+          </div>
         </div>
+
+        <CheckInPanel />
 
         {/* Middle section: Today Tasks + Trends */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">

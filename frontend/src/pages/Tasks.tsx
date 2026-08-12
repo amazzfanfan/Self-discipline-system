@@ -212,7 +212,7 @@ export default function Tasks() {
             return (
               <motion.article key={task.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: index * 0.04 }} whileHover={{ y: -2 }}
-                className="group overflow-hidden rounded-2xl border border-slate-800 bg-gradient-to-br from-slate-900 to-slate-950 p-4 transition-colors hover:border-slate-700">
+                className={`task-depth-card task-depth-${task.dimension} lift-surface group overflow-hidden rounded-2xl border border-slate-800 bg-gradient-to-br from-slate-900 to-slate-950 p-4 transition-colors hover:border-slate-700`}>
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="font-medium leading-6 text-white">{task.title}</div>

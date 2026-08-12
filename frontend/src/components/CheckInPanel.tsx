@@ -32,7 +32,7 @@ export default function CheckInPanel() {
 
   if (data) {
     return (
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-400/15 bg-emerald-400/[0.05] px-5 py-4">
+      <div className="lift-surface mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-400/15 bg-emerald-400/[0.05] px-5 py-4">
         <div>
           <p className="text-sm font-medium text-emerald-200">今日 Check-in 已完成</p>
           <p className="mt-1 text-xs text-slate-500">精力 {data.energy}/5 · 压力 {data.stress}/5 · 可投入 {data.available_minutes} 分钟</p>
@@ -45,7 +45,7 @@ export default function CheckInPanel() {
   const scales = [1, 2, 3, 4, 5];
   return (
     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
-      className="mb-4 rounded-2xl border border-cyan-400/15 bg-slate-900 p-5">
+      className="lift-surface mb-4 rounded-2xl border border-cyan-400/15 bg-slate-900 p-5">
       <div className="mb-4">
         <h2 className="text-sm font-semibold text-white">30 秒今日 Check-in</h2>
         <p className="mt-1 text-xs text-slate-500">系统会据此调整今天的任务量和难度</p>

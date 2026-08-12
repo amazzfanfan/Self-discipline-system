@@ -503,8 +503,8 @@ export default function Goals() {
         {isLoading ? (
           <div className="py-20 text-center text-sm text-slate-600">正在加载目标…</div>
         ) : visibleGoals.length === 0 ? (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="rounded-[24px] border border-dashed border-white/[0.08] bg-white/[0.02] py-16 text-center">
-            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-white/[0.04] text-xl text-slate-500">◎</div>
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="roadmap-empty-stage rounded-[24px] border border-dashed border-white/[0.08] bg-white/[0.02] py-16 text-center">
+            <div className="roadmap-beacon mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-white/[0.04] text-xl text-slate-500">◎</div>
             <p className="mt-4 text-sm text-slate-400">这个分类还没有目标</p>
             <p className="mt-1 text-[10px] text-slate-600">暂停的目标会保留在“全部”和“已暂停”中，不会被删除。</p>
           </motion.div>
@@ -515,7 +515,7 @@ export default function Goals() {
               const status = statusMeta[goal.status];
               const weekly = progressSummaries[goal.id];
               return (
-                <motion.article key={goal.id} layout initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.04 }} className="group relative overflow-hidden rounded-[22px] border border-white/[0.07] bg-slate-900/70 p-5 shadow-xl backdrop-blur-xl transition-colors hover:border-cyan-300/15">
+                <motion.article key={goal.id} layout initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.04 }} className="goal-depth-card lift-surface group relative overflow-hidden rounded-[22px] border border-white/[0.07] bg-slate-900/70 p-5 shadow-xl backdrop-blur-xl transition-colors hover:border-cyan-300/15">
                   <div className="absolute -right-8 -top-10 h-28 w-28 rounded-full bg-cyan-400/[0.05] blur-3xl" />
                   <div className="relative flex items-start justify-between gap-3">
                     <div className="flex items-center gap-2"><span className="flex h-8 w-8 items-center justify-center rounded-xl bg-cyan-400/10 text-sm text-cyan-200">{icons[goal.goal_type]}</span><span className="text-[10px] text-slate-400">{labels[goal.goal_type]}</span></div>

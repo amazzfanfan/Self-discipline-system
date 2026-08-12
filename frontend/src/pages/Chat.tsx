@@ -311,7 +311,7 @@ export default function Chat() {
           <motion.div
             animate={{ boxShadow: ['0 0 0 0 rgba(34,211,238,0)', '0 0 26px 2px rgba(34,211,238,.18)', '0 0 0 0 rgba(34,211,238,0)'] }}
             transition={{ repeat: Infinity, duration: 3 }}
-            className="flex h-10 w-10 items-center justify-center rounded-2xl border border-cyan-400/20 bg-gradient-to-br from-cyan-400/20 to-violet-500/20 text-cyan-200"
+            className="agent-core-mini flex h-10 w-10 items-center justify-center rounded-2xl border border-cyan-400/20 bg-gradient-to-br from-cyan-400/20 to-violet-500/20 text-cyan-200"
           >
             ✦
           </motion.div>
@@ -346,7 +346,7 @@ export default function Chat() {
                 initial={{ scale: 0.75, opacity: 0 }}
                 animate={{ scale: 1, opacity: 1, y: [0, -7, 0] }}
                 transition={{ scale: { duration: 0.5 }, opacity: { duration: 0.5 }, y: { repeat: Infinity, duration: 4 } }}
-                className="relative mb-7 flex h-20 w-20 items-center justify-center rounded-[28px] border border-cyan-300/15 bg-gradient-to-br from-cyan-400/15 via-blue-500/10 to-violet-500/20 text-3xl text-cyan-200 shadow-[0_0_70px_rgba(34,211,238,.12)]"
+                className="agent-core-large relative mb-7 flex h-20 w-20 items-center justify-center rounded-[28px] border border-cyan-300/15 bg-gradient-to-br from-cyan-400/15 via-blue-500/10 to-violet-500/20 text-3xl text-cyan-200 shadow-[0_0_70px_rgba(34,211,238,.12)]"
               >
                 ✦
                 <div className="absolute inset-[-8px] rounded-[34px] border border-cyan-400/5" />
