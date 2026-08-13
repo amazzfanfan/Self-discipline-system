@@ -480,6 +480,11 @@ def test_approve_button_executes_ai_replacement_pending_action():
     with (
         patch("app.modules.chat.router.get_pending_action", new=AsyncMock(return_value=action)),
         patch("app.modules.chat.router.ToolRegistry", return_value=registry),
+        patch(
+            "app.modules.chat.router._start_agent_lease",
+            new=AsyncMock(return_value=("lease", "token", MagicMock())),
+        ),
+        patch("app.modules.chat.router._finish_agent_lease", new=AsyncMock()),
     ):
         response = run(approve_pending_action("pending-1", user=user, db=db))
 

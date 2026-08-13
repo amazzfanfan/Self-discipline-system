@@ -33,3 +33,31 @@ def test_task_payload_has_same_fields_for_today_and_history_views():
     assert payload["disposition"] is None
     assert payload["deferred_until"] is None
     assert payload["defer_count"] == 0
+    assert payload["why"] == []
+
+
+def test_task_why_explains_low_baseline_goal_and_skin_observation():
+    from app.modules.task.router import _task_why
+
+    task = SimpleNamespace(
+        dimension=DimensionEnum.appearance,
+        goal_id=None,
+        adaptation_metadata={
+            "version": "adaptive-v2.1",
+            "reasons": ["今日精力偏低"],
+        },
+    )
+    scores = {
+        DimensionEnum.appearance: SimpleNamespace(baseline_score=45),
+        DimensionEnum.exercise: SimpleNamespace(baseline_score=70),
+    }
+
+    why = _task_why(
+        task,
+        scores_by_dimension=scores,
+        skin_analysis={"source": "faceplusplus", "issues": ["眼袋", "皮肤斑点"]},
+    )
+
+    assert "形象管理基线为 45 分" in why[0]
+    assert "Face++ 观察到眼袋、皮肤斑点" in why[1]
+    assert "今日精力偏低" in why[2]

@@ -2,8 +2,15 @@ import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from app.services import cache_service
 from scripts import worker
+
+
+@pytest.fixture(autouse=True)
+def disable_worker_metrics(monkeypatch):
+    monkeypatch.setattr(worker, "increment_metric", AsyncMock())
 
 
 def test_claim_stale_jobs_returns_claimed_messages(monkeypatch):
@@ -23,8 +30,12 @@ def test_claim_stale_jobs_returns_claimed_messages(monkeypatch):
 
 def test_worker_status_reports_heartbeat_and_backlog(monkeypatch):
     client = MagicMock()
-    client.get = AsyncMock(
-        return_value=json.dumps({"consumer": "worker-1", "seen_at": "2026-08-12T00:00:00+00:00"})
+    async def scan_iter(*_args, **_kwargs):
+        yield f"{cache_service.BACKGROUND_WORKER_HEARTBEAT_PREFIX}:worker-1"
+
+    client.scan_iter = scan_iter
+    client.mget = AsyncMock(
+        return_value=[json.dumps({"consumer": "worker-1", "seen_at": "2026-08-12T00:00:00+00:00"})]
     )
     client.xinfo_groups = AsyncMock(
         return_value=[{"name": cache_service.BACKGROUND_JOB_GROUP, "pending": 2, "lag": 4}]
@@ -37,6 +48,8 @@ def test_worker_status_reports_heartbeat_and_backlog(monkeypatch):
         "ready": True,
         "consumer": "worker-1",
         "last_seen": "2026-08-12T00:00:00+00:00",
+        "worker_count": 1,
+        "workers": [{"consumer": "worker-1", "seen_at": "2026-08-12T00:00:00+00:00"}],
         "pending": 2,
         "lag": 4,
     }
@@ -90,6 +103,37 @@ def test_successful_job_is_acknowledged(monkeypatch):
     asyncio.run(worker.handle_message("1-0", {"kind": "index_goal", "payload": "{}"}))
 
     acknowledge.assert_awaited_once_with("1-0")
+
+
+def test_worker_ai_jobs_respect_the_smaller_ai_semaphore(monkeypatch):
+    active = 0
+    peak = 0
+
+    async def tracked_handle(*_args):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+
+    monkeypatch.setattr(worker, "handle_message", tracked_handle)
+
+    async def execute():
+        worker_limit = asyncio.Semaphore(4)
+        ai_limit = asyncio.Semaphore(2)
+        await asyncio.gather(*(
+            worker.handle_message_with_limits(
+                str(index),
+                {"kind": "index_goal", "payload": "{}"},
+                worker_limit,
+                ai_limit,
+            )
+            for index in range(8)
+        ))
+
+    asyncio.run(execute())
+
+    assert peak == 2
 
 
 def test_assessment_generation_job_is_dispatched(monkeypatch):

@@ -33,8 +33,8 @@ def _get_redis() -> redis.Redis:
         redis_client = redis.from_url(
             settings.REDIS_URL,
             decode_responses=True,
-            socket_connect_timeout=1,
-            socket_timeout=2,
+            socket_connect_timeout=settings.REDIS_CONNECT_TIMEOUT_SECONDS,
+            socket_timeout=settings.REDIS_SOCKET_TIMEOUT_SECONDS,
         )
     return redis_client
 
@@ -145,7 +145,7 @@ BACKGROUND_JOB_STREAM = "system-agent:jobs"
 BACKGROUND_JOB_GROUP = "system-agent-workers"
 BACKGROUND_JOB_DEAD_LETTER_STREAM = "system-agent:jobs:dead-letter"
 BACKGROUND_JOB_ATTEMPTS_KEY = "system-agent:job-attempts"
-BACKGROUND_WORKER_HEARTBEAT_KEY = "system-agent:worker:heartbeat"
+BACKGROUND_WORKER_HEARTBEAT_PREFIX = "system-agent:worker:heartbeat"
 
 
 async def enqueue_background_job(kind: str, payload: dict) -> str | None:
@@ -271,7 +271,7 @@ async def move_background_job_to_dead_letter(
 
 async def set_background_worker_heartbeat(consumer: str, ttl_seconds: int = 20) -> None:
     await _get_redis().set(
-        BACKGROUND_WORKER_HEARTBEAT_KEY,
+        f"{BACKGROUND_WORKER_HEARTBEAT_PREFIX}:{consumer}",
         json.dumps(
             {"consumer": consumer, "seen_at": datetime.now(timezone.utc).isoformat()},
             ensure_ascii=False,
@@ -284,17 +284,31 @@ async def get_background_worker_status() -> dict:
     """Return worker liveness plus Redis Stream backlog information."""
     try:
         client = _get_redis()
-        heartbeat = await client.get(BACKGROUND_WORKER_HEARTBEAT_KEY)
+        heartbeat_keys = [
+            key async for key in client.scan_iter(match=f"{BACKGROUND_WORKER_HEARTBEAT_PREFIX}:*")
+        ]
+        heartbeats = await client.mget(heartbeat_keys) if heartbeat_keys else []
         groups = await client.xinfo_groups(BACKGROUND_JOB_STREAM)
         group = next(
             (item for item in groups if item.get("name") == BACKGROUND_JOB_GROUP),
             {},
         )
-        heartbeat_data = json.loads(heartbeat) if heartbeat else {}
+        workers = []
+        for heartbeat in heartbeats:
+            if not heartbeat:
+                continue
+            try:
+                workers.append(json.loads(heartbeat))
+            except json.JSONDecodeError:
+                continue
+        workers.sort(key=lambda item: str(item.get("seen_at", "")), reverse=True)
+        latest = workers[0] if workers else {}
         return {
-            "ready": bool(heartbeat),
-            "consumer": heartbeat_data.get("consumer"),
-            "last_seen": heartbeat_data.get("seen_at"),
+            "ready": bool(workers),
+            "consumer": latest.get("consumer"),
+            "last_seen": latest.get("seen_at"),
+            "worker_count": len(workers),
+            "workers": workers,
             "pending": int(group.get("pending", 0) or 0),
             "lag": int(group.get("lag", 0) or 0),
         }
@@ -304,6 +318,8 @@ async def get_background_worker_status() -> dict:
             "ready": False,
             "consumer": None,
             "last_seen": None,
+            "worker_count": 0,
+            "workers": [],
             "pending": None,
             "lag": None,
         }
@@ -345,6 +361,23 @@ async def release_lock(name: str, token: str) -> None:
         await _get_redis().eval(script, 1, f"lock:{name}", token)
     except Exception as exc:
         logger.warning("Redis lock release failed for %s: %s", name, exc)
+
+
+async def renew_lock(name: str, token: str, ttl: int) -> bool:
+    """Extend a lease only while this caller still owns it."""
+    script = """
+    if redis.call('get', KEYS[1]) == ARGV[1] then
+      return redis.call('expire', KEYS[1], ARGV[2])
+    end
+    return 0
+    """
+    try:
+        return bool(
+            await _get_redis().eval(script, 1, f"lock:{name}", token, max(1, ttl))
+        )
+    except Exception as exc:
+        logger.warning("Redis lock renewal failed for %s: %s", name, exc)
+        return False
 
 
 async def get_cached_tasks(user_id: str) -> list[dict] | None:

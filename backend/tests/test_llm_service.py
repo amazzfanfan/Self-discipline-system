@@ -1,10 +1,24 @@
 import asyncio
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.services import llm_service
+
+
+@pytest.fixture(autouse=True)
+def bypass_distributed_admission(monkeypatch):
+    @asynccontextmanager
+    async def capacity(*_args, **_kwargs):
+        yield
+
+    monkeypatch.setattr(llm_service, "distributed_capacity", capacity)
+    monkeypatch.setattr(llm_service, "reserve_ai_budget", AsyncMock(return_value=None))
+    monkeypatch.setattr(llm_service, "settle_ai_budget", AsyncMock())
+    monkeypatch.setattr(llm_service, "increment_metric", AsyncMock())
+    monkeypatch.setattr(llm_service, "observe_external_call", AsyncMock())
 
 
 def test_chat_fails_fast_when_api_key_is_missing(monkeypatch):

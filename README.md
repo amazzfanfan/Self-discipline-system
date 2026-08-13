@@ -273,6 +273,7 @@ npm run dev
 |--------|------|------|
 | `DATABASE_URL` | PostgreSQL连接字符串 | `postgresql+asyncpg://postgres:postgres@localhost:5432/system_agent` |
 | `REDIS_URL` | Redis连接字符串 | `redis://localhost:6379/0` |
+| `REDIS_CONNECT_TIMEOUT_SECONDS` / `REDIS_SOCKET_TIMEOUT_SECONDS` | Redis 建连与读取超时 | `2` / `5` |
 | `RATE_LIMIT_STORAGE_URI` | 多实例共享限流存储；生产环境必填 | `redis://localhost:6379/0` |
 | `SCHEDULER_PERSIST_JOBS` | 将调度任务持久化到 Redis | `true` |
 | `SCHEDULER_IN_API` | 是否在 API 进程内运行调度器 | `true` |
@@ -289,6 +290,14 @@ npm run dev
 | `EMBEDDING_DIMENSION` | 输出维度，必须与 pgvector 字段一致 | `1536` |
 | `FACEPLUSPLUS_API_KEY` | Face++ 肤质检测 API Key | `...` |
 | `FACEPLUSPLUS_API_SECRET` | Face++ 肤质检测 API Secret | `...` |
+| `TRUSTED_PROXY_CIDRS` | 允许提供真实客户端 IP 的反向代理网段 | `["127.0.0.1/32"]` |
+| `CHAT_RATE_LIMIT` / `CHAT_IP_RATE_LIMIT` | Agent 用户级/IP级限流 | `20/minute` / `60/minute` |
+| `AI_MAX_CONCURRENCY` | 跨进程 Qwen 同时调用上限 | `8` |
+| `AI_USER_DAILY_TOKEN_LIMIT` | 单用户每日 AI Token 保护额度 | `300000` |
+| `AI_GLOBAL_DAILY_TOKEN_LIMIT` | 全站每日 AI Token 保护额度 | `5000000` |
+| `WORKER_CONCURRENCY` | 单个后台 Worker 总并发数 | `4` |
+| `WORKER_AI_CONCURRENCY` | 单个后台 Worker AI 任务并发数 | `2` |
+| `OPS_METRICS_TOKEN` | 生产环境内部指标接口凭证 | 随机 24 位以上字符串 |
 | `TEMP_UPLOAD_RETENTION_HOURS` | 未被引用临时图片的保留小时数 | `24` |
 | `NOTIFICATION_RETENTION_DAYS` | 站内通知保留天数 | `90` |
 | `WEB_PUSH_VAPID_PUBLIC_KEY` | 可选：浏览器后台推送的 applicationServerKey | `...` |
@@ -331,6 +340,32 @@ npm run test:e2e
 ```
 
 GitHub Actions 会在每次 PR 上执行同样的编译、测试、lint 和生产构建。后端还提供 `/health` 存活探针与 `/health/ready` 数据库/Redis 就绪探针。
+
+### 本地并发基线（不调用付费模型）
+
+先启动 OpenAI 兼容的 Mock 上游，并将测试后端的 `AI_BASE_URL`、`EMBEDDING_BASE_URL` 指向 `http://127.0.0.1:9001/v1`：
+
+```bash
+cd backend
+python -m uvicorn scripts.mock_ai_server:app --port 9001
+python -m scripts.load_test --scenario health --requests 100 --concurrency 20
+```
+
+还可以在另一个终端直接验证 Redis 分布式 AI 闸门，不需要账号、不会写入业务数据库：
+
+```powershell
+$env:AI_BASE_URL='http://127.0.0.1:9001/v1'
+$env:AI_API_KEY='mock'
+$env:AI_MAX_CONCURRENCY='3'
+$env:AI_BUDGET_ENFORCEMENT='false'
+python -m scripts.ai_gate_probe --requests 12 --concurrency 12
+```
+
+探针会拒绝任何非回环地址，避免误用真实百炼额度；Mock `/health` 返回的 `peak_active` 应不超过 `AI_MAX_CONCURRENCY`。
+
+聊天压测必须显式传入测试账号 Access Token，并通过 `--allow-model-calls` 确认已指向 Mock 或愿意承担外部调用。多用户场景可通过 `--tokens-file` 传入每行一个 Token；`agent-serial` 场景会把同一 Token 的 `200` 与预期的 `409 Agent busy` 都视为保护成功。
+
+内部观测数据位于 `GET /internal/metrics`。生产环境必须携带 `X-Ops-Token`；开发环境未配置 Token 时只允许本机回环地址访问。指标包括 HTTP 延迟桶、限流命中、AI 并发、Token 预算、Worker 数量和 Redis Stream 积压。
 
 ## 📖 使用说明
 

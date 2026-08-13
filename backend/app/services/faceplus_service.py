@@ -9,6 +9,7 @@ Face++ 是唯一的图片分析来源。服务不可用时明确返回 unavailab
 import httpx
 import json
 import logging
+import time
 from typing import Optional
 from dataclasses import asdict, dataclass
 from app.core.config import get_settings
@@ -20,6 +21,8 @@ from app.services.skin_safety_service import (
 from app.services.task_constraint_service import task_constraints_text, validate_task_feasibility
 from app.services.llm_service import chat_completion_with_fallback
 from app.services.cache_service import get_cached_skin_analysis, set_cached_skin_analysis
+from app.services.capacity_service import distributed_capacity
+from app.services.metrics_service import increment_metric, observe_external_call
 from app.services.upload_service import sha256_file
 
 settings = get_settings()
@@ -160,17 +163,24 @@ async def _call_faceplus_api(image_path: str, image_hash: str) -> Optional[SkinA
         with open(image_path, 'rb') as f:
             image_data = f.read()
         
-        async with httpx.AsyncClient(timeout=settings.FACEPLUSPLUS_TIMEOUT_SECONDS) as client:
-            response = await client.post(
-                settings.FACEPLUSPLUS_API_URL,
-                data={
-                    "api_key": settings.FACEPLUSPLUS_API_KEY,
-                    "api_secret": settings.FACEPLUSPLUS_API_SECRET,
-                },
-                files={
-                    "image_file": ("photo.jpg", image_data, "image/jpeg")
-                }
-            )
+        async with distributed_capacity("faceplus", settings.FACEPLUS_MAX_CONCURRENCY):
+            async with httpx.AsyncClient(timeout=settings.FACEPLUSPLUS_TIMEOUT_SECONDS) as client:
+                provider_started = time.perf_counter()
+                response = await client.post(
+                    settings.FACEPLUSPLUS_API_URL,
+                    data={
+                        "api_key": settings.FACEPLUSPLUS_API_KEY,
+                        "api_secret": settings.FACEPLUSPLUS_API_SECRET,
+                    },
+                    files={
+                        "image_file": ("photo.jpg", image_data, "image/jpeg")
+                    }
+                )
+                await observe_external_call(
+                    "faceplus",
+                    str(response.status_code),
+                    (time.perf_counter() - provider_started) * 1000,
+                )
             
             response.raise_for_status()
             data = response.json()
@@ -218,6 +228,7 @@ async def _call_faceplus_api(image_path: str, image_hash: str) -> Optional[SkinA
                 image_hash=image_hash,
             )
     except Exception as e:
+        await increment_metric("external:faceplus:error")
         logger.warning("Face++ skin analysis failed: %s", e)
         return None
 

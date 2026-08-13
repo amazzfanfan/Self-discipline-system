@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import json
 import logging
 import re
@@ -10,7 +11,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -21,6 +22,8 @@ from app.agent.tools import ToolRegistry
 from app.agent.types import AgentRunResult, AgentTraceEvent
 from app.core.database import async_session, get_db
 from app.core.deps import get_current_user
+from app.core.config import get_settings
+from app.core.rate_limit import ip_rate_limit_key, limiter, user_or_ip_rate_limit_key
 from app.models.agent_run import PendingAction
 from app.models.conversation import Conversation, RoleEnum
 from app.models.user import User
@@ -33,16 +36,72 @@ from app.services.llm_service import (
 from app.services.memory_service import MemoryService
 from app.services.profile_service import ProfileService
 from app.services.agent_audit_service import get_pending_action, update_agent_run_metrics
-from app.services.cache_service import enqueue_background_job
+from app.services.ai_budget_service import AIBudgetExceeded
+from app.services.capacity_service import CapacityExceeded, CapacityUnavailable
+from app.services.cache_service import (
+    acquire_lock,
+    enqueue_background_job,
+    release_lock,
+    renew_lock,
+)
+from app.services.metrics_service import increment_metric
 
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
+settings = get_settings()
 background_tasks: set[asyncio.Task] = set()
 
 
 class ChatRequest(BaseModel):
     content: str = Field(min_length=1, max_length=4000)
+
+
+async def _agent_lease_heartbeat(name: str, token: str) -> None:
+    interval = max(1.0, settings.AGENT_LOCK_TTL_SECONDS / 3)
+    while True:
+        await asyncio.sleep(interval)
+        if not await renew_lock(name, token, settings.AGENT_LOCK_TTL_SECONDS):
+            logger.error("Agent execution lease was lost: %s", name)
+            return
+
+
+async def _start_agent_lease(user_id: str) -> tuple[str, str, asyncio.Task]:
+    name = f"agent-execution:{user_id}"
+    deadline = time.monotonic() + max(0.0, settings.AGENT_LOCK_WAIT_SECONDS)
+    while True:
+        token = await acquire_lock(name, ttl=settings.AGENT_LOCK_TTL_SECONDS)
+        if token:
+            heartbeat = asyncio.create_task(_agent_lease_heartbeat(name, token))
+            await increment_metric("agent:lease:acquired")
+            return name, token, heartbeat
+        if token is None:
+            await increment_metric("agent:lease:unavailable")
+            raise HTTPException(503, "Agent coordination service unavailable")
+        if time.monotonic() >= deadline:
+            await increment_metric("agent:lease:busy")
+            raise HTTPException(
+                409,
+                {"code": "agent_busy", "message": "上一条 Agent 请求仍在处理中，请稍后再试。"},
+                headers={"Retry-After": "2"},
+            )
+        await asyncio.sleep(0.05)
+
+
+async def _finish_agent_lease(lease: tuple[str, str, asyncio.Task]) -> None:
+    name, token, heartbeat = lease
+    heartbeat.cancel()
+    with suppress(asyncio.CancelledError):
+        await heartbeat
+    await release_lock(name, token)
+
+
+def _ai_admission_reply(exc: Exception) -> str | None:
+    if isinstance(exc, AIBudgetExceeded):
+        return "今日 AI 使用额度已达到保护上限。普通任务和历史数据仍可使用，请稍后再试。"
+    if isinstance(exc, (CapacityExceeded, CapacityUnavailable)):
+        return "当前 AI 请求较多，系统已启动过载保护。请稍后重试，本次没有执行新的写操作。"
+    return None
 
 
 async def _find_contextual_confirmation(
@@ -292,17 +351,16 @@ async def _launch_learning(user_id: str, user_message_id: str, content: str) -> 
     task.add_done_callback(background_tasks.discard)
 
 
-@router.post("/send")
-async def send_message(
+async def _send_message_locked(
     body: ChatRequest,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db, scope="function"),
+    user: User,
+    db: AsyncSession,
 ):
     """Execute an Agent run and return a non-streaming response with its trace."""
     content = body.content.strip()
     contextual_action = await _find_contextual_confirmation(db, user.id, content)
     runtime_content = _confirmed_request(contextual_action, content) if contextual_action else content
-    begin_llm_metrics()
+    begin_llm_metrics(str(user.id))
     user_message = Conversation(
         user_id=user.id,
         role=RoleEnum.user,
@@ -335,7 +393,7 @@ async def send_message(
             )
         except Exception as exc:
             logger.error(f"Agent response generation failed: {exc}")
-            reply = _fallback_reply(run)
+            reply = _ai_admission_reply(exc) or _fallback_reply(run)
     run.metrics["response_duration_ms"] = int(
         (time.perf_counter() - response_started) * 1000
     )
@@ -353,11 +411,28 @@ async def send_message(
     }
 
 
-@router.post("/stream")
-async def stream_message(
+@router.post("/send")
+@limiter.limit(settings.CHAT_IP_RATE_LIMIT, key_func=ip_rate_limit_key)
+@limiter.limit(settings.CHAT_RATE_LIMIT, key_func=user_or_ip_rate_limit_key)
+async def send_message(
+    request: Request,
     body: ChatRequest,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db, scope="function"),
+):
+    del request
+    lease = await _start_agent_lease(str(user.id))
+    try:
+        return await _send_message_locked(body, user, db)
+    finally:
+        await _finish_agent_lease(lease)
+
+
+async def _stream_message_locked(
+    body: ChatRequest,
+    user: User,
+    db: AsyncSession,
+    lease: tuple[str, str, asyncio.Task],
 ):
     """Stream Agent trace events first, then the final natural-language response."""
     content = body.content.strip()
@@ -374,8 +449,8 @@ async def stream_message(
     await db.commit()
     user_message_id = str(user_message.id)
 
-    async def event_generator():
-        begin_llm_metrics()
+    async def run_events():
+        begin_llm_metrics(str(user.id))
         queue: asyncio.Queue[AgentTraceEvent] = asyncio.Queue()
 
         async def publish(event: AgentTraceEvent) -> None:
@@ -449,7 +524,7 @@ async def stream_message(
             except Exception as exc:
                 logger.error(f"Agent stream generation failed: {exc}")
                 if not full_reply:
-                    fallback = _fallback_reply(run)
+                    fallback = _ai_admission_reply(exc) or _fallback_reply(run)
                     full_reply.append(fallback)
                     yield _sse({"type": "content", "content": fallback})
 
@@ -468,6 +543,13 @@ async def stream_message(
             logger.warning(f"Failed to persist Agent reply: {exc}")
         yield "data: [DONE]\n\n"
 
+    async def event_generator():
+        try:
+            async for event in run_events():
+                yield event
+        finally:
+            await _finish_agent_lease(lease)
+
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
@@ -475,11 +557,28 @@ async def stream_message(
     )
 
 
-@router.post("/actions/{action_id}/approve")
-async def approve_pending_action(
-    action_id: str,
+@router.post("/stream")
+@limiter.limit(settings.CHAT_IP_RATE_LIMIT, key_func=ip_rate_limit_key)
+@limiter.limit(settings.CHAT_RATE_LIMIT, key_func=user_or_ip_rate_limit_key)
+async def stream_message(
+    request: Request,
+    body: ChatRequest,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db, scope="function"),
+):
+    del request
+    lease = await _start_agent_lease(str(user.id))
+    try:
+        return await _stream_message_locked(body, user, db, lease)
+    except Exception:
+        await _finish_agent_lease(lease)
+        raise
+
+
+async def _approve_pending_action_locked(
+    action_id: str,
+    user: User,
+    db: AsyncSession,
 ):
     action = await get_pending_action(db, action_id, user.id, for_update=True)
     if not action:
@@ -526,13 +625,25 @@ async def approve_pending_action(
     }
 
 
-@router.post("/actions/{action_id}/reject")
-async def reject_pending_action(
+@router.post("/actions/{action_id}/approve")
+async def approve_pending_action(
     action_id: str,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db, scope="function"),
 ):
-    action = await get_pending_action(db, action_id, user.id)
+    lease = await _start_agent_lease(str(user.id))
+    try:
+        return await _approve_pending_action_locked(action_id, user, db)
+    finally:
+        await _finish_agent_lease(lease)
+
+
+async def _reject_pending_action_locked(
+    action_id: str,
+    user: User,
+    db: AsyncSession,
+):
+    action = await get_pending_action(db, action_id, user.id, for_update=True)
     if not action:
         raise HTTPException(404, "待确认操作不存在")
     if action.status != "pending":
@@ -540,6 +651,19 @@ async def reject_pending_action(
     action.status = "rejected"
     action.resolved_at = datetime.now(timezone.utc)
     return {"message": "操作已取消"}
+
+
+@router.post("/actions/{action_id}/reject")
+async def reject_pending_action(
+    action_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    lease = await _start_agent_lease(str(user.id))
+    try:
+        return await _reject_pending_action_locked(action_id, user, db)
+    finally:
+        await _finish_agent_lease(lease)
 
 
 @router.get("/actions/{action_id}")

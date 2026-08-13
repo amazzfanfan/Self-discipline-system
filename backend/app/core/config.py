@@ -15,13 +15,25 @@ class Settings(BaseSettings):
     SCHEDULER_PERSIST_JOBS: bool = True
     SCHEDULER_REDIS_URL: str = ""
     MAX_UPLOAD_SIZE_MB: int = 8
+    # Onboarding accepts up to four 8 MiB photos in one multipart request.
+    MAX_REQUEST_BODY_MB: int = 40
 
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/system_agent"
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_CONNECT_TIMEOUT_SECONDS: float = 2.0
+    REDIS_SOCKET_TIMEOUT_SECONDS: float = 5.0
     RATE_LIMIT_STORAGE_URI: str = ""
+    DEFAULT_RATE_LIMIT: str = "120/minute"
+    CHAT_RATE_LIMIT: str = "20/minute"
+    CHAT_IP_RATE_LIMIT: str = "60/minute"
+    UPLOAD_RATE_LIMIT: str = "10/hour"
+    UPLOAD_IP_RATE_LIMIT: str = "30/hour"
+    ASSESSMENT_RATE_LIMIT: str = "10/hour"
+    ASSESSMENT_IP_RATE_LIMIT: str = "30/hour"
+    TRUSTED_PROXY_CIDRS: list[str] = ["127.0.0.1/32", "::1/128"]
 
     # JWT
     SECRET_KEY: str = "change-me-in-production"
@@ -48,6 +60,35 @@ class Settings(BaseSettings):
     LLM_FALLBACK_BASE_URL: str = ""
     LLM_TEMPERATURE: float = 0.7
     LLM_MAX_TOKENS: int = 1500
+
+    # Distributed Agent/AI admission control. Redis leases make the limits
+    # effective across multiple API and worker processes.
+    AGENT_LOCK_TTL_SECONDS: int = 180
+    AGENT_LOCK_WAIT_SECONDS: float = 0.25
+    AI_MAX_CONCURRENCY: int = 8
+    EMBEDDING_MAX_CONCURRENCY: int = 4
+    FACEPLUS_MAX_CONCURRENCY: int = 3
+    AI_GATE_WAIT_SECONDS: float = 2.0
+    AI_GATE_LEASE_SECONDS: int = 90
+
+    # Conservative token/call budgets. A request reserves its maximum possible
+    # output before contacting the provider and releases unused tokens later.
+    AI_BUDGET_ENFORCEMENT: bool = True
+    AI_USER_DAILY_CALL_LIMIT: int = 200
+    AI_GLOBAL_DAILY_CALL_LIMIT: int = 5000
+    AI_USER_DAILY_TOKEN_LIMIT: int = 300000
+    AI_GLOBAL_DAILY_TOKEN_LIMIT: int = 5000000
+
+    # Background Redis Stream consumer controls.
+    WORKER_CONCURRENCY: int = 4
+    WORKER_AI_CONCURRENCY: int = 2
+    WORKER_BATCH_SIZE: int = 10
+    WORKER_STALE_JOB_IDLE_MS: int = 300000
+
+    # Internal observability endpoint. In development an unset token permits
+    # loopback access only; production requires a token.
+    OPS_METRICS_TOKEN: str = ""
+    SECURITY_HEADERS_ENABLED: bool = True
 
     # Embedding Configuration
     EMBEDDING_API_KEY: str = ""
@@ -115,6 +156,33 @@ class Settings(BaseSettings):
             raise RuntimeError("Production requires an explicit CORS_ORIGINS allowlist")
         if not self.RATE_LIMIT_STORAGE_URI or self.RATE_LIMIT_STORAGE_URI == "memory://":
             raise RuntimeError("Production requires a shared RATE_LIMIT_STORAGE_URI")
+        if not self.TRUSTED_PROXY_CIDRS:
+            raise RuntimeError("Production requires an explicit TRUSTED_PROXY_CIDRS allowlist")
+        if not self.OPS_METRICS_TOKEN or len(self.OPS_METRICS_TOKEN) < 24:
+            raise RuntimeError("Production requires an OPS_METRICS_TOKEN of at least 24 characters")
+        if min(
+            self.AI_MAX_CONCURRENCY,
+            self.EMBEDDING_MAX_CONCURRENCY,
+            self.FACEPLUS_MAX_CONCURRENCY,
+            self.WORKER_CONCURRENCY,
+            self.WORKER_AI_CONCURRENCY,
+        ) < 1:
+            raise RuntimeError("Production concurrency limits must be positive")
+        if self.WORKER_AI_CONCURRENCY > self.WORKER_CONCURRENCY:
+            raise RuntimeError("WORKER_AI_CONCURRENCY cannot exceed WORKER_CONCURRENCY")
+        if not self.AI_BUDGET_ENFORCEMENT:
+            raise RuntimeError("Production requires AI_BUDGET_ENFORCEMENT=true")
+        if min(
+            self.AI_USER_DAILY_CALL_LIMIT,
+            self.AI_GLOBAL_DAILY_CALL_LIMIT,
+            self.AI_USER_DAILY_TOKEN_LIMIT,
+            self.AI_GLOBAL_DAILY_TOKEN_LIMIT,
+        ) < 1:
+            raise RuntimeError("Production AI budget limits must be positive")
+        if self.AI_USER_DAILY_CALL_LIMIT > self.AI_GLOBAL_DAILY_CALL_LIMIT:
+            raise RuntimeError("User AI call budget cannot exceed the global budget")
+        if self.AI_USER_DAILY_TOKEN_LIMIT > self.AI_GLOBAL_DAILY_TOKEN_LIMIT:
+            raise RuntimeError("User AI token budget cannot exceed the global budget")
         if self.ENABLE_SCHEDULER and not self.SCHEDULER_PERSIST_JOBS:
             raise RuntimeError("Production scheduler requires persistent jobs")
         for origin in self.CORS_ORIGINS:

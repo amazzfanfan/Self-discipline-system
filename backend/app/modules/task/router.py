@@ -8,8 +8,11 @@ from sqlalchemy import select, and_
 from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.models.user import User
+from app.models.user import UserProfile
 from app.models.task import Task, TaskEvent, TaskStatusEnum
 from app.models.assessment import AssessmentRun
+from app.models.goal import Goal
+from app.models.score import UserScore
 from app.services.cache_service import get_cached_tasks, set_cached_tasks, invalidate_tasks, invalidate_scores
 from app.core.time import local_today
 from app.services.task_state_service import apply_task_schedule, maintain_task_states
@@ -20,6 +23,13 @@ from app.services.goal_progress_service import (
 )
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
+
+DIMENSION_NAMES = {
+    "exercise": "运动状态",
+    "diet": "饮食习惯",
+    "sleep": "睡眠状态",
+    "appearance": "形象管理",
+}
 
 
 class TaskFeedbackRequest(BaseModel):
@@ -33,7 +43,52 @@ class TaskScheduleRequest(BaseModel):
     reason: str | None = None
 
 
-def _task_payload(task: Task) -> dict:
+def _task_why(
+    task: Task,
+    *,
+    scores_by_dimension: dict | None = None,
+    goals_by_id: dict | None = None,
+    skin_analysis: dict | None = None,
+) -> list[str]:
+    """Human-readable reasons for this task, separate from adaptation mechanics."""
+    why: list[str] = []
+    dimension = task.dimension.value
+    scores_by_dimension = scores_by_dimension or {}
+    goals_by_id = goals_by_id or {}
+
+    goal = goals_by_id.get(str(getattr(task, "goal_id", "") or ""))
+    if goal:
+        why.append(f"为了推进你的成长目标：{str(goal.content)[:60]}")
+    else:
+        score = scores_by_dimension.get(task.dimension)
+        if score is not None:
+            baseline = float(score.baseline_score)
+            all_baselines = [float(item.baseline_score) for item in scores_by_dimension.values()]
+            lowest = min(all_baselines) if all_baselines else baseline
+            name = DIMENSION_NAMES.get(dimension, dimension)
+            if baseline <= lowest + 5:
+                why.append(f"你的{name}基线为 {baseline:.0f} 分，是当前优先关注的方向")
+            else:
+                why.append(f"为了维持你的{name}，安排一项今天可以完成的小行动")
+
+    if dimension == "appearance" and isinstance(skin_analysis, dict):
+        issues = [str(item) for item in (skin_analysis.get("issues") or []) if item]
+        if skin_analysis.get("source") == "faceplusplus" and issues:
+            why.append(f"Face++ 观察到{ '、'.join(issues[:3]) }，所以这项任务优先围绕这些日常护理点")
+
+    metadata = getattr(task, "adaptation_metadata", None) or {}
+    reasons = metadata.get("reasons") if isinstance(metadata, dict) else None
+    if isinstance(reasons, list) and reasons:
+        why.append(f"今天的时长和难度已根据{ '、'.join(str(item) for item in reasons[:2]) }调整")
+    elif isinstance(metadata, dict) and metadata.get("version"):
+        signals = metadata.get("signals") or {}
+        if int(signals.get("history_count", 0) or 0) == 0:
+            why.append("你还没有足够的近期执行记录，系统先用中等难度建立基线，再根据你的反馈调整")
+
+    return why[:3]
+
+
+def _task_payload(task: Task, *, why: list[str] | None = None) -> dict:
     return {
         "id": str(task.id),
         "goal_id": (
@@ -67,7 +122,38 @@ def _task_payload(task: Task) -> dict:
             else None
         ),
         "adaptation_metadata": getattr(task, "adaptation_metadata", None) or {},
+        "why": why or [],
     }
+
+
+async def _task_context(db: AsyncSession, user_id) -> tuple[dict, dict, dict | None]:
+    scores = {
+        item.dimension: item
+        for item in (await db.execute(select(UserScore).where(UserScore.user_id == user_id))).scalars().all()
+    }
+    goals = {
+        str(item.id): item
+        for item in (await db.execute(select(Goal).where(Goal.user_id == user_id))).scalars().all()
+    }
+    profile = await db.scalar(select(UserProfile).where(UserProfile.user_id == user_id))
+    skin_analysis = profile.skin_analysis if profile and isinstance(profile.skin_analysis, dict) else None
+    return scores, goals, skin_analysis
+
+
+def _task_payloads(tasks: list[Task], context: tuple[dict, dict, dict | None]) -> list[dict]:
+    scores, goals, skin_analysis = context
+    return [
+        _task_payload(
+            task,
+            why=_task_why(
+                task,
+                scores_by_dimension=scores,
+                goals_by_id=goals,
+                skin_analysis=skin_analysis,
+            ),
+        )
+        for task in tasks
+    ]
 
 
 @router.get("/today")
@@ -77,7 +163,7 @@ async def get_today_tasks(user: User = Depends(get_current_user), db: AsyncSessi
         await invalidate_tasks(str(user.id))
     # 先查缓存
     cached = await get_cached_tasks(str(user.id))
-    if cached is not None:
+    if cached is not None and all("why" in task for task in cached):
         return cached
 
     result = await db.execute(
@@ -115,7 +201,7 @@ async def get_today_tasks(user: User = Depends(get_current_user), db: AsyncSessi
                 "AI 今日任务生成暂时失败，请稍后重试。",
             ) from e
 
-    result_list = [_task_payload(task) for task in tasks]
+    result_list = _task_payloads(tasks, await _task_context(db, user.id))
 
     # 写入缓存
     await set_cached_tasks(str(user.id), result_list)
@@ -385,4 +471,5 @@ async def list_tasks(
     query = query.order_by(Task.scheduled_date.desc()).limit(limit)
 
     result = await db.execute(query)
-    return [_task_payload(task) for task in result.scalars().all()]
+    tasks = result.scalars().all()
+    return _task_payloads(tasks, await _task_context(db, user.id))

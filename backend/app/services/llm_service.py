@@ -7,19 +7,33 @@ import litellm
 from litellm import acompletion
 from openai import AsyncOpenAI
 from app.core.config import get_settings
+from app.services.ai_budget_service import (
+    AIBudgetExceeded,
+    reserve_ai_budget,
+    settle_ai_budget,
+)
+from app.services.capacity_service import (
+    CapacityExceeded,
+    CapacityUnavailable,
+    distributed_capacity,
+)
 from typing import AsyncGenerator
 import logging
+import time
 from contextvars import ContextVar
 
 from opentelemetry import trace
+from app.services.metrics_service import increment_metric, observe_external_call
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 tracer = trace.get_tracer("system-agent.llm")
 _usage_context: ContextVar[dict | None] = ContextVar("llm_usage", default=None)
+_user_context: ContextVar[str | None] = ContextVar("llm_user", default=None)
 
 
-def begin_llm_metrics() -> None:
+def begin_llm_metrics(user_id: str | None = None) -> None:
+    _user_context.set(user_id)
     _usage_context.set({
         "input_tokens": 0,
         "output_tokens": 0,
@@ -47,6 +61,25 @@ def _record_usage(response, model: str) -> None:
     metrics["estimated_cost"] = round(metrics["estimated_cost"] + cost, 6)
     if model not in metrics["models"]:
         metrics["models"].append(model)
+
+
+def _usage_tokens(response) -> int:
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return 0
+    prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
+    completion = int(getattr(usage, "completion_tokens", 0) or 0)
+    total = int(getattr(usage, "total_tokens", 0) or 0)
+    return total or prompt + completion
+
+
+def _estimated_chat_tokens(messages: list[dict], max_tokens: int) -> int:
+    # UTF-8 byte length is intentionally conservative for mixed Chinese/English
+    # prompts and prevents the preflight budget reservation from undercounting.
+    input_bytes = sum(
+        len(str(item.get("content", "")).encode("utf-8")) for item in messages
+    )
+    return max(1, input_bytes) + max(1, max_tokens)
 
 
 def _record_call(model: str) -> None:
@@ -125,11 +158,24 @@ async def chat_completion(
         
         logger.info(f"Calling LLM: model={model}, base_url={base_url}, messages={len(messages)}")
         _record_call(model)
-        with tracer.start_as_current_span("gen_ai.chat") as span:
-            span.set_attribute("gen_ai.request.model", model)
-            span.set_attribute("gen_ai.operation.name", "chat")
-            response = await acompletion(**kwargs)
-            _record_usage(response, model)
+        async with distributed_capacity("llm", settings.AI_MAX_CONCURRENCY):
+            reservation = await reserve_ai_budget(
+                _user_context.get(),
+                _estimated_chat_tokens(messages, max_tokens),
+            )
+            with tracer.start_as_current_span("gen_ai.chat") as span:
+                span.set_attribute("gen_ai.request.model", model)
+                span.set_attribute("gen_ai.operation.name", "chat")
+                provider_started = time.perf_counter()
+                response = await acompletion(**kwargs)
+                _record_usage(response, model)
+                await observe_external_call(
+                    "llm",
+                    "success",
+                    (time.perf_counter() - provider_started) * 1000,
+                    tokens=_usage_tokens(response),
+                )
+            await settle_ai_budget(reservation, _usage_tokens(response))
         
         content = response.choices[0].message.content
         logger.info(f"LLM response received: {len(content)} chars")
@@ -137,12 +183,15 @@ async def chat_completion(
         return content
         
     except litellm.RateLimitError as e:
+        await increment_metric("external:llm:rate_limited")
         logger.warning(f"Rate limit hit: {e}")
         raise
     except litellm.APIError as e:
+        await increment_metric("external:llm:api_error")
         logger.error(f"API error: {e}")
         raise
     except Exception as e:
+        await increment_metric("external:llm:error")
         logger.error(f"LLM call failed: {e}")
         raise
 
@@ -206,15 +255,31 @@ async def chat_completion_stream(
         if timeout is not None:
             kwargs["timeout"] = timeout
 
-        response = await acompletion(**kwargs)
+        async with distributed_capacity("llm", settings.AI_MAX_CONCURRENCY):
+            reservation = await reserve_ai_budget(
+                _user_context.get(),
+                _estimated_chat_tokens(messages, max_tokens),
+            )
+            actual_tokens = 0
+            provider_started = time.perf_counter()
+            response = await acompletion(**kwargs)
 
-        async for chunk in response:
-            _record_usage(chunk, model)
-            content = chunk.choices[0].delta.content
-            if content:
-                yield content
+            async for chunk in response:
+                _record_usage(chunk, model)
+                actual_tokens = max(actual_tokens, _usage_tokens(chunk))
+                content = chunk.choices[0].delta.content
+                if content:
+                    yield content
+            await observe_external_call(
+                "llm_stream",
+                "success",
+                (time.perf_counter() - provider_started) * 1000,
+                tokens=actual_tokens,
+            )
+            await settle_ai_budget(reservation, actual_tokens)
 
     except Exception as e:
+        await increment_metric("external:llm_stream:error")
         logger.error(f"Stream LLM call failed: {e}")
         raise
 
@@ -247,12 +312,25 @@ async def get_embedding(
         
         logger.info(f"Getting embedding for text: {len(text)} chars")
         
-        response = await client.embeddings.create(
-            model=model,
-            input=text,
-            dimensions=settings.EMBEDDING_DIMENSION,
-            encoding_format="float",
-        )
+        async with distributed_capacity("embedding", settings.EMBEDDING_MAX_CONCURRENCY):
+            reservation = await reserve_ai_budget(
+                _user_context.get(),
+                max(1, len(text.encode("utf-8"))),
+            )
+            provider_started = time.perf_counter()
+            response = await client.embeddings.create(
+                model=model,
+                input=text,
+                dimensions=settings.EMBEDDING_DIMENSION,
+                encoding_format="float",
+            )
+            await observe_external_call(
+                "embedding",
+                "success",
+                (time.perf_counter() - provider_started) * 1000,
+                tokens=_usage_tokens(response),
+            )
+            await settle_ai_budget(reservation, _usage_tokens(response))
         
         embedding = response.data[0].embedding
         logger.info(f"Embedding received: dimension={len(embedding)}")
@@ -260,6 +338,7 @@ async def get_embedding(
         return embedding
         
     except Exception as e:
+        await increment_metric("external:embedding:error")
         logger.error(f"Embedding failed: {e}")
         raise
 
@@ -295,6 +374,8 @@ async def chat_completion_with_fallback(
             **kwargs
         )
     except Exception as e:
+        if isinstance(e, (AIBudgetExceeded, CapacityExceeded, CapacityUnavailable)):
+            raise
         if not fallback_model:
             raise
         logger.warning(f"Primary model failed: {e}, trying fallback")
@@ -334,6 +415,8 @@ async def chat_completion_stream_with_fallback(
             yield chunk
         return
     except Exception as primary_error:
+        if isinstance(primary_error, (AIBudgetExceeded, CapacityExceeded, CapacityUnavailable)):
+            raise
         if emitted or not fallback_model:
             raise
         logger.warning(f"Primary stream failed before first token: {primary_error}, trying fallback")

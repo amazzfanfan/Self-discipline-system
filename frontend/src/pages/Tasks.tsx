@@ -220,7 +220,13 @@ export default function Tasks() {
                       {dimensionLabels[task.dimension]} · {difficultyLabels[task.difficulty]}
                       {task.estimated_minutes ? ` · ${task.estimated_minutes} 分钟` : ''}
                     </div>
-                    {task.rationale && <p className="mt-2 text-xs leading-5 text-slate-600">{task.rationale}</p>}
+                    {task.why && task.why.length > 0 ? (
+                      <div className="mt-3 rounded-xl border border-cyan-400/10 bg-cyan-400/[0.035] px-3 py-2.5">
+                        <ul className="space-y-1 text-xs leading-5 text-slate-400">
+                          {task.why.map((item) => <li key={item} className="flex gap-1.5"><span className="text-cyan-400">·</span><span>{item}</span></li>)}
+                        </ul>
+                      </div>
+                    ) : task.rationale ? <p className="mt-2 text-xs leading-5 text-slate-600">{task.rationale}</p> : null}
                     {String(adaptation?.version || '').startsWith('adaptive-v2') && (
                       <details className="mt-2 text-[10px] text-slate-600">
                         <summary className="cursor-pointer select-none text-cyan-400/70">查看自适应依据</summary>

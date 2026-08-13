@@ -101,6 +101,7 @@ export interface Task {
   defer_count?: number;
   original_scheduled_date?: string | null;
   adaptation_metadata?: Record<string, unknown>;
+  why?: string[];
 }
 
 export interface UserNotification {

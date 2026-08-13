@@ -32,6 +32,7 @@ from app.services.adaptive_task_service import (
 from app.services.behavior_service import last_completed_week_start
 from app.services.goal_schedule_service import goal_is_due, goal_planning_context
 from app.services.goal_progress_service import build_goal_progress_summaries
+from app.services.llm_service import begin_llm_metrics
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -147,6 +148,7 @@ async def generate_tasks_for_user(
     regenerate_pending: bool = False,
 ):
     """Generate AI-authored tasks concurrently for a single user."""
+    begin_llm_metrics(str(user_id))
     async def _generate(session):
         await maintain_task_states(session, user_id)
         today = local_today()

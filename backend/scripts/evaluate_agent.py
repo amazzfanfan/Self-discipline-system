@@ -14,9 +14,11 @@ import asyncio
 import json
 from collections import defaultdict
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 from app.agent.runtime import AgentRuntime
 
@@ -36,6 +38,10 @@ WRITE_TOOLS = {
     "update_task_constraints",
     "record_goal_progress",
 }
+
+# Offline routing evaluation must not change near midnight. Product runtime still
+# uses the real application clock; only this deterministic gate is frozen.
+OFFLINE_EVAL_NOW = datetime(2026, 8, 12, 12, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 
 
 @dataclass
@@ -85,11 +91,11 @@ async def evaluate_cases(cases: list[dict], *, live: bool = False) -> EvalReport
     tool_matches = argument_matches = unsafe_writes = 0
     for index, case in enumerate(cases, 1):
         runtime = _runtime()
-        decision = (
-            await runtime._plan(case["input"], [])
-            if live
-            else runtime._fallback_decision(case["input"], [])
-        )
+        if live:
+            decision = await runtime._plan(case["input"], [])
+        else:
+            with patch("app.agent.runtime.local_now", return_value=OFFLINE_EVAL_NOW):
+                decision = runtime._fallback_decision(case["input"], [])
         expected_tool = case.get("expected_tool")
         tool_match = decision.tool == expected_tool
         argument_match = tool_match and _arguments_match(decision.arguments, case)

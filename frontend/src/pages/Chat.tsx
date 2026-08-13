@@ -5,6 +5,7 @@ import ReactMarkdown from 'react-markdown';
 import AgentTrace from '../components/AgentTrace';
 import ChatInsightCards from '../components/ChatInsightCards';
 import PrivateImage from '../components/PrivateImage';
+import { useNotification } from '../components/notification-context';
 import api from '../services/api';
 import { getAccessToken, refreshAccessToken } from '../services/authSession';
 import { useAuthStore } from '../stores/authStore';
@@ -152,6 +153,7 @@ function PendingActionCard({ action }: { action: PendingAction }) {
 }
 
 export default function Chat() {
+  const { addNotification } = useNotification();
   const user = useAuthStore((state) => state.user);
   const [input, setInput] = useState('');
   const [streamingMsg, setStreamingMsg] = useState<ChatMessage | null>(null);
@@ -205,7 +207,26 @@ export default function Chat() {
     abortRef.current = abortController;
     try {
       const response = await openAgentStream(text, abortController.signal);
-      if (!response.ok) throw new Error(`Stream failed: ${response.status}`);
+      if (!response.ok) {
+        let message = response.status === 409
+          ? '上一条 Agent 请求仍在处理中，请稍后再试。'
+          : response.status === 429
+            ? '请求过于频繁，请稍后再试。'
+            : 'Agent 服务暂时不可用，请稍后再试。';
+        try {
+          const payload = await response.json() as { detail?: string | { message?: string } };
+          if (typeof payload.detail === 'string') message = payload.detail;
+          else if (payload.detail?.message) message = payload.detail.message;
+        } catch {
+          // Preserve the status-specific fallback when the response is not JSON.
+        }
+        addNotification({
+          type: response.status === 409 || response.status === 429 ? 'warning' : 'error',
+          title: response.status === 409 ? 'Agent 正在处理中' : '请求未执行',
+          message,
+        });
+        throw new Error(`Stream failed: ${response.status}`);
+      }
 
       setIsThinking(false);
       temporaryId.current += 1;

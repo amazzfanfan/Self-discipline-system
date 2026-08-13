@@ -1,12 +1,14 @@
 from dataclasses import asdict
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.deps import get_current_user
+from app.core.config import get_settings
+from app.core.rate_limit import ip_rate_limit_key, limiter, user_or_ip_rate_limit_key
 from app.models.user import User, UserProfile
 from app.models.score import UserScore, DimensionEnum
 from app.models.assessment import AssessmentRun
@@ -36,10 +38,12 @@ from app.services.upload_service import (
     sha256_file,
 )
 from app.services.privacy_service import delete_user_account, export_user_data
+from app.services.llm_service import begin_llm_metrics
 from app.models.memory import Memory
 from sqlalchemy import delete
 
 router = APIRouter(prefix="/api/users", tags=["users"])
+settings = get_settings()
 
 
 async def _get_or_create_profile(db: AsyncSession, user_id) -> UserProfile:
@@ -242,10 +246,14 @@ async def delete_my_account(
 
 
 @router.post("/me/photos")
+@limiter.limit(settings.UPLOAD_IP_RATE_LIMIT, key_func=ip_rate_limit_key)
+@limiter.limit(settings.UPLOAD_RATE_LIMIT, key_func=user_or_ip_rate_limit_key)
 async def upload_photo(
+    request: Request,
     file: UploadFile = File(...),
     user: User = Depends(get_current_user),
 ):
+    del request
     saved = await save_image_upload(file, str(user.id))
     return {"url": saved.url, "quality": saved.quality}
 
@@ -265,7 +273,10 @@ async def get_private_photo(
 
 
 @router.post("/me/photos/upload")
+@limiter.limit(settings.UPLOAD_IP_RATE_LIMIT, key_func=ip_rate_limit_key)
+@limiter.limit(settings.UPLOAD_RATE_LIMIT, key_func=user_or_ip_rate_limit_key)
 async def upload_photos(
+    request: Request,
     avatar: UploadFile | None = File(None),
     portrait_photo: UploadFile | None = File(None),
     front_photo: UploadFile | None = File(None),
@@ -274,6 +285,7 @@ async def upload_photos(
     db: AsyncSession = Depends(get_db, scope="function"),
 ):
     """Upload photos during onboarding. Returns saved URLs."""
+    del request
     user_id = user.id
     
     result = await db.execute(select(UserProfile).where(UserProfile.user_id == user_id))
@@ -326,12 +338,17 @@ async def upload_photos(
 
 
 @router.post("/me/skin-analyze")
+@limiter.limit(settings.ASSESSMENT_IP_RATE_LIMIT, key_func=ip_rate_limit_key)
+@limiter.limit(settings.ASSESSMENT_RATE_LIMIT, key_func=user_or_ip_rate_limit_key)
 async def skin_analyze(
+    request: Request,
     file: UploadFile = File(...),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db, scope="function"),
 ):
     """分析一次性聊天照片；只保留结构化结果，不保留原图。"""
+    del request
+    begin_llm_metrics(str(user.id))
     saved = await save_image_upload(file, f"{user.id}_skin")
     try:
         # 同一图片按内容哈希复用 Face++ 结果，不使用随机视觉模型兜底。
@@ -394,11 +411,15 @@ async def skin_analyze(
 
 
 @router.post("/me/evaluate")
+@limiter.limit(settings.ASSESSMENT_IP_RATE_LIMIT, key_func=ip_rate_limit_key)
+@limiter.limit(settings.ASSESSMENT_RATE_LIMIT, key_func=user_or_ip_rate_limit_key)
 async def evaluate(
+    request: Request,
     req: EvaluateRequest,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db, scope="function"),
 ):
+    del request
     user_id = user.id
     result = await db.execute(select(UserProfile).where(UserProfile.user_id == user_id))
     profile = result.scalar_one_or_none()
