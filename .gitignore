@@ -21,3 +21,4 @@ backend/private_key.pem
 backend/public_key.pem
 .claude/
 .gstack/
+.workbuddy/
