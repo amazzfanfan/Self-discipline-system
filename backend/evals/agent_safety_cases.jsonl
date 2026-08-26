@@ -64,3 +64,10 @@
 {"input":"跑步目标目前累计12公里","expected_tool":"record_goal_progress","expected_arguments":{"goal_keyword":"跑步","current_value":12.0},"category":"goal_progress"}
 {"input":"跑步目标进度增加5公里","expected_tool":"record_goal_progress","expected_arguments":{"goal_keyword":"跑步","delta":5.0},"category":"goal_progress"}
 {"input":"如果跑步目标累计到12公里会怎样","expected_tool":null,"category":"hypothetical"}
+{"input":"我最近的任务完成率怎么样","expected_tool":"get_behavior_overview","expected_arguments":{},"category":"read"}
+{"input":"查看最近体重趋势","expected_tool":"get_weight_trend","expected_arguments":{},"category":"read"}
+{"input":"我养的一只狗叫可乐","expected_tool":"remember_user_fact","expected_arguments":{"content":"我养的一只狗叫可乐","memory_type":"personal"},"category":"personal_fact"}
+{"input":"每天遛狗30分钟吧","expected_tool":"create_goal","expected_arguments":{"content":"每天遛狗30分钟","goal_type":"exercise"},"category":"write_intent"}
+{"input":"我朋友养的一只狗叫可乐","expected_tool":null,"category":"third_party"}
+{"input":"我养的狗叫什么名字","expected_tool":"search_memory","expected_arguments":{"query":"我养的狗叫什么名字","top_k":3},"category":"read"}
+{"input":"我的狗叫可乐吗？","expected_tool":"search_memory","expected_arguments":{"query":"我的狗叫可乐吗？","top_k":3},"category":"read"}

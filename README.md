@@ -329,6 +329,7 @@ pip install -r requirements-dev.txt
 python -m pytest -q
 python -m ruff check app tests
 python -m scripts.evaluate_agent
+python -m scripts.evaluate_agent_quality
 
 # 前端
 cd frontend
@@ -340,6 +341,8 @@ npm run test:e2e
 ```
 
 GitHub Actions 会在每次 PR 上执行同样的编译、测试、lint 和生产构建。后端还提供 `/health` 存活探针与 `/health/ready` 数据库/Redis 就绪探针。
+
+Agent 的工具路由、危险写入、受控多工具工作流和按需上下文选择都有可复现的离线门禁；指标口径与当前基线见 [Agent 量化评测与展示指标](docs/AGENT_EVALUATION.md)。
 
 ### 本地并发基线（不调用付费模型）
 

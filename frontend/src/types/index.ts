@@ -45,6 +45,25 @@ export interface UserScore {
   streak_days: number;
 }
 
+export interface WeightRecord {
+  id: string;
+  weight_kg: number;
+  recorded_at: string;
+  source: 'manual' | 'manual_api' | 'agent_chat' | 'profile_edit' | 'assessment' | string;
+}
+
+export interface WeightHistoryResponse {
+  records: WeightRecord[];
+  summary: {
+    latest_kg: number | null;
+    change_7d: number | null;
+    change_30d: number | null;
+    average_7d: number | null;
+    average_30d: number | null;
+    sample_count: number;
+  };
+}
+
 export interface AssessmentEvidenceComponent {
   key?: string;
   label: string;
@@ -306,6 +325,9 @@ export interface AgentMetrics {
   estimated_cost?: number;
   models?: string[];
   llm_calls?: number;
+  workflow_enabled?: boolean;
+  write_tool_calls?: number;
+  partial_failure?: boolean;
 }
 
 export interface PendingAction {

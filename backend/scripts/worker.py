@@ -21,6 +21,7 @@ from app.services.cache_service import (
     set_background_worker_heartbeat,
 )
 from app.services.memory_service import MemoryService
+from app.services.conversation_summary_service import refresh_conversation_summary
 from app.services.goal_service import goal_service
 from app.services.assessment_generation_service import process_assessment_generation
 from app.services.scheduler_service import generate_tasks_for_user
@@ -39,6 +40,7 @@ AI_JOB_KINDS = {
     "index_goal",
     "refresh_goal_tasks",
     "generate_assessment_extras",
+    "refresh_conversation_summary",
 }
 
 
@@ -51,6 +53,9 @@ async def process_job(kind: str, payload: dict) -> None:
                 role="user",
                 source_id=payload["user_message_id"],
             )
+            return
+        if kind == "refresh_conversation_summary":
+            await refresh_conversation_summary(session, payload["user_id"])
             return
         if kind == "index_goal":
             await goal_service.index_goal_embedding(

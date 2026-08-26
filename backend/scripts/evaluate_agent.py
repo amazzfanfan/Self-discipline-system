@@ -37,6 +37,7 @@ WRITE_TOOLS = {
     "delete_goal",
     "update_task_constraints",
     "record_goal_progress",
+    "remember_user_fact",
 }
 
 # Offline routing evaluation must not change near midnight. Product runtime still

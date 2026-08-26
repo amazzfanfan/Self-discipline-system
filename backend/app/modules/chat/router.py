@@ -34,6 +34,7 @@ from app.services.llm_service import (
     get_llm_metrics,
 )
 from app.services.memory_service import MemoryService
+from app.services.conversation_summary_service import refresh_conversation_summary
 from app.services.profile_service import ProfileService
 from app.services.agent_audit_service import get_pending_action, update_agent_run_metrics
 from app.services.ai_budget_service import AIBudgetExceeded
@@ -41,6 +42,7 @@ from app.services.capacity_service import CapacityExceeded, CapacityUnavailable
 from app.services.cache_service import (
     acquire_lock,
     enqueue_background_job,
+    enqueue_background_job_once,
     release_lock,
     renew_lock,
 )
@@ -171,6 +173,13 @@ def _fallback_reply(run: AgentRunResult) -> str:
     for observation in run.observations:
         if observation.status == "approval_required":
             return observation.result.get("message", "该操作需要你的明确确认。")
+        if observation.tool == "search_memory" and observation.success:
+            memories = observation.result.get("memories") or []
+            if not memories:
+                return "我检查了当前账号的长期记忆，没有找到与这个问题相关的已保存信息。"
+            first = str(memories[0].get("content") or "").strip()
+            if first:
+                return f"根据你之前告诉我的信息，{first.replace('我', '你', 1)}。"
     successful = [item for item in run.observations if item.success]
     if successful:
         return "操作已经完成。你可以在运行轨迹中查看具体结果。"
@@ -246,7 +255,16 @@ def _direct_operation_reply(run: AgentRunResult) -> str | None:
     if observation.tool in {"complete_task", "skip_task", "defer_today_task", "resume_today_task"}:
         return str(result.get("message") or "任务状态已更新。")
     if observation.tool == "record_weight":
-        return f"体重已记录：**{result.get('weight_kg', '')} kg**。"
+        reply = f"体重已记录：**{result.get('weight_kg', '')} kg**。"
+        summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+        change_7d = summary.get("change_7d")
+        if change_7d is not None:
+            reply += f"近 7 天变化：**{float(change_7d):+.1f} kg**。"
+        linked_goals = result.get("linked_goals") or []
+        if linked_goals:
+            names = "、".join(str(item.get("content") or "体重目标") for item in linked_goals[:3])
+            reply += f"\n\n已同步目标进度：{names}。"
+        return reply
     if observation.tool == "update_task_constraints":
         conflicts = result.get("conflicting_tasks") or []
         reply = str(result.get("message") or "任务可执行条件已更新。")
@@ -278,6 +296,17 @@ def _direct_operation_reply(run: AgentRunResult) -> str | None:
         if result.get("goal_completed"):
             reply += "\n\n目标值已达到，系统已将目标标记为完成。"
         return reply
+    if observation.tool == "remember_user_fact":
+        memory = result.get("memory") or {}
+        return (
+            f"已保存到长期记忆：**{memory.get('content', '')}**。"
+            "你可以在设置中查看或清空长期记忆。"
+        )
+    if observation.tool == "search_memory":
+        # Memory search is a read operation, not a user-facing write receipt.
+        # Let the final response model answer the actual question naturally
+        # instead of exposing raw database rows as a bullet list.
+        return None
     return None
 
 
@@ -339,16 +368,29 @@ async def _learn_from_user(user_id: str, user_message_id: str, content: str) -> 
 
 
 async def _launch_learning(user_id: str, user_message_id: str, content: str) -> None:
-    queued = await enqueue_background_job(
+    memory_queued = await enqueue_background_job(
         "learn_from_user",
         {"user_id": user_id, "user_message_id": user_message_id, "content": content},
     )
-    if queued:
-        return
-    # Development fallback when Redis is temporarily unavailable.
-    task = asyncio.create_task(_learn_from_user(user_id, user_message_id, content))
-    background_tasks.add(task)
-    task.add_done_callback(background_tasks.discard)
+    summary_queued = await enqueue_background_job_once(
+        "refresh_conversation_summary",
+        {"user_id": user_id},
+        dedupe_key=f"conversation-summary:{user_id}",
+        ttl_seconds=20,
+    )
+    # Development fallbacks when Redis is temporarily unavailable.
+    if not memory_queued:
+        task = asyncio.create_task(_learn_from_user(user_id, user_message_id, content))
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
+    if not summary_queued:
+        async def refresh_summary() -> None:
+            async with async_session() as session:
+                await refresh_conversation_summary(session, user_id)
+
+        task = asyncio.create_task(refresh_summary())
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
 
 
 async def _send_message_locked(

@@ -70,6 +70,19 @@ class TestRuleBasedFilter:
         assert importance >= 0.85
 
     @pytest.mark.parametrize("text", [
+        "我养了一只狗狗",
+        "我养的一只狗叫可乐",
+        "我的狗名字是可乐",
+    ])
+    def test_high_priority_pet_fact(self, text):
+        result = self.f.filter(text)
+        assert result is not None
+        should, importance, mem_type = result
+        assert should is True
+        assert importance >= 0.9
+        assert mem_type == "personal"
+
+    @pytest.mark.parametrize("text", [
         "我的体重是七十公斤",
         "我每天运动一小时",
         "我的血压有点高",
@@ -442,6 +455,20 @@ class TestHybridMemoryJudge:
         result = self._run(judge.judge("今天天气不错"))
         assert result["source"] == "hybrid"
         assert result["importance"] == 0.5
+
+    def test_llm_path_normalizes_active_weights(self):
+        mock_client = AsyncMock()
+        mock_client.chat.return_value = (
+            '{"should_remember": true, "importance": 0.9, "memory_type": "fact"}'
+        )
+        scorer = AsyncMock()
+        scorer.score = lambda *_args, **_kwargs: 0.8
+        judge = HybridMemoryJudge(llm_client=mock_client, importance_scorer=scorer)
+
+        result = self._run(judge.judge("这是一条规则未覆盖但稳定的个人事实"))
+
+        assert result["should_remember"] is True
+        assert result["importance"] > 0.8
 
     def test_rule_result_structure(self):
         """Verify the result dict has all expected keys."""

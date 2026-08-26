@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import date, time
+from datetime import date, datetime, time, timedelta
 
 
 WEEKDAY_NAMES = {
@@ -68,6 +68,30 @@ def goal_is_due(goal: dict, target_date: date) -> bool:
     if recurrence in {"flexible", "daily"}:
         return True
     return target_date.weekday() in set(goal.get("days_of_week") or [])
+
+
+def next_start_after_missed_time(
+    *,
+    recurrence: str,
+    days_of_week: list[int] | None,
+    preferred_time: time | None,
+    now: datetime,
+) -> date | None:
+    """Start at the next valid occurrence when today's planned time has passed."""
+    if preferred_time is None:
+        return None
+    current_time = now.time().replace(tzinfo=None)
+    if current_time <= preferred_time:
+        return None
+    candidate = now.date() + timedelta(days=1)
+    selected_days = set(days_of_week or [])
+    if recurrence not in {"weekly", "custom"} or not selected_days:
+        return candidate
+    for offset in range(7):
+        possible = candidate + timedelta(days=offset)
+        if possible.weekday() in selected_days:
+            return possible
+    return candidate
 
 
 def goal_planning_context(goal: dict) -> str:

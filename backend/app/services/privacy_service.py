@@ -6,6 +6,7 @@ from app.models.agent_run import AgentRun, AgentStep, PendingAction
 from app.models.assessment import AssessmentRun
 from app.models.behavior import DailyCheckIn, WeeklyReview
 from app.models.conversation import Conversation
+from app.models.conversation_summary import ConversationSummary
 from app.models.goal import Goal, GoalLifecycleEvent, GoalProgressEvent
 from app.models.memory import Memory
 from app.models.notification import PushDelivery, PushSubscription, UserNotification
@@ -27,6 +28,7 @@ async def export_user_data(db, user: User) -> dict:
     tasks = await all_items(Task)
     task_events = await all_items(TaskEvent)
     conversations = await all_items(Conversation)
+    conversation_summaries = await all_items(ConversationSummary)
     memories = await all_items(Memory)
     goals = await all_items(Goal)
     goal_progress_events = await all_items(GoalProgressEvent)
@@ -109,6 +111,18 @@ async def export_user_data(db, user: User) -> dict:
             {"role": item.role.value, "content": item.content, "created_at": item.created_at.isoformat()}
             for item in conversations
         ],
+        "conversation_summaries": [
+            {
+                "summary": item.summary,
+                "through_created_at": (
+                    item.through_created_at.isoformat() if item.through_created_at else None
+                ),
+                "summarized_message_count": item.summarized_message_count,
+                "version": item.version,
+                "updated_at": item.updated_at.isoformat(),
+            }
+            for item in conversation_summaries
+        ],
         "memories": [item.to_dict() | {"content": item.content} for item in memories],
         "goals": [item.to_dict() for item in goals],
         "goal_progress_events": [
@@ -142,7 +156,11 @@ async def export_user_data(db, user: User) -> dict:
             for item in goal_lifecycle_events
         ],
         "weights": [
-            {"weight_kg": float(item.weight_kg), "recorded_at": item.recorded_at.isoformat()}
+            {
+                "weight_kg": float(item.weight_kg),
+                "recorded_at": item.recorded_at.isoformat(),
+                "source": item.source or "manual",
+            }
             for item in weights
         ],
         "assessments": [
@@ -229,6 +247,7 @@ async def delete_user_account(db, user: User) -> None:
         ScoreHistory,
         Task,
         Conversation,
+        ConversationSummary,
         Memory,
         Goal,
         WeightRecord,

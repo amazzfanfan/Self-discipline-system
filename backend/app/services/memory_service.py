@@ -5,7 +5,7 @@ Memory Service - 记忆管理服务
 """
 
 from datetime import datetime, timezone
-from sqlalchemy import select, func, or_, text
+from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.memory import Memory
 from app.models.user import UserProfile
@@ -182,23 +182,19 @@ class MemoryService:
                 # Retrieve a wider candidate set, then rerank by semantic similarity
                 # and time-decayed importance.
                 candidate_limit = max(top_k * 3, top_k)
+                distance = Memory.embedding.cosine_distance(query_embedding)
+                similarity = (1 - distance).label("similarity")
                 stmt = (
-                    select(
-                        Memory,
-                        text("1 - (memory.embedding <=> :embedding)").label("similarity")
-                    )
+                    select(Memory, similarity)
                     .where(Memory.user_id == user_id)
                     .where(Memory.embedding.isnot(None))
                     .where(Memory.embedding_model == settings.EMBEDDING_MODEL)
-                    .params(embedding=query_embedding)
                 )
 
                 if memory_type:
                     stmt = stmt.where(Memory.memory_type == memory_type)
 
-                stmt = stmt.order_by(
-                    text("memory.embedding <=> :embedding")
-                ).params(embedding=query_embedding).limit(candidate_limit)
+                stmt = stmt.order_by(distance).limit(candidate_limit)
 
                 result = await self.db.execute(stmt)
                 rows = result.all()

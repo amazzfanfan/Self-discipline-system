@@ -15,7 +15,7 @@ class UserResponse(BaseModel):
 
 class ProfileUpdate(BaseModel):
     height_cm: float | None = None
-    weight_kg: float | None = None
+    weight_kg: float | None = Field(default=None, gt=20, lt=300)
     age: int | None = None
     gender: str | None = None
     skincare_constraints: "SkincareConstraints | None" = None

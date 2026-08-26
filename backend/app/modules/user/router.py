@@ -22,7 +22,11 @@ from app.schemas.user import (
 )
 from app.core.security import verify_password
 from app.services.assessment_service import evaluate_profile
-from app.services.cache_service import enqueue_background_job_once, invalidate_scores
+from app.services.cache_service import (
+    enqueue_background_job_once,
+    invalidate_memory_search,
+    invalidate_scores,
+)
 from app.services.faceplus_service import (
     analyze_skin,
     generate_ai_suggestions,
@@ -39,6 +43,8 @@ from app.services.upload_service import (
 )
 from app.services.privacy_service import delete_user_account, export_user_data
 from app.services.llm_service import begin_llm_metrics
+from app.services.weight_service import record_weight
+from app.services.conversation_summary_service import reset_conversation_summary
 from app.models.memory import Memory
 from sqlalchemy import delete
 
@@ -184,9 +190,12 @@ async def update_profile(
     db: AsyncSession = Depends(get_db, scope="function"),
 ):
     profile = await _get_or_create_profile(db, user.id)
-
-    for field, value in req.model_dump(exclude_unset=True).items():
+    updates = req.model_dump(exclude_unset=True)
+    weight_kg = updates.pop("weight_kg", None)
+    for field, value in updates.items():
         setattr(profile, field, value)
+    if weight_kg is not None:
+        await record_weight(db, str(user.id), weight_kg, source="profile_edit")
     return profile
 
 
@@ -231,7 +240,12 @@ async def clear_my_memories(
     db: AsyncSession = Depends(get_db, scope="function"),
 ):
     result = await db.execute(delete(Memory).where(Memory.user_id == user.id))
-    return {"deleted": result.rowcount or 0}
+    summaries_reset = await reset_conversation_summary(db, user.id)
+    await invalidate_memory_search(str(user.id))
+    return {
+        "deleted": result.rowcount or 0,
+        "conversation_summaries_reset": summaries_reset,
+    }
 
 
 @router.delete("/me", status_code=204)
@@ -428,9 +442,9 @@ async def evaluate(
         db.add(profile)
 
     profile.height_cm = req.height_cm
-    profile.weight_kg = req.weight_kg
     profile.age = req.age
     profile.gender = req.gender
+    await record_weight(db, str(user_id), req.weight_kg, source="assessment")
     questionnaire = req.questionnaire or profile.questionnaire
     if not questionnaire:
         raise HTTPException(422, "请先完成状态问卷，再建立评分")

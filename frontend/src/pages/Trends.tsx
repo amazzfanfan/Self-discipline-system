@@ -1,10 +1,11 @@
-import { useQuery } from '@tanstack/react-query';
+import { useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { motion } from 'framer-motion';
 import api from '../services/api';
 import BehaviorDeck from '../components/BehaviorDeck';
 import DepthPanel from '../components/DepthPanel';
-import type { BehaviorMetrics, Dimension, ScoreHistory, UserScore } from '../types';
+import type { BehaviorMetrics, Dimension, ScoreHistory, UserScore, WeightHistoryResponse } from '../types';
 
 const DIM_COLORS = {
   exercise: '#3b82f6',
@@ -21,6 +22,8 @@ const DIM_LABELS: Record<string, string> = {
 };
 
 export default function Trends() {
+  const queryClient = useQueryClient();
+  const [weightInput, setWeightInput] = useState('');
   const { data: scores } = useQuery<UserScore[]>({
     queryKey: ['scores'],
     queryFn: () => api.get('/scores').then((r) => r.data),
@@ -34,6 +37,24 @@ export default function Trends() {
   const { data: behaviorMetrics } = useQuery<BehaviorMetrics>({
     queryKey: ['behavior-metrics'],
     queryFn: () => api.get('/behavior/metrics').then((response) => response.data),
+  });
+
+  const { data: weightHistory } = useQuery<WeightHistoryResponse>({
+    queryKey: ['weight-history'],
+    queryFn: () => api.get('/weight/history?limit=90').then((response) => response.data),
+  });
+
+  const recordWeight = useMutation({
+    mutationFn: (weight_kg: number) => api.post('/weight', { weight_kg }),
+    onSuccess: async () => {
+      setWeightInput('');
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['weight-history'] }),
+        queryClient.invalidateQueries({ queryKey: ['profile'] }),
+        queryClient.invalidateQueries({ queryKey: ['goals'] }),
+        queryClient.invalidateQueries({ queryKey: ['goal-progress-summary'] }),
+      ]);
+    },
   });
 
   // Build chart data
@@ -52,6 +73,8 @@ export default function Trends() {
   const focusDimension = [...populatedDimensions]
     .sort((a, b) => (a.metric?.momentum ?? 0) - (b.metric?.momentum ?? 0))[0];
   const confidenceLabels = { none: '等待样本', low: '低', medium: '中', high: '高' };
+  const weightDelta = weightHistory?.summary.change_7d;
+  const formatDelta = (value: number | null | undefined) => value == null ? '样本不足' : `${value > 0 ? '+' : ''}${value.toFixed(1)} kg`;
 
   return (
     <div className="h-full overflow-y-auto p-6 scrollbar-hide">
@@ -110,6 +133,51 @@ export default function Trends() {
               </div>
               <BehaviorDeck metrics={behaviorMetrics} />
             </div>
+          </DepthPanel>
+        </motion.div>
+
+        <motion.div initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} className="mb-5">
+          <DepthPanel className="rounded-[24px] p-5 lg:p-6" glow="rgba(16, 185, 129, 0.12)" interactive={false}>
+            <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.18em] text-emerald-300/60">Weight Trend</p>
+                <h2 className="mt-1 text-base font-semibold text-slate-200">体重记录与平滑趋势</h2>
+                <p className="mt-1 text-[10px] text-slate-600">聊天、个人画像与这里的记录会同步到同一份每日数据；体重目标也会自动更新。</p>
+              </div>
+              <form
+                className="flex items-center gap-2"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const value = Number(weightInput);
+                  if (value > 20 && value < 300) recordWeight.mutate(value);
+                }}
+              >
+                <input aria-label="今日体重" type="number" min="20.1" max="299.9" step="0.1" value={weightInput} onChange={(event) => setWeightInput(event.target.value)} placeholder="今日体重 kg" className="w-32 rounded-xl border border-white/[0.07] bg-slate-950/60 px-3 py-2 text-xs text-white outline-none focus:border-emerald-400/30" />
+                <button type="submit" disabled={recordWeight.isPending || !weightInput} className="rounded-xl bg-emerald-400 px-3 py-2 text-xs font-semibold text-slate-950 disabled:opacity-40">{recordWeight.isPending ? '保存中' : '记录'}</button>
+              </form>
+            </div>
+            <div className="mb-4 grid grid-cols-2 gap-2 md:grid-cols-4">
+              {[
+                ['最新体重', weightHistory?.summary.latest_kg == null ? '—' : `${weightHistory.summary.latest_kg.toFixed(1)} kg`],
+                ['近 7 天变化', formatDelta(weightDelta)],
+                ['7 日记录均值', weightHistory?.summary.average_7d == null ? '—' : `${weightHistory.summary.average_7d.toFixed(1)} kg`],
+                ['记录样本', `${weightHistory?.summary.sample_count ?? 0} 天`],
+              ].map(([label, value]) => <div key={label} className="rounded-xl border border-white/[0.055] bg-slate-950/30 p-3"><p className="text-[9px] text-slate-600">{label}</p><p className="mt-1 text-sm font-medium text-emerald-200">{value}</p></div>)}
+            </div>
+            {(weightHistory?.records.length ?? 0) < 2 ? (
+              <div className="flex min-h-[150px] items-center justify-center rounded-2xl border border-dashed border-white/[0.07] bg-slate-950/20 px-6 text-center text-xs text-slate-500">至少记录两天后，这里会显示体重趋势；系统不会根据单日波动下结论。</div>
+            ) : (
+              <ResponsiveContainer width="100%" height={240}>
+                <LineChart data={weightHistory?.records ?? []}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                  <XAxis dataKey="recorded_at" tickFormatter={(value) => new Date(`${value}T00:00:00`).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })} stroke="#64748b" fontSize={11} />
+                  <YAxis domain={['dataMin - 2', 'dataMax + 2']} stroke="#64748b" fontSize={11} width={38} />
+                  <Tooltip labelFormatter={(value) => new Date(`${value}T00:00:00`).toLocaleDateString('zh-CN')} contentStyle={{ background: '#0f172a', border: '1px solid #334155', borderRadius: 12 }} formatter={(value) => [`${Number(value).toFixed(1)} kg`, '体重']} />
+                  <Line type="monotone" dataKey="weight_kg" name="体重" stroke="#34d399" strokeWidth={2.5} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
+            {recordWeight.isError && <p className="mt-3 text-[10px] text-rose-300">记录失败，请检查数值后重试。</p>}
           </DepthPanel>
         </motion.div>
 

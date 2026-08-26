@@ -51,6 +51,7 @@ export default function AgentTrace({ trace, metrics, live = false }: AgentTraceP
           </span>
         </div>
         <div className="flex flex-shrink-0 items-center gap-2 text-[10px] text-slate-500">
+          {metrics?.workflow_enabled && toolCount > 1 && <span className="rounded-full border border-violet-400/15 bg-violet-400/[0.06] px-2 py-0.5 text-violet-300">多工具工作流</span>}
           {toolCount > 0 && <span>{toolCount} 次工具</span>}
           {hasDuration && (
             <span title="从 Agent 开始规划到回复生成完成，不含网络传输和前端渲染">
@@ -60,6 +61,10 @@ export default function AgentTrace({ trace, metrics, live = false }: AgentTraceP
           <motion.span animate={{ rotate: expanded ? 180 : 0 }} className="text-slate-600">⌄</motion.span>
         </div>
       </button>
+
+      {metrics?.partial_failure && (
+        <div className="border-t border-amber-400/10 bg-amber-400/[0.04] px-3 py-2 text-[10px] text-amber-200/80">工作流在部分步骤完成后停止，请以展开后的逐步结果为准。</div>
+      )}
 
       <AnimatePresence initial={false}>
         {expanded && (

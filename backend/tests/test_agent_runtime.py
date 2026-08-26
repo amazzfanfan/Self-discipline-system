@@ -5,10 +5,15 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.agent.runtime import AgentRuntime
-from app.agent.tools import ToolRegistry
-from app.agent.types import PlannerDecision
+from app.agent.tools import ToolRegistry, filter_relevant_memory_matches
+from app.agent.types import AgentRunResult, PlannerDecision, ToolObservation
 from app.models.score import DimensionEnum
-from app.modules.chat.router import _confirmed_request, approve_pending_action
+from app.modules.chat.router import (
+    _confirmed_request,
+    _direct_operation_reply,
+    _fallback_reply,
+    approve_pending_action,
+)
 
 
 def run(coro):
@@ -182,6 +187,163 @@ def test_clear_daily_plan_is_persisted_as_goal():
     assert decision.arguments["goal_type"] == "exercise"
 
 
+def test_recurring_imperative_without_goal_keyword_is_persisted():
+    runtime = make_runtime()
+
+    decision = runtime._fallback_decision("每天遛狗30分钟吧", [])
+
+    assert decision.tool == "create_goal"
+    assert decision.arguments == {
+        "content": "每天遛狗30分钟",
+        "goal_type": "exercise",
+    }
+
+
+def test_explicit_pet_fact_is_persisted_by_tool():
+    runtime = make_runtime()
+
+    decision = runtime._fallback_decision("我养的一只狗叫可乐", [])
+
+    assert decision.tool == "remember_user_fact"
+    assert decision.arguments == {
+        "content": "我养的一只狗叫可乐",
+        "memory_type": "personal",
+    }
+
+
+def test_pet_fact_question_queries_memory_instead_of_writing():
+    runtime = make_runtime()
+
+    decision = runtime._fallback_decision("我养的狗叫什么名字", [])
+
+    assert decision.tool == "search_memory"
+    assert decision.arguments == {
+        "query": "我养的狗叫什么名字",
+        "top_k": 3,
+    }
+
+
+def test_confirmation_question_does_not_write_personal_fact():
+    runtime = make_runtime()
+
+    decision = runtime._fallback_decision("我的狗叫可乐吗？", [])
+
+    assert decision.tool == "search_memory"
+
+
+def test_memory_query_filters_unrelated_semantic_hits():
+    matches = filter_relevant_memory_matches(
+        [
+            {"content": "我养了一只狗，它叫可乐", "relevance_score": 0.78},
+            {"content": "晚上跑步机爬坡", "relevance_score": 0.31},
+        ]
+    )
+
+    assert [item["content"] for item in matches] == ["我养了一只狗，它叫可乐"]
+
+
+def test_memory_search_is_synthesized_instead_of_exposing_raw_rows():
+    run_result = AgentRunResult(
+        run_id="memory-read",
+        response_messages=[{"role": "user", "content": "我养的狗叫什么名字"}],
+        observations=[
+            ToolObservation(
+                tool="search_memory",
+                arguments={"query": "我养的狗叫什么名字", "top_k": 3},
+                result={
+                    "query": "我养的狗叫什么名字",
+                    "memories": [
+                        {
+                            "content": "我养了一只狗，它叫可乐",
+                            "memory_type": "personal",
+                            "relevance": 0.78,
+                        }
+                    ],
+                },
+                success=True,
+            )
+        ],
+    )
+
+    assert _direct_operation_reply(run_result) is None
+    assert "你养了一只狗，它叫可乐" in _fallback_reply(run_result)
+
+
+def test_runtime_builds_final_answer_context_after_memory_search():
+    runtime = make_runtime()
+    runtime._plan = AsyncMock(
+        return_value=PlannerDecision(
+            action="tool",
+            tool="search_memory",
+            arguments={"query": "我养的狗叫什么名字", "top_k": 3},
+            reason="查询个人事实",
+        )
+    )
+    runtime.registry.execute = AsyncMock(
+        return_value=(
+            {
+                "query": "我养的狗叫什么名字",
+                "memories": [
+                    {
+                        "content": "我养了一只狗，它叫可乐",
+                        "memory_type": "personal",
+                        "relevance": 0.78,
+                    }
+                ],
+            },
+            True,
+            "completed",
+            12,
+        )
+    )
+    final_context = [{"role": "user", "content": "请自然回答用户问题"}]
+
+    with patch("app.agent.runtime.ContextBuilder") as builder_cls:
+        builder_cls.return_value.build_agent_context = AsyncMock(
+            return_value=final_context
+        )
+        result = run(runtime.run("我养的狗叫什么名字"))
+
+    assert result.response_messages == final_context
+    builder_cls.return_value.build_agent_context.assert_awaited_once()
+
+
+def test_personal_fact_tool_rejects_planner_invention():
+    db = MagicMock()
+    db.rollback = AsyncMock()
+    registry = ToolRegistry(db, str(uuid.uuid4()))
+
+    result, success, status, _ = run(
+        registry.execute(
+            "remember_user_fact",
+            {"content": "我的狗叫雪碧", "memory_type": "personal"},
+            "我养的一只狗叫可乐",
+        )
+    )
+
+    assert success is False
+    assert status == "clarification_required"
+    assert "未写入长期记忆" in result["message"]
+
+
+def test_personal_fact_tool_rejects_question_even_with_exact_arguments():
+    db = MagicMock()
+    db.rollback = AsyncMock()
+    registry = ToolRegistry(db, str(uuid.uuid4()))
+
+    result, success, status, _ = run(
+        registry.execute(
+            "remember_user_fact",
+            {"content": "我养的狗叫什么名字", "memory_type": "personal"},
+            "我养的狗叫什么名字",
+        )
+    )
+
+    assert success is False
+    assert status == "clarification_required"
+    assert "未写入长期记忆" in result["message"]
+
+
 def test_goal_pause_routes_to_status_tool():
     runtime = make_runtime()
 
@@ -336,12 +498,71 @@ def test_runtime_blocks_duplicate_tool_calls_and_emits_live_trace():
         builder_cls.return_value.build_agent_context = AsyncMock(
             return_value=[{"role": "user", "content": "今天没有任务"}]
         )
-        result = run(runtime.run("我今天有什么任务？", on_event=on_event))
+        result = run(runtime.run("根据最近数据调整安排", on_event=on_event))
 
     assert len(result.observations) == 1
     assert runtime.registry.execute.await_count == 1
     assert any(event.type == "guardrail" for event in result.trace)
     assert emitted == result.trace
+    assert result.metrics["tool_calls"] == 1
+
+
+def test_runtime_executes_bounded_multi_tool_workflow_and_stops_after_response():
+    runtime = make_runtime()
+    runtime._plan = AsyncMock(
+        side_effect=[
+            PlannerDecision(
+                action="tool",
+                tool="list_goals",
+                arguments={"status": "active"},
+                reason="先查询目标",
+            ),
+            PlannerDecision(
+                action="tool",
+                tool="list_today_tasks",
+                arguments={},
+                reason="再查询今日任务",
+            ),
+            PlannerDecision(action="respond", reason="信息已足够"),
+        ]
+    )
+    runtime.registry.execute = AsyncMock(
+        side_effect=[
+            ({"goals": [], "count": 0}, True, "completed", 2),
+            ({"tasks": [], "count": 0}, True, "completed", 2),
+        ]
+    )
+
+    with patch("app.agent.runtime.ContextBuilder") as builder_cls:
+        builder_cls.return_value.build_agent_context = AsyncMock(
+            return_value=[{"role": "user", "content": "请综合回答"}]
+        )
+        result = run(runtime.run("同时查看我的目标以及今天有哪些任务"))
+
+    assert [item.tool for item in result.observations] == ["list_goals", "list_today_tasks"]
+    assert result.metrics["workflow_enabled"] is True
+    assert result.metrics["tool_calls"] == 2
+    assert result.metrics["write_tool_calls"] == 0
+
+
+def test_runtime_keeps_simple_request_single_tool_without_extra_planning():
+    runtime = make_runtime()
+    runtime._plan = AsyncMock(
+        return_value=PlannerDecision(
+            action="tool",
+            tool="list_today_tasks",
+            arguments={},
+            reason="查询今日任务",
+        )
+    )
+    runtime.registry.execute = AsyncMock(
+        return_value=({"tasks": [], "count": 0}, True, "completed", 2)
+    )
+
+    result = run(runtime.run("今日有哪些任务"))
+
+    assert runtime._plan.await_count == 1
+    assert result.metrics["workflow_enabled"] is False
     assert result.metrics["tool_calls"] == 1
 
 

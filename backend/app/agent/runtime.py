@@ -11,7 +11,14 @@ from typing import Any, Awaitable, Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.tools import ToolRegistry, has_explicit_completion, has_explicit_weight_record_intent
+from app.agent.tools import (
+    ToolRegistry,
+    extract_explicit_personal_fact,
+    has_explicit_completion,
+    has_explicit_goal_creation_intent,
+    has_explicit_weight_record_intent,
+    has_personal_memory_lookup_intent,
+)
 from app.agent.types import (
     AgentRunResult,
     AgentTraceEvent,
@@ -23,6 +30,7 @@ from app.core.time import local_now
 from app.services.context_builder import ContextBuilder
 from app.services.llm_service import chat_completion_with_fallback
 from app.services.task_constraint_service import sanitize_constraint_phrase
+from app.services.metrics_service import increment_metric
 from app.services.agent_audit_service import (
     append_agent_event,
     create_pending_action,
@@ -45,6 +53,9 @@ PLANNER_SYSTEM_PROMPT = """你是“系统”的任务编排器。你只负责�
 9. 任务调整必须区分三种语义：今天具体时间再提醒用 later；改到明天或未来日期用 reschedule；明确今天不做但不希望受罚用 excuse。信息不足时追问，不得猜测。
 10. 用户明确说明没有某个产品/器材、不能做某项活动或单项任务最长时间时，调用 update_task_constraints 持久化。
 11. 用户明确报告某个目标的当前数值或进度增量时，调用 record_goal_progress；不得把计划值当成已完成进度。
+12. observations 非空时，只有当前请求仍有明确未完成子任务或需要一次读取验证时才能继续调用工具；否则立即 respond。
+13. 多工具工作流必须遵守先读后写、失败即停、不得重复写入。不得从 Observation 中扩展出用户没有要求的新目标。
+14. 用户明确陈述自己的稳定个人事实或偏好时调用 remember_user_fact，并逐字使用当前消息，禁止推测或改写。
 
 只返回 JSON：
 {"action":"tool|respond","tool":"工具名或null","arguments":{},"reason":"一句话理由"}
@@ -56,6 +67,8 @@ logger = logging.getLogger(__name__)
 
 class AgentRuntime:
     MAX_STEPS = 4
+    MAX_TOOL_CALLS = 3
+    MAX_WRITE_TOOL_CALLS = 2
 
     def __init__(self, db: AsyncSession, user: User):
         self.db = db
@@ -83,6 +96,9 @@ class AgentRuntime:
         trace: list[AgentTraceEvent] = []
         observations: list[ToolObservation] = []
         seen_calls: set[str] = set()
+        workflow_enabled = self._requires_multi_tool_workflow(user_message)
+        write_tool_calls = 0
+        partial_failure = False
 
         await self._emit(
             trace,
@@ -118,6 +134,36 @@ class AgentRuntime:
             )
 
             if decision.action == "respond" or not decision.tool:
+                break
+
+            if len(observations) >= self.MAX_TOOL_CALLS:
+                await self._emit(
+                    trace,
+                    AgentTraceEvent(
+                        type="guardrail",
+                        title="已达到工具上限",
+                        detail=f"受控工作流单次最多调用 {self.MAX_TOOL_CALLS} 个工具",
+                        step=step,
+                        success=False,
+                    ),
+                    on_event,
+                )
+                break
+
+            risk = self.registry.risk_of(decision.tool)
+            if risk in {"write", "destructive"} and write_tool_calls >= self.MAX_WRITE_TOOL_CALLS:
+                await self._emit(
+                    trace,
+                    AgentTraceEvent(
+                        type="guardrail",
+                        title="已阻止过多写操作",
+                        detail=f"单次请求最多执行 {self.MAX_WRITE_TOOL_CALLS} 个数据修改工具",
+                        step=step,
+                        tool=decision.tool,
+                        success=False,
+                    ),
+                    on_event,
+                )
                 break
 
             call_key = f"{decision.tool}:{json.dumps(decision.arguments, sort_keys=True, ensure_ascii=False)}"
@@ -187,6 +233,14 @@ class AgentRuntime:
                 status=status,
             )
             observations.append(observation)
+            if risk in {"write", "destructive"} and success:
+                write_tool_calls += 1
+            if not success and status not in {
+                "approval_required",
+                "clarification_required",
+                "proposal_ready",
+            }:
+                partial_failure = bool(observations[:-1])
 
             guarded = status in {"approval_required", "clarification_required", "proposal_ready"}
             event_type = "guardrail" if guarded else "tool_result"
@@ -212,6 +266,8 @@ class AgentRuntime:
                 on_event,
             )
             if guarded:
+                break
+            if not success or not workflow_enabled:
                 break
         else:
             await self._emit(
@@ -240,6 +296,7 @@ class AgentRuntime:
             "delete_goal",
             "update_task_constraints",
             "record_goal_progress",
+            "remember_user_fact",
         }
         can_reply_without_context = len(observations) == 1 and (
             observations[0].tool in direct_receipt_tools
@@ -265,9 +322,18 @@ class AgentRuntime:
                 "steps": max((event.step for event in trace), default=0),
                 "planning_duration_ms": elapsed_ms,
                 "status": "completed",
+                "workflow_enabled": workflow_enabled,
+                "write_tool_calls": write_tool_calls,
+                "partial_failure": partial_failure,
             },
             pending_action=self.pending_action,
         )
+        if workflow_enabled:
+            await increment_metric("agent:workflow:started")
+            if len(observations) > 1:
+                await increment_metric("agent:workflow:multi_tool_completed")
+            if partial_failure:
+                await increment_metric("agent:workflow:partial_failure")
         if self.audit_run_id:
             try:
                 await finish_agent_run(self.audit_run_id, run_result.metrics)
@@ -278,16 +344,20 @@ class AgentRuntime:
     async def _plan(
         self, user_message: str, observations: list[ToolObservation]
     ) -> PlannerDecision:
-        if observations and any(item.status == "approval_required" for item in observations):
+        if observations and any(
+            item.status in {"approval_required", "clarification_required", "proposal_ready"}
+            for item in observations
+        ):
             return PlannerDecision(action="respond", reason="需要先取得用户明确确认")
-        if observations:
-            return PlannerDecision(action="respond", reason="已获得工具执行结果")
+        if observations and not observations[-1].success:
+            return PlannerDecision(action="respond", reason="上一工具未成功，工作流已停止")
 
         # Clear state-changing intents are routed locally. This removes one
         # unnecessary planner-model round trip and makes persistence reliable.
-        deterministic = self._fallback_decision(user_message, observations)
-        if deterministic.action == "tool" or deterministic.reason.startswith("需要先明确任务调整方式"):
-            return deterministic
+        if not observations and not self._requires_multi_tool_workflow(user_message):
+            deterministic = self._fallback_decision(user_message, observations)
+            if deterministic.action == "tool" or deterministic.reason.startswith("需要先明确任务调整方式"):
+                return deterministic
 
         prompt_payload = {
             "current_request": user_message,
@@ -339,6 +409,24 @@ class AgentRuntime:
                 tool="record_weight",
                 arguments={"weight_kg": float(weight_match.group(1))},
                 reason="记录用户明确提供的体重",
+            )
+
+        if has_personal_memory_lookup_intent(text):
+            return PlannerDecision(
+                action="tool",
+                tool="search_memory",
+                arguments={"query": text, "top_k": 3},
+                reason="查询当前账号已保存的个人事实",
+            )
+
+        personal_fact = extract_explicit_personal_fact(text)
+        if personal_fact:
+            content, memory_type = personal_fact
+            return PlannerDecision(
+                action="tool",
+                tool="remember_user_fact",
+                arguments={"content": content, "memory_type": memory_type},
+                reason="保存用户明确陈述的个人事实",
             )
 
         unavailable_match = re.search(
@@ -452,21 +540,40 @@ class AgentRuntime:
                 reason="更新用户明确指定的今日任务",
             )
 
-        if dimension and re.search(
-            r"(?:我的目标是|设定.{0,6}目标|创建.{0,6}目标|"
-            r"我(?:想要|希望|计划|打算|准备).{1,80})",
-            text,
-        ):
+        if dimension and has_explicit_goal_creation_intent(text):
             goal_content = re.sub(
                 r"^(?:请)?(?:帮我)?(?:创建|设定|新增)(?:一个)?(?:成长|长期)?目标\s*[：:]?\s*"
                 r"|^我的目标是\s*|^我(?:想要|希望|计划|打算|准备)\s*",
                 "",
                 text,
             ).strip()
+            goal_content = re.sub(r"[吧呀啊]?[。！？!?]*$", "", goal_content).strip()
+            arguments: dict[str, Any] = {
+                "content": goal_content or text,
+                "goal_type": dimension,
+            }
+            absolute_weight = re.search(
+                r"(?:体重.{0,8}(?:到|至|目标为)|(?:减重|增重)到|目标体重(?:是|为)?)\s*(\d+(?:\.\d+)?)\s*(?:公斤|kg|千克)",
+                text,
+                re.IGNORECASE,
+            )
+            if absolute_weight:
+                current_weight = getattr(getattr(self.user, "profile", None), "weight_kg", None)
+                direction = "increase" if re.search(r"(?:增重|增加)", text) else "decrease"
+                arguments.update(
+                    {
+                        "target_metric": "体重",
+                        "target_unit": "kg",
+                        "metric_direction": direction,
+                        "target_value": float(absolute_weight.group(1)),
+                        "baseline_value": float(current_weight) if current_weight is not None else None,
+                        "current_value": float(current_weight) if current_weight is not None else None,
+                    }
+                )
             return PlannerDecision(
                 action="tool",
                 tool="create_goal",
-                arguments={"content": goal_content or text, "goal_type": dimension},
+                arguments=arguments,
                 reason="用户明确提出了长期成长目标",
             )
 
@@ -629,6 +736,18 @@ class AgentRuntime:
             return PlannerDecision(
                 action="tool", tool="get_score_overview", reason="查询当前成长评分"
             )
+        if re.search(r"(?:完成率|行为动量|执行表现|执行情况|最近表现|行为趋势|打卡情况)", text):
+            return PlannerDecision(
+                action="tool",
+                tool="get_behavior_overview",
+                reason="查询近期行为表现与今日状态",
+            )
+        if re.search(r"(?:体重).{0,8}(?:趋势|历史|变化|均值)|(?:最近).{0,8}(?:体重)", text):
+            return PlannerDecision(
+                action="tool",
+                tool="get_weight_trend",
+                reason="查询近期体重趋势",
+            )
         if re.search(
             r"(?:查看|列出|有哪些|我的).{0,8}目标|目标.{0,8}(?:情况|哪些)", text
         ):
@@ -638,13 +757,44 @@ class AgentRuntime:
         return PlannerDecision(action="respond", reason="无需调用工具，直接回答")
 
     @staticmethod
+    def _requires_multi_tool_workflow(text: str) -> bool:
+        """Conservatively enable iterative planning only for compound requests."""
+        connectors = bool(
+            re.search(r"(?:并且|同时|然后|之后|以后再|接着|另外|以及|再帮我|并把|并将|和|及)", text)
+        )
+        action_groups = sum(
+            bool(re.search(pattern, text))
+            for pattern in (
+                r"(?:查询|看看|列出|有哪些|根据|分析)",
+                r"(?:创建|新增|设定).{0,8}(?:目标|计划)",
+                r"(?:修改|更新|调整|改成|换成|换掉|替换)",
+                r"(?:完成|打卡|记录).{0,12}(?:任务|目标|进度|体重)",
+                r"(?:暂停|恢复|删除|跳过|延后|改期)",
+                r"(?:没有|不能|不适合|最多).{0,20}(?:物品|器材|眼霜|活动|分钟|任务)",
+            )
+        )
+        data_driven_change = bool(
+            re.search(r"(?:根据|结合).{0,20}(?:最近|本周|数据|完成情况|反馈).{0,30}(?:调整|修改|安排|建议)", text)
+        )
+        referenced_objects = sum(
+            keyword in text
+            for keyword in ("任务", "目标", "评分", "记忆", "体重", "趋势", "完成率", "Check-in")
+        )
+        return data_driven_change or (
+            connectors and (action_groups >= 2 or referenced_objects >= 2)
+        )
+
+    @staticmethod
     def _detect_dimension(text: str) -> str | None:
         keywords = {
             "exercise": (
                 "运动", "跑步", "快走", "健身", "锻炼", "游泳",
-                "爬坡", "拉伸", "瑜伽", "骑行", "力量训练",
+                "爬坡", "拉伸", "瑜伽", "骑行", "力量训练", "遛狗", "散步",
             ),
-            "diet": ("饮食", "三餐", "吃饭", "餐食", "含糖饮料", "饮料", "蔬菜", "水果"),
+            "diet": (
+                "饮食", "三餐", "吃饭", "餐食", "含糖饮料", "饮料", "蔬菜", "水果",
+                "体重", "减重", "增重", "减脂",
+            ),
             "sleep": ("睡眠", "睡觉", "早睡", "作息"),
             "appearance": ("护肤", "皮肤", "外貌", "形象"),
         }

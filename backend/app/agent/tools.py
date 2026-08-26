@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.goal import Goal
+from app.models.behavior import DailyCheckIn
 from app.models.score import UserScore
 from app.models.task import Task, TaskStatusEnum
 from app.models.user import UserProfile
@@ -37,7 +38,8 @@ from app.services.task_constraint_service import (
     validate_task_feasibility,
 )
 from app.services.task_replacement_service import generate_ai_task_replacement
-from app.services.weight_service import record_weight
+from app.services.weight_service import get_weight_history_payload, record_weight
+from app.services.behavior_service import calculate_behavior_metrics
 
 
 logger = logging.getLogger(__name__)
@@ -68,6 +70,90 @@ def has_explicit_weight_record_intent(text: str) -> bool:
             re.IGNORECASE,
         )
     )
+
+
+def has_explicit_goal_creation_intent(text: str) -> bool:
+    """Accept explicit goal words and clear recurring imperatives, not questions."""
+    cleaned = text.strip()
+    if re.search(r"(?:假设|如果|不要|不想|取消).{0,20}(?:目标|计划|每天|每周)", cleaned):
+        return False
+    if re.search(r"(?:吗|呢|是否|要不要|能不能|怎么样|好不好)[？?]?$|[？?]$", cleaned):
+        return False
+    if re.search(
+        r"(?:我的目标是|我的计划是|(?:创建|设定|新增).{0,6}目标)",
+        cleaned,
+    ):
+        return True
+    if re.search(
+        r"(?:暂停|恢复|继续|删除|移除|完成|达成|结束|修改|更新).{0,12}(?:目标|计划)"
+        r"|(?:目标|计划).{0,8}(?:暂停|恢复|删除|移除|完成|达成|修改|更新|改成|改为)",
+        cleaned,
+    ):
+        return False
+    if re.search(r"^(?:我)?(?:计划|打算|想要|希望|准备)", cleaned):
+        return True
+    return bool(
+        re.search(r"^(?:每天|每日|每周|工作日|每晚|每早)", cleaned)
+        and re.search(
+            r"(?:分钟|小时|次|公里|步|运动|锻炼|跑步|快走|散步|遛狗|健身|游泳|瑜伽)",
+            cleaned,
+        )
+    )
+
+
+def extract_explicit_personal_fact(text: str) -> tuple[str, str] | None:
+    """Extract high-confidence first-person facts that are safe to remember."""
+    cleaned = text.strip().strip("。！？!? ")
+    if not cleaned or re.search(
+        r"^(?:假设|如果)|(?:不是|并非|没有).{0,8}(?:我的|我养)",
+        cleaned,
+    ):
+        return None
+    if re.search(r"(?:什么|谁|哪(?:个|些|里)?|几(?:个|岁)?|多少|是否|怎么|吗|呢)", cleaned):
+        return None
+    patterns = (
+        (
+            r"^我(?:养的|养了的)?(?:一|两|三)?只?(?:猫|狗|宠物)(?:叫|名字是).{1,30}$",
+            "personal",
+        ),
+        (r"^我(?:养了|养着|有)(?:一|两|三)?只?(?:猫|狗|宠物).{0,30}$", "personal"),
+        (r"^我的?(?:猫|狗|宠物)(?:叫|名字是).{1,30}$", "personal"),
+        (r"^我(?:喜欢|偏好|不喜欢|讨厌).{1,80}$", "preference"),
+        (r"^我的?(?:生日|名字|姓名|职业|工作)(?:是|在).{1,80}$", "fact"),
+    )
+    for pattern, memory_type in patterns:
+        if re.search(pattern, cleaned):
+            return cleaned, memory_type
+    return None
+
+
+def has_personal_memory_lookup_intent(text: str) -> bool:
+    """Recognize questions about previously saved first-person facts."""
+    cleaned = text.strip()
+    return bool(
+        re.search(
+            r"(?:你)?(?:还)?记得.{0,30}(?:什么|谁|哪|吗|呢|[？?])"
+            r"|(?:我养的|我的?).{0,12}(?:猫|狗|宠物|名字|生日|职业|偏好|喜好)"
+            r".{0,12}(?:什么|谁|哪|几|多少|吗|呢|[？?])"
+            r"|(?:长期)?记忆.{0,12}(?:查|找|看|什么|哪些)",
+            cleaned,
+        )
+    )
+
+
+def filter_relevant_memory_matches(
+    memories: list[dict[str, Any]],
+    *,
+    min_relevance: float = 0.4,
+) -> list[dict[str, Any]]:
+    """Remove semantically unrelated vector hits from user-facing answers."""
+    return [
+        memory
+        for memory in memories
+        if memory.get("relevance_score", memory.get("similarity")) is None
+        or float(memory.get("relevance_score", memory.get("similarity")))
+        >= min_relevance
+    ]
 
 
 class EmptyArgs(BaseModel):
@@ -166,6 +252,11 @@ class MemorySearchArgs(BaseModel):
     top_k: int = Field(default=3, ge=1, le=5)
 
 
+class PersonalFactArgs(BaseModel):
+    content: str = Field(min_length=2, max_length=200)
+    memory_type: Literal["fact", "preference", "personal"] = "fact"
+
+
 class TaskConstraintArgs(BaseModel):
     available_items: list[str] = Field(default_factory=list, max_length=10)
     unavailable_items: list[str] = Field(default_factory=list, max_length=10)
@@ -227,6 +318,10 @@ class ToolRegistry:
 
     def has(self, name: str) -> bool:
         return name in self._tools
+
+    def risk_of(self, name: str) -> Literal["read", "write", "destructive"] | None:
+        tool = self._tools.get(name)
+        return tool.risk if tool else None
 
     def _register_defaults(self) -> None:
         async def resolve_goal(keyword: str) -> tuple[Goal | None, dict[str, Any] | None]:
@@ -316,7 +411,12 @@ class ToolRegistry:
             return result
 
         async def save_weight(args: WeightArgs) -> dict[str, Any]:
-            result = await record_weight(self.db, self.user_id, args.weight_kg)
+            result = await record_weight(
+                self.db,
+                self.user_id,
+                args.weight_kg,
+                source="agent_chat",
+            )
             await self.db.commit()
             return {"success": True, **result}
 
@@ -349,11 +449,24 @@ class ToolRegistry:
             return {"goals": slim, "count": len(goals)}
 
         async def create_goal(args: GoalCreateArgs) -> dict[str, Any]:
+            structured_data = None
+            current_value = args.current_value
+            baseline_value = args.baseline_value
+            if args.target_metric == "体重" and str(args.target_unit or "").lower() == "kg":
+                structured_data = {"metric_kind": "body_weight"}
+                if current_value is None:
+                    profile = await self.db.scalar(
+                        select(UserProfile).where(UserProfile.user_id == self.user_id)
+                    )
+                    if profile and profile.weight_kg is not None:
+                        current_value = float(profile.weight_kg)
+                        baseline_value = float(profile.weight_kg)
             goal = await goal_service.create_goal(
                 db=self.db,
                 user_id=self.user_id,
                 content=args.content,
                 goal_type=args.goal_type,
+                structured_data=structured_data,
                 recurrence=args.recurrence,
                 days_of_week=args.days_of_week,
                 preferred_time=args.preferred_time,
@@ -363,8 +476,8 @@ class ToolRegistry:
                 target_unit=args.target_unit,
                 metric_direction=args.metric_direction,
                 target_value=args.target_value,
-                baseline_value=args.baseline_value,
-                current_value=args.current_value,
+                baseline_value=baseline_value,
+                current_value=current_value,
                 source="chat",
             )
             return {"success": True, "goal": goal.to_dict()}
@@ -464,6 +577,62 @@ class ToolRegistry:
             ]
             return {"scores": scores}
 
+        async def behavior_overview(_: EmptyArgs) -> dict[str, Any]:
+            metrics = await calculate_behavior_metrics(self.db, self.user_id)
+            checkin = await self.db.scalar(
+                select(DailyCheckIn).where(
+                    DailyCheckIn.user_id == self.user_id,
+                    DailyCheckIn.checkin_date == local_today(),
+                )
+            )
+            return {
+                "metrics": metrics,
+                "today_checkin": (
+                    {
+                        "energy": checkin.energy,
+                        "mood": checkin.mood,
+                        "stress": checkin.stress,
+                        "available_minutes": checkin.available_minutes,
+                        "sleep_hours": (
+                            float(checkin.sleep_hours)
+                            if checkin.sleep_hours is not None
+                            else None
+                        ),
+                    }
+                    if checkin
+                    else None
+                ),
+            }
+
+        async def weight_trend(_: EmptyArgs) -> dict[str, Any]:
+            return await get_weight_history_payload(self.db, self.user_id, limit=90)
+
+        async def remember_user_fact(args: PersonalFactArgs) -> dict[str, Any]:
+            profile = await self.db.scalar(
+                select(UserProfile).where(UserProfile.user_id == self.user_id)
+            )
+            if profile and profile.memory_enabled == 0:
+                return {
+                    "success": False,
+                    "message": "长期记忆当前已关闭，本次没有保存个人事实。",
+                }
+            memory = await MemoryService(self.db).store_memory(
+                user_id=self.user_id,
+                content=args.content,
+                role="user",
+                memory_type=args.memory_type,
+                importance_score=0.9,
+            )
+            return {
+                "success": True,
+                "message": "个人事实已保存到长期记忆。",
+                "memory": {
+                    "id": str(memory.id),
+                    "content": memory.content,
+                    "memory_type": memory.memory_type,
+                },
+            }
+
         async def search_memory(args: MemorySearchArgs) -> dict[str, Any]:
             memories = await MemoryService(self.db).search_similar_memories(
                 user_id=self.user_id,
@@ -471,7 +640,9 @@ class ToolRegistry:
                 top_k=args.top_k,
                 min_importance=0.2,
             )
+            memories = filter_relevant_memory_matches(memories)
             return {
+                "query": args.query,
                 "memories": [
                     {
                         "content": memory["content"],
@@ -634,7 +805,26 @@ class ToolRegistry:
                 "destructive",
             ),
             AgentTool("get_score_overview", "查询四个成长维度的当前评分", EmptyArgs, score_overview),
+            AgentTool(
+                "get_behavior_overview",
+                "查询近7天/28天行为完成率、动量和今日 Check-in",
+                EmptyArgs,
+                behavior_overview,
+            ),
+            AgentTool(
+                "get_weight_trend",
+                "查询最近90天体重记录、7天/30天变化和均值",
+                EmptyArgs,
+                weight_trend,
+            ),
             AgentTool("search_memory", "检索与当前问题相关的历史偏好和事实", MemorySearchArgs, search_memory),
+            AgentTool(
+                "remember_user_fact",
+                "保存用户当前消息中明确陈述的个人事实或偏好；内容必须逐字来自当前消息",
+                PersonalFactArgs,
+                remember_user_fact,
+                "write",
+            ),
             AgentTool(
                 "update_task_constraints",
                 "记录用户明确说明的可用或不可用物品、器材、场地、活动限制和任务最长时间",
@@ -646,8 +836,14 @@ class ToolRegistry:
         for definition in definitions:
             self._register(definition)
 
-    def _guard(self, tool: AgentTool, user_message: str) -> tuple[bool, str, str]:
+    def _guard(
+        self,
+        tool: AgentTool,
+        user_message: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> tuple[bool, str, str]:
         text = user_message.strip()
+        arguments = arguments or {}
         if tool.name == "skip_task" and not re.search(
             r"(?:确认.{0,8}跳过|跳过.{0,8}(?:确认|吧|掉)|明确跳过)", text
         ):
@@ -678,10 +874,17 @@ class ToolRegistry:
             or not has_explicit_weight_record_intent(text)
         ):
             return False, "请明确提供要记录的体重数值。", "clarification_required"
-        if tool.name == "create_goal" and not re.search(
-            r"(?:目标|计划|打算|想要|希望|准备)", text
-        ):
+        if tool.name == "create_goal" and not has_explicit_goal_creation_intent(text):
             return False, "请明确说明希望创建的成长目标。", "clarification_required"
+        if tool.name == "remember_user_fact":
+            fact = extract_explicit_personal_fact(text)
+            supplied = str(arguments.get("content") or "").strip().strip("。！？!? ")
+            if fact is None or supplied != fact[0]:
+                return (
+                    False,
+                    "没有检测到可直接保存的明确个人事实，本次未写入长期记忆。",
+                    "clarification_required",
+                )
         if tool.name == "update_task_constraints" and not re.search(
             r"(?:我有|可以使用|可用|没有|没买|手头没有|不能用|不能做|避免|最多.{0,4}分钟)",
             text,
@@ -703,7 +906,7 @@ class ToolRegistry:
         if not tool:
             return {"error": f"未知工具: {name}"}, False, "error", 0
 
-        allowed, reason, guard_status = self._guard(tool, user_message)
+        allowed, reason, guard_status = self._guard(tool, user_message, arguments)
         if not allowed:
             return {
                 "message": reason,

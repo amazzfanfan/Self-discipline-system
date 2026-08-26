@@ -46,8 +46,13 @@ class RuleBasedFilter:
         (r"我的(?:职业|工作)是",                           0.9,  "fact"),
         (r"我(?:家)?住(?:在)?",                            0.9,  "fact"),
         (r"我(?:的)?(?:家|家庭)",                          0.85, "fact"),
-        (r"我(?:养了|养了只|养了只猫|养了只狗)",           0.95, "personal"),
-        (r"我(?:的)?(?:猫|狗|宠物)(?:叫|名字是)",          0.95, "personal"),
+        (r"我(?:养了|养着|有)(?:一|两|三)?只?(?:猫|狗|宠物)", 0.95, "personal"),
+        (
+            r"我(?:养的|养了的)?(?:一|两|三)?只?(?:猫|狗|宠物)(?:叫|名字是)",
+            0.95,
+            "personal",
+        ),
+        (r"我的?(?:猫|狗|宠物)(?:叫|名字是)",              0.95, "personal"),
 
         # 健康数据
         (r"(?:我的)?(?:体重|身高)(?:是|到了?)",            0.9,  "health"),
@@ -313,10 +318,14 @@ class HybridMemoryJudge:
             result["memory_type"] = llm_type
 
             # 融合三层分数
+            # Only the LLM and scorer participate on this path. Normalize their
+            # weights so a strong LLM decision can actually cross the persistence
+            # threshold (the previous unnormalized maximum was only 0.5).
+            active_weight = self.LLM_WEIGHT + self.SCORER_WEIGHT
             final_importance = (
                 self.LLM_WEIGHT * llm_importance
                 + self.SCORER_WEIGHT * scorer_score
-            )
+            ) / active_weight
             result["importance"] = max(0.0, min(1.0, final_importance))
 
             # conversation 类型（闲聊/问答）需要更高阈值才记住

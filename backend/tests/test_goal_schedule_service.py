@@ -1,8 +1,9 @@
-from datetime import date, time
+from datetime import date, datetime, time
 
 from app.services.goal_schedule_service import (
     goal_is_due,
     goal_planning_context,
+    next_start_after_missed_time,
     parse_goal_schedule,
 )
 
@@ -52,3 +53,36 @@ def test_planning_context_contains_execution_progress():
     assert "本周截至今天：计划 3 次，已完成 2 次" in context
     assert "累计完成：5 次" in context
     assert "目标进度：5/10" in context
+
+
+def test_missed_daily_time_starts_at_next_occurrence():
+    result = next_start_after_missed_time(
+        recurrence="daily",
+        days_of_week=[],
+        preferred_time=time(8, 0),
+        now=datetime(2026, 8, 25, 22, 9),
+    )
+
+    assert result == date(2026, 8, 26)
+
+
+def test_future_time_can_still_start_today():
+    result = next_start_after_missed_time(
+        recurrence="daily",
+        days_of_week=[],
+        preferred_time=time(20, 0),
+        now=datetime(2026, 8, 25, 8, 0),
+    )
+
+    assert result is None
+
+
+def test_missed_weekly_time_uses_next_selected_day():
+    result = next_start_after_missed_time(
+        recurrence="custom",
+        days_of_week=[0, 2, 4],
+        preferred_time=time(8, 0),
+        now=datetime(2026, 8, 24, 22, 9),
+    )
+
+    assert result == date(2026, 8, 26)

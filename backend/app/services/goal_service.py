@@ -5,7 +5,7 @@ Goal Service - 目标管理服务
 """
 
 from datetime import date, datetime, time, timezone
-from sqlalchemy import select, or_, text
+from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.goal import Goal, GoalStatus, GoalSource
 from typing import Optional
@@ -15,7 +15,11 @@ import traceback
 from app.services.llm_service import get_embedding
 from app.services.cache_service import enqueue_background_job
 from app.core.config import get_settings
-from app.services.goal_schedule_service import parse_goal_schedule
+from app.core.time import local_now
+from app.services.goal_schedule_service import (
+    next_start_after_missed_time,
+    parse_goal_schedule,
+)
 from app.services.goal_progress_service import (
     normalize_goal_milestones,
     merge_goal_milestones,
@@ -82,6 +86,22 @@ class GoalService:
         try:
             parsed_schedule = parse_goal_schedule(content)
             resolved_time = preferred_time or parsed_schedule.get("preferred_time")
+            resolved_recurrence = (
+                recurrence or parsed_schedule.get("recurrence") or "flexible"
+            )
+            resolved_days = (
+                days_of_week
+                if days_of_week is not None
+                else parsed_schedule.get("days_of_week", [])
+            )
+            resolved_start_date = start_date
+            if resolved_start_date is None:
+                resolved_start_date = next_start_after_missed_time(
+                    recurrence=resolved_recurrence,
+                    days_of_week=resolved_days,
+                    preferred_time=resolved_time,
+                    now=local_now(),
+                )
             goal = Goal(
                 user_id=user_id,
                 content=content,
@@ -102,19 +122,13 @@ class GoalService:
                     milestones,
                     direction=metric_direction,
                 ),
-                recurrence=(
-                    recurrence or parsed_schedule.get("recurrence") or "flexible"
-                ),
-                days_of_week=(
-                    days_of_week
-                    if days_of_week is not None
-                    else parsed_schedule.get("days_of_week", [])
-                ),
+                recurrence=resolved_recurrence,
+                days_of_week=resolved_days,
                 preferred_time=resolved_time,
                 duration_minutes=(
                     duration_minutes or parsed_schedule.get("duration_minutes")
                 ),
-                start_date=start_date,
+                start_date=resolved_start_date,
                 reminder_enabled=(
                     bool(resolved_time) if reminder_enabled is None else reminder_enabled
                 ),
@@ -429,23 +443,19 @@ class GoalService:
                 logger.info(f"Vector search with embedding: dim={len(query_embedding)}")
 
                 # 使用 cosine_distance 排序（距离越小越相似）
+                distance = Goal.embedding.cosine_distance(query_embedding)
+                similarity = (1 - distance).label("similarity")
                 stmt = (
-                    select(
-                        Goal,
-                        text("1 - (goal.embedding <=> :embedding)").label("similarity")
-                    )
+                    select(Goal, similarity)
                     .where(Goal.user_id == user_id)
                     .where(Goal.embedding.isnot(None))
                     .where(Goal.embedding_model == settings.EMBEDDING_MODEL)
-                    .params(embedding=query_embedding)
                 )
 
                 if status:
                     stmt = stmt.where(Goal.status == status)
 
-                stmt = stmt.order_by(
-                    text("goal.embedding <=> :embedding")
-                ).params(embedding=query_embedding).limit(top_k)
+                stmt = stmt.order_by(distance).limit(top_k)
 
                 result = await db.execute(stmt)
                 rows = result.all()
