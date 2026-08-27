@@ -6,7 +6,7 @@ from app.core.database import async_session
 from app.models.assessment import AssessmentRun
 from app.models.conversation import Conversation
 from app.models.user import User, UserProfile
-from app.services.faceplus_service import generate_ai_suggestions
+from app.services.faceplus_service import generate_ai_suggestions_safely
 from app.services.notification_service import create_notification
 from app.services.scheduler_service import generate_tasks_for_user
 
@@ -55,15 +55,20 @@ async def process_assessment_generation(assessment_run_id: str, user_id: str) ->
             await _set_stage(db, run, "care_suggestions")
             skin_analysis = profile.skin_analysis if profile and isinstance(profile.skin_analysis, dict) else None
             suggestions: list[str] = []
+            suggestions_error = None
             if skin_analysis and skin_analysis.get("source") == "faceplusplus":
-                suggestions = await generate_ai_suggestions(
+                suggestions, suggestions_error = await generate_ai_suggestions_safely(
                     list(skin_analysis.get("issues") or []),
                     str(skin_analysis.get("skin_type_name") or "未知"),
                     profile.skincare_constraints if profile else None,
                     profile.task_constraints if profile else None,
                 )
                 suggestions = suggestions[:3]
-                profile.skin_analysis = {**skin_analysis, "suggestions": suggestions}
+                profile.skin_analysis = {
+                    **skin_analysis,
+                    "suggestions": suggestions,
+                    "suggestions_error": suggestions_error,
+                }
 
             run.care_suggestions = suggestions
             if run.profile_message_id:
@@ -72,6 +77,7 @@ async def process_assessment_generation(assessment_run_id: str, user_id: str) ->
                     message.extra_metadata = {
                         **(message.extra_metadata or {}),
                         "care_suggestions": suggestions,
+                        "care_suggestions_error": suggestions_error,
                         "generation_status": "care_ready",
                     }
             await db.commit()

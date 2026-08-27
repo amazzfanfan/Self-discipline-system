@@ -127,9 +127,9 @@ AI 的回复、分析、推荐一律不记住。问题和请求一律不记住�
         "请针对问题给出具体、可操作的日常护理建议，返回JSON格式：\n"
         '{{"suggestions": [{{"text": "建议1", "risk_level": "low", "cautions": ["注意事项"]}}]}}\n\n'
         "要求：\n"
-        "1. 每条建议要具体，包含具体的产品类型或操作方法\n"
+        "1. 每条建议要具体，包含产品类型或操作方法，text 不超过80个汉字\n"
         "2. 建议要结合用户的皮肤类型\n"
-        "3. 最多返回3条最重要的建议，risk_level 只能是 low 或 moderate\n"
+        "3. 最多返回{suggestion_limit}条最重要的建议，每条最多1个简短注意事项，risk_level 只能是 low 或 moderate\n"
         "4. 不得进行医疗诊断、承诺治疗效果或推荐处方药、口服药、注射和针刺\n"
         "5. 必须遵守用户安全限制；无法安全建议时返回空数组\n"
         "6. 只返回JSON，不要其他内容"
@@ -211,6 +211,7 @@ AI 的回复、分析、推荐一律不记住。问题和请求一律不记住�
         issues_str: str,
         constraints_text: str = "未提供特殊限制",
         feasibility_text: str = "未提供特殊可执行条件",
+        suggestion_limit: int = 3,
     ) -> str:
         """
         构建肤质护理建议提示词
@@ -227,6 +228,7 @@ AI 的回复、分析、推荐一律不记住。问题和请求一律不记住�
             issues_str=issues_str,
             constraints_text=constraints_text,
             feasibility_text=feasibility_text,
+            suggestion_limit=max(1, min(3, suggestion_limit)),
         )
 
     def build_skin_task_prompt(

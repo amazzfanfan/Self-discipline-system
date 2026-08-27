@@ -29,7 +29,7 @@ from app.services.cache_service import (
 )
 from app.services.faceplus_service import (
     analyze_skin,
-    generate_ai_suggestions,
+    generate_ai_suggestions_safely,
     get_source_display,
 )
 from app.models.conversation import Conversation, RoleEnum
@@ -103,7 +103,8 @@ def _profile_report(nickname: str, assessment: dict, skin_analysis: dict | None)
         issues = skin_analysis.get("issues") or []
         report += (
             f"\n\n【Face++ 肤质观察】\n皮肤类型：{skin_analysis.get('skin_type_name', '未知')}\n"
-            f"肤质评分：{float(skin_analysis['skin_score']):.0f}/100"
+            "日常肤质状态分（系统换算）："
+            f"{float(skin_analysis['skin_score']):.0f}/100"
         )
         if issues:
             report += f"\n观察项：{', '.join(issues[:3])}"
@@ -372,14 +373,16 @@ async def skin_analyze(
         profile = result.scalar_one_or_none()
         constraints = profile.skincare_constraints if profile else None
         ai_suggestions = []
+        suggestions_error = None
         if skin_result.source == "faceplusplus":
-            ai_suggestions = await generate_ai_suggestions(
+            ai_suggestions, suggestions_error = await generate_ai_suggestions_safely(
                 skin_result.issues,
                 skin_result.skin_type_name,
                 constraints,
                 profile.task_constraints if profile else None,
             )
         skin_result.suggestions = ai_suggestions
+        skin_result.suggestions_error = suggestions_error
 
         if profile:
             profile.skin_analysis = asdict(skin_result)
@@ -389,22 +392,52 @@ async def skin_analyze(
         report = "【肤质分析报告】\n"
         report += f"分析方式: {source_text}\n"
         if skin_result.skin_score is None:
-            report += "本次未获得有效肤质结果，请稍后重试。\n"
+            report += f"{skin_result.error or '本次未获得有效肤质结果，请稍后重试。'}\n"
         else:
             report += f"皮肤类型: {skin_result.skin_type_name}\n"
-            report += f"肤质评分: {skin_result.skin_score:.0f}/100\n"
+            report += (
+                f"{skin_result.score_label or '日常肤质状态分（系统换算）'}: "
+                f"{skin_result.skin_score:.0f}/100\n"
+            )
 
         if skin_result.skin_score is None:
             pass
         elif skin_result.issues:
             report += f"存在问题: {', '.join(skin_result.issues)}\n"
             report += "\n【护理建议】\n"
-            for i, suggestion in enumerate(ai_suggestions[:3], 1):
-                report += f"{i}. {suggestion}\n"
+            if ai_suggestions:
+                for i, suggestion in enumerate(ai_suggestions[:3], 1):
+                    report += f"{i}. {suggestion}\n"
+            else:
+                report += f"{suggestions_error or '个性化护理建议暂未生成。'}\n"
         else:
-            report += "皮肤状态良好，继续保持！\n"
+            report += "Face++ 本次未标记明显问题，继续保持日常基础护理。\n"
 
-        db.add(Conversation(user_id=user.id, role=RoleEnum.system, content=report))
+        db.add(
+            Conversation(
+                user_id=user.id,
+                role=RoleEnum.system,
+                content=report,
+                extra_metadata={
+                    "message_type": "skin_analysis",
+                    "skin_analysis": {
+                        "source": skin_result.source,
+                        "source_display": source_text,
+                        "skin_type_name": skin_result.skin_type_name,
+                        "skin_score": skin_result.skin_score,
+                        "score_origin": skin_result.score_origin,
+                        "score_label": skin_result.score_label,
+                        "field_coverage": skin_result.field_coverage,
+                        "issues": list(skin_result.issues),
+                        "suggestions": list(ai_suggestions),
+                        "suggestions_error": suggestions_error,
+                        "cached": skin_result.cached,
+                        "error": skin_result.error,
+                        "photo_retained": False,
+                    },
+                },
+            )
+        )
         await db.flush()
         return {
             "source": skin_result.source,
@@ -413,12 +446,16 @@ async def skin_analyze(
             "skin_score": skin_result.skin_score,
             "issues": skin_result.issues,
             "suggestions": ai_suggestions,
+            "suggestions_error": suggestions_error,
             "report": report,
             "photo_url": None,
             "photo_retained": False,
             "photo_quality": saved.quality,
             "cached": skin_result.cached,
             "error": skin_result.error,
+            "score_origin": skin_result.score_origin,
+            "score_label": skin_result.score_label,
+            "field_coverage": skin_result.field_coverage,
         }
     finally:
         await delete_saved_image(saved.path)
@@ -564,6 +601,9 @@ async def evaluate(
                 "skin_analysis": {
                     "skin_type_name": skin_analysis.get("skin_type_name"),
                     "skin_score": skin_analysis.get("skin_score"),
+                    "score_origin": skin_analysis.get("score_origin"),
+                    "score_label": skin_analysis.get("score_label"),
+                    "field_coverage": skin_analysis.get("field_coverage"),
                     "issues": list(skin_analysis.get("issues") or []),
                     "source": skin_analysis.get("source"),
                 }

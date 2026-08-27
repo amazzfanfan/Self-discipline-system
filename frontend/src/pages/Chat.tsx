@@ -59,8 +59,10 @@ function getRun(message: ChatMessage): AgentRunMetadata | undefined {
 function isInsightMessage(message: ChatMessage): boolean {
   return message.metadata?.message_type === 'profile_assessment'
     || message.metadata?.message_type === 'daily_tasks'
+    || message.metadata?.message_type === 'skin_analysis'
     || message.content.includes('【状态基线】')
-    || message.content.includes('今日任务已发布');
+    || message.content.includes('今日任务已发布')
+    || message.content.includes('【肤质分析报告】');
 }
 
 function PendingActionCard({ action }: { action: PendingAction }) {
@@ -312,11 +314,28 @@ export default function Chat() {
     try {
       const formData = new FormData();
       formData.append('file', file);
-      const response = await api.post<{ source_display: string }>('/users/me/skin-analyze', formData, {
+      const response = await api.post<{
+        source: string;
+        source_display: string;
+        error?: string | null;
+      }>('/users/me/skin-analyze', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
       setAnalysisSource(response.data.source_display);
       await queryClient.invalidateQueries({ queryKey: ['chat-history'] });
+      addNotification({
+        type: response.data.source === 'faceplusplus' ? 'success' : 'warning',
+        title: response.data.source === 'faceplusplus' ? '肤质观察已完成' : '肤质结果暂不可用',
+        message: response.data.source === 'faceplusplus'
+          ? 'Face++ 结果已生成，原始照片已经删除。'
+          : response.data.error || '请换一张清晰、光线均匀的正脸照片后重试。',
+      });
+    } catch {
+      addNotification({
+        type: 'error',
+        title: '肤质分析未完成',
+        message: '照片已安全处理，但分析服务暂时不可用，请稍后重试。',
+      });
     } finally {
       setIsAnalyzing(false);
       setAnalysisSource('');
@@ -486,14 +505,21 @@ export default function Chat() {
             }} />
             <motion.button
               type="button"
-              whileHover={{ scale: 1.06 }}
-              whileTap={{ scale: 0.94 }}
+              whileHover={{ y: -1, scale: 1.015 }}
+              whileTap={{ scale: 0.97 }}
               onClick={() => fileInputRef.current?.click()}
               disabled={isThinking || Boolean(streamingMsg) || isAnalyzing}
-              className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl text-slate-500 transition-colors hover:bg-emerald-400/10 hover:text-emerald-300 disabled:opacity-40"
-              title="上传肤质照片"
+              className="group relative flex h-10 flex-shrink-0 items-center gap-2 overflow-hidden rounded-2xl border border-emerald-300/20 bg-gradient-to-br from-emerald-400/[0.14] to-cyan-400/[0.07] px-3 text-emerald-100 shadow-[0_0_24px_rgba(52,211,153,.08)] transition-colors hover:border-emerald-300/35 hover:from-emerald-400/[0.2] hover:to-cyan-400/[0.1] disabled:opacity-40"
+              title="上传正脸照片，使用 Face++ 进行肤质观察"
+              aria-label="上传照片分析肤质"
             >
-              ◎
+              <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4 fill-none stroke-current" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M4 8.5h3l1.4-2h7.2l1.4 2h3v9.5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z" />
+                <circle cx="12" cy="13.5" r="3.25" />
+                <path d="M19 5v3M17.5 6.5h3" />
+              </svg>
+              <span className="hidden whitespace-nowrap text-[11px] font-medium sm:inline">上传照片分析肤质</span>
+              <span className="whitespace-nowrap text-[10px] font-medium sm:hidden">肤质</span>
             </motion.button>
             <textarea
               value={input}
@@ -532,7 +558,10 @@ export default function Chat() {
               </motion.button>
             )}
           </div>
-          <p className="mt-2 text-center text-[9px] tracking-wide text-slate-700">写操作受 Schema 校验与安全策略保护 · 跳过任务需要明确确认</p>
+          <div className="mt-2 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-center text-[9px] tracking-wide text-slate-700">
+            <span className="text-emerald-300/55">上传清晰正脸照进行 Face++ 日常肤质观察 · 原图分析后删除</span>
+            <span>写操作受 Schema 校验与安全策略保护 · 跳过任务需要明确确认</span>
+          </div>
         </div>
       </div>
     </div>

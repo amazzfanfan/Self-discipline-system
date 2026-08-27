@@ -28,7 +28,11 @@ from app.services.upload_service import sha256_file
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
-PIPELINE_VERSION = "faceplusplus-skin-v1"
+PIPELINE_VERSION = "faceplusplus-skin-v2"
+SCORE_ORIGIN = "system_rule_v2"
+SCORE_LABEL = "日常肤质状态分（系统换算）"
+SKIN_SUGGESTION_MAX_TOKENS = 600
+SKIN_SUGGESTION_RETRY_MAX_TOKENS = 800
 
 
 @dataclass
@@ -75,6 +79,10 @@ class SkinAnalysisResult:
     image_hash: str | None = None
     cached: bool = False
     error: str | None = None
+    score_origin: str | None = None
+    score_label: str | None = None
+    field_coverage: dict[str, object] | None = None
+    suggestions_error: str | None = None
 
 
 # 皮肤类型映射
@@ -103,6 +111,50 @@ ISSUE_MAP = {
     "pores_right_cheek": "右脸颊毛孔粗大",
     "pores_jaw": "下巴毛孔粗大",
 }
+
+SCORED_SIGNAL_FIELDS = (
+    "forehead_wrinkle",
+    "nasolabial_fold",
+    "crows_feet",
+    "glabella_wrinkle",
+    "eye_finelines",
+    "dark_circle",
+    "eye_pouch",
+    "acne",
+    "blackhead",
+    "skin_spot",
+    "pores_forehead",
+    "pores_left_cheek",
+    "pores_right_cheek",
+    "pores_jaw",
+)
+
+
+def _faceplus_field_coverage(result: dict) -> dict[str, object]:
+    """Validate every provider field used by the local score.
+
+    A non-empty Face++ result is not automatically a complete result. Treating
+    omitted metrics as zero would turn schema drift or partial responses into a
+    misleading perfect score.
+    """
+    missing: list[str] = []
+    skin_type = result.get("skin_type")
+    if not (
+        isinstance(skin_type, dict)
+        and skin_type.get("skin_type") in SKIN_TYPE_MAP
+    ):
+        missing.append("skin_type")
+    for field in SCORED_SIGNAL_FIELDS:
+        payload = result.get(field)
+        if not isinstance(payload, dict) or payload.get("value") not in (0, 1):
+            missing.append(field)
+    expected = len(SCORED_SIGNAL_FIELDS) + 1
+    return {
+        "present": expected - len(missing),
+        "expected": expected,
+        "complete": not missing,
+        "missing": missing,
+    }
 
 def _calculate_skin_score(result: dict) -> tuple[float, list[str]]:
     """计算肤质综合评分，返回 (评分, 问题列表)
@@ -194,6 +246,15 @@ async def _call_faceplus_api(image_path: str, image_hash: str) -> Optional[SkinA
             if not result:
                 logger.warning("Face++ API returned an empty result")
                 return None
+
+            coverage = _faceplus_field_coverage(result)
+            if not coverage["complete"]:
+                await increment_metric("external:faceplus:incomplete")
+                logger.warning(
+                    "Face++ API returned an incomplete result: missing=%s",
+                    coverage["missing"],
+                )
+                return _get_incomplete_result(result, image_hash, coverage)
             
             # 计算综合评分（建议由AI后续动态生成）
             skin_score, issues = _calculate_skin_score(result)
@@ -226,6 +287,9 @@ async def _call_faceplus_api(image_path: str, image_hash: str) -> Optional[SkinA
                 issues=issues,
                 suggestions=[],  # 建议由AI后续动态生成
                 image_hash=image_hash,
+                score_origin=SCORE_ORIGIN,
+                score_label=SCORE_LABEL,
+                field_coverage=coverage,
             )
     except Exception as e:
         await increment_metric("external:faceplus:error")
@@ -264,6 +328,31 @@ def _get_unavailable_result(image_hash: str, error: str) -> SkinAnalysisResult:
     )
 
 
+def _get_incomplete_result(
+    raw_result: dict,
+    image_hash: str,
+    coverage: dict[str, object],
+) -> SkinAnalysisResult:
+    """Preserve provider provenance without inventing a score."""
+    raw_skin_type = raw_result.get("skin_type")
+    skin_type = (
+        raw_skin_type.get("skin_type")
+        if isinstance(raw_skin_type, dict)
+        and raw_skin_type.get("skin_type") in SKIN_TYPE_MAP
+        else 2
+    )
+    result = _get_unavailable_result(
+        image_hash,
+        "Face++ 返回字段不完整，本次未生成状态分",
+    )
+    result.source = "faceplusplus_incomplete"
+    result.skin_type = skin_type
+    result.skin_type_name = SKIN_TYPE_MAP.get(skin_type, "暂未确认")
+    result.field_coverage = coverage
+    result.score_label = SCORE_LABEL
+    return result
+
+
 async def analyze_skin(image_path: str, image_hash: str | None = None) -> SkinAnalysisResult:
     """
     分析图片中的肤质
@@ -283,7 +372,8 @@ async def analyze_skin(image_path: str, image_hash: str | None = None) -> SkinAn
 
     result = await _call_faceplus_api(image_path, digest)
     if result:
-        await set_cached_skin_analysis(digest, PIPELINE_VERSION, asdict(result))
+        if result.source == "faceplusplus":
+            await set_cached_skin_analysis(digest, PIPELINE_VERSION, asdict(result))
         return result
     return _get_unavailable_result(digest, "Face++ 服务暂时不可用")
 
@@ -292,6 +382,7 @@ def get_source_display(source: str) -> str:
     """获取分析来源的显示文本"""
     source_map = {
         "faceplusplus": "外部API (face++)",
+        "faceplusplus_incomplete": "Face++ 返回结果不完整",
         "unavailable": "暂未获得有效结果",
     }
     return source_map.get(source, source)
@@ -313,22 +404,47 @@ async def generate_ai_suggestions(
         AI生成的护理建议列表
     """
     issues_str = "、".join(issues) if issues else "未检测到明显问题"
+    suggestion_limit = min(3, max(1, len(issues)))
     prompt = prompt_service.build_skin_suggestion_prompt(
         skin_type_name,
         issues_str,
         skincare_constraints_text(constraints),
         task_constraints_text(task_constraints),
+        suggestion_limit,
     )
 
     content = await chat_completion_with_fallback(
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=240,
+        temperature=0,
+        max_tokens=SKIN_SUGGESTION_MAX_TOKENS,
         response_format={"type": "json_object"},
         enable_thinking=False,
         num_retries=0,
         timeout=20,
     )
-    parsed = json.loads(content)
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError as exc:
+        await increment_metric("ai:skin_suggestions:json_retry")
+        logger.warning(
+            "AI skin suggestion JSON was incomplete; retrying once: %s",
+            exc,
+        )
+        retry_prompt = (
+            f"{prompt}\n\n"
+            "上一次响应不是完整JSON。请重新生成更精简的完整JSON；"
+            "不要重复说明，不要使用Markdown，并确保所有字符串、数组和对象正确闭合。"
+        )
+        content = await chat_completion_with_fallback(
+            messages=[{"role": "user", "content": retry_prompt}],
+            temperature=0,
+            max_tokens=SKIN_SUGGESTION_RETRY_MAX_TOKENS,
+            response_format={"type": "json_object"},
+            enable_thinking=False,
+            num_retries=0,
+            timeout=20,
+        )
+        parsed = json.loads(content)
     if not isinstance(parsed, dict):
         raise RuntimeError("AI skin suggestion response is not a JSON object")
     cleaned = validate_skin_suggestions(parsed.get("suggestions"), constraints)
@@ -337,6 +453,34 @@ async def generate_ai_suggestions(
         raise RuntimeError("AI skin suggestions require unavailable user resources")
     logger.info("AI skin suggestions generated: count=%s", len(cleaned[:3]))
     return cleaned[:3]
+
+
+async def generate_ai_suggestions_safely(
+    issues: list[str],
+    skin_type_name: str,
+    constraints: dict | None = None,
+    task_constraints: dict | None = None,
+) -> tuple[list[str], str | None]:
+    """Generate optional advice without invalidating Face++ evidence.
+
+    No issue means there is nothing to advise on, so no model call is needed.
+    Model, JSON, or safety-validation failures are reported separately while
+    the provider analysis remains usable.
+    """
+    if not issues:
+        return [], None
+    try:
+        suggestions = await generate_ai_suggestions(
+            issues,
+            skin_type_name,
+            constraints,
+            task_constraints,
+        )
+        return suggestions, None
+    except Exception as exc:
+        await increment_metric("ai:skin_suggestions:error")
+        logger.warning("AI skin suggestions unavailable: %s", exc)
+        return [], "AI 个性化护理建议暂时不可用，肤质观察结果仍然有效"
 
 
 async def generate_skin_task_ai(
