@@ -1,14 +1,29 @@
-# 系统 (System Agent)
+# System Agent · AI 自律成长系统
 
-> AI驱动的自律成长系统，灵感来源于小说中的成长系统
+> 将个人状态、成长目标和每天的真实行动连接起来，让 AI 不只给建议，还能在授权范围内执行任务管理、记录与追踪。
 
-[![Version](https://img.shields.io/badge/version-v9.0-blue.svg)](https://github.com/amazzfanfan/Self-discipline-system/releases)
-[![Python](https://img.shields.io/badge/python-3.11+-green.svg)](https://www.python.org/)
-[![License](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=061A23)](https://react.dev/)
+[![License](https://img.shields.io/badge/License-MIT-F4C430)](LICENSE)
 
-## ✨ 项目介绍
+## 项目简介
 
-**系统**是一个帮助用户提升自律能力的 Agent 应用。它不只生成文本，而是根据用户请求自主规划下一步，在受控工具集中查询任务、记录体重、完成打卡、管理目标和检索长期记忆，并把每一步执行过程实时展示给用户。
+System Agent 是一个面向个人成长场景的全栈 Agent 应用。系统通过结构化问卷建立可复现的四维状态基线，结合成长目标、动态用户画像、近期执行反馈和 Face++ 肤质观察，由 Qwen 生成每日行动计划；用户还可以直接在对话中查询、创建、修改并完成任务或目标。
+
+与普通聊天助手不同，系统中的状态变更必须经过 Schema 校验工具并真实写入数据库，模型回复不能代替执行结果。前端会实时展示 Planner、Tool、Observation、确认检查点和耗时，便于验证 Agent 到底做了什么。
+
+### 核心闭环
+
+```mermaid
+flowchart LR
+    A[注册与结构化评估] --> B[状态基线与动态画像]
+    B --> C[成长目标 + 今日 Check-in]
+    C --> D[AI 生成每日任务]
+    D --> E[对话或任务页执行]
+    E --> F[完成率、目标进度与趋势]
+    F --> C
+```
 
 ### 核心理念
 
@@ -19,7 +34,7 @@
 - **可控执行**：写操作经过意图校验，负向操作要求显式确认
 - **过程可见**：前端实时展示 Plan、Tool、Observation、护栏和耗时
 
-## 🧠 Agent 架构
+## Agent 架构
 
 ```mermaid
 flowchart LR
@@ -34,40 +49,71 @@ flowchart LR
     O -.trace.-> UI
 ```
 
-- Planner 每轮只选择一个动作，单次请求最多 4 步，并阻止重复工具调用。
+- 单次请求可在最多 4 步内连续规划和调用多个工具，并阻止无意义的重复调用；当前采用单 Agent 受控工作流，不依赖多 Agent 编排。
 - 工具参数由 Pydantic schema 校验；完成任务、记录体重、创建目标都有明确意图护栏，跳过任务必须二次确认。
 - 记忆、工具结果和用户资料以“不可信数据区”进入上下文，不能覆盖系统指令，降低持久化 Prompt Injection 风险。
 - SSE 同时传输执行 trace、回复 token 和运行指标；对话记录保存 `run_id`、trace 与 metrics，便于复盘。
-- 主模型失败时支持可配置 fallback；无模型可用时，关键动作仍有确定性规则兜底。
+- 数据查询和状态写入由确定性工具完成；护理建议与每日任务等生成式内容仍由模型生成，模型不可用时会明确提示失败，不以静态模板伪装 AI 结果。
 
-## 📸 项目截图
+## 产品预览
 
-### 身体数据采集
+### 仪表盘
+
+四维基线、今日完成度、行为成长动量与 30 秒 Check-in 汇聚在同一入口。
+
 <p align="center">
-  <img src="docs/screenshots/onboarding.png" width="700" alt="身体数据采集引导页"/>
+  <img src="docs/screenshots/dashboard-overview.png" width="100%" alt="System Agent 主仪表盘" />
 </p>
 
-### 主仪表盘
+### 注册建档与结构化评估
+
+基础资料只用于建档和追踪；头像用于界面展示，正面肖像仅用于 Face++ 日常肤质观察；行为评分来自结构化问卷和固定版本规则。
+
+| 基础资料 | 可选照片 | 四维问卷 |
+| --- | --- | --- |
+| <img src="docs/screenshots/onboarding-basic.png" alt="基础资料录入" /> | <img src="docs/screenshots/onboarding-photo.png" alt="头像与正面肖像上传" /> | <img src="docs/screenshots/onboarding-questionnaire.png" alt="结构化状态问卷" /> |
+
+### 可执行 Agent 对话
+
+Agent 能发布每日任务、识别用户意图并调用工具；执行轨迹清晰展示规划、参数、Observation 和后端耗时。
+
 <p align="center">
-  <img src="docs/screenshots/dashboard.png" width="700" alt="主仪表盘 - 四维评分、今日任务、趋势图表"/>
+  <img src="docs/screenshots/chat-daily-missions.png" width="100%" alt="Agent 发布每日任务并完成打卡" />
 </p>
 
-### AI 对话系统
 <p align="center">
-  <img src="docs/screenshots/chat.png" width="700" alt="系统对话 - 意图识别、任务完成、流式响应"/>
+  <img src="docs/screenshots/chat-agent-trace.png" width="100%" alt="可展开的 Agent 工具执行轨迹" />
 </p>
 
-### 肤质分析
+### 任务—目标—趋势闭环
+
+任务支持完成、撤销完成、难度反馈、暂缓、改期、跳过和替换；成长目标会参与后续任务生成，执行结果同步到目标进度与趋势分析。
+
 <p align="center">
-  <img src="docs/screenshots/skin-analysis.png" width="700" alt="肤质分析 - face++ API 集成"/>
+  <img src="docs/screenshots/tasks-adaptive-schedule.png" width="100%" alt="带自适应依据的任务列表" />
 </p>
 
-### 任务列表
 <p align="center">
-  <img src="docs/screenshots/task-list.png" width="700" alt="任务列表 - 按维度筛选、完成状态"/>
+  <img src="docs/screenshots/growth-goals.png" width="100%" alt="成长目标与周期执行进度" />
 </p>
 
-## 🚀 功能特点
+<p align="center">
+  <img src="docs/screenshots/trends-and-weight.png" width="100%" alt="状态基线、行为趋势与体重记录" />
+</p>
+
+### 画像、约束与隐私控制
+
+用户可以维护身体数据、护理安全限制和任务可执行条件，并控制长期记忆、提醒方式、免打扰时段和个人数据。
+
+<p align="center">
+  <img src="docs/screenshots/profile-and-constraints.png" width="100%" alt="个人画像、护理安全限制与任务约束" />
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/settings-and-privacy.png" width="100%" alt="计划偏好、提醒、长期记忆与隐私设置" />
+</p>
+
+## 功能全景
 
 ### 四大成长维度
 
@@ -78,13 +124,16 @@ flowchart LR
 | 😴 睡眠 | 睡眠时长、规律性、醒后状态 | 结构化问卷 + 固定规则 |
 | ✨ 形象管理 | 清洁护肤、防晒、仪容整理 | 结构化问卷 + Face++ 独立观察 |
 
-### 🤖 AI对话系统
+### 🤖 AI 对话与上下文工程
 
 - **Agent Runtime**：Plan → Tool → Observation 的迭代执行循环
-- **受控工具集**：任务、评分、体重、目标进度、资源约束与长期记忆
+- **受控多工具工作流**：同一请求内可组合任务、评分、体重、目标进度、资源约束与记忆工具
 - **安全护栏**：危险操作确认、参数校验、最大步数和重复调用阻断
 - **可观测流式响应**：SSE 实时输出 trace、正文与运行指标
-- **长期记忆**：向量召回、重要性衰减、语义重排、缓存隔离与删除能力
+- **短期上下文**：保留近期多轮对话，并通过滚动摘要压缩过长会话
+- **长期记忆**：远程 Embedding + pgvector 召回，结合重要性衰减、语义重排、缓存隔离与可删除能力
+- **按需上下文组装**：只注入与当前问题相关的动态画像、活跃目标、未完成事项和长期记忆，控制 Token 消耗
+- **事实优先回复**：模型根据工具 Observation 组织自然语言，不直接复制内部存储文本，也不会把疑问句误存为用户事实
 
 ### 📋 任务系统
 
@@ -104,6 +153,13 @@ flowchart LR
 - **周报联动**：上周复盘汇总各目标计划次数与实际完成次数
 - **AI 续接**：下一轮任务生成会读取本周和累计目标进度，避免只看目标文本
 
+### 👤 动态用户画像与记录
+
+- **结构化画像**：汇总身体数据、偏好、可用资源、禁忌和任务约束，并记录来源与更新时间
+- **体重闭环**：支持在对话或趋势页记录体重，自动同步个人画像、趋势统计与体重类目标
+- **用户可控**：头像、身体数据、护理限制和任务条件均可在个人画像页查看或修改
+- **记忆分层**：普通聊天记录、滚动摘要、结构化画像和长期语义记忆分别存储，避免概念混用
+
 ### 📊 评分系统
 
 - **多维度评分**：四个维度独立评分（0-100分）
@@ -114,7 +170,7 @@ flowchart LR
 - **无惩罚调整**：延后或未完成不会改变画像基线，任务会根据反馈自适应
 - **评估复用**：按输入哈希复用评估记录，避免重复和漂移
 
-### 🔍 肤质分析（v4.0新增）
+### 🔍 肤质分析
 
 - **face++ API集成**：使用旷视科技专业肤质分析API
 - **单一视觉来源**：肤质观察只使用 Face++，不可用时明确返回不可用状态
@@ -123,6 +179,15 @@ flowchart LR
 - **聊天界面分析**：支持在对话中上传照片进行肤质分析
 - **明确不可用状态**：Face++ 失败时不再伪造默认分数，也不会切换随机视觉模型
 - **多维度检测**：黑眼圈、痘痘、毛孔、皱纹等14项指标
+
+### 🛡️ 并发、安全与可观测性
+
+- **同用户串行**：同一用户的 Agent 请求互斥执行，避免并发写入造成任务或目标状态错乱
+- **AI 并发闸门**：Redis 分布式并发控制、过载快速失败和受控 Worker 并发
+- **双层限流**：同时支持用户级和可信代理后的真实 IP 限流
+- **成本保护**：单用户与全站每日 Token 预算、模型超时和失败降级策略
+- **应用安全**：Argon2 密码哈希、HttpOnly Refresh Cookie、会话轮换、安全响应头和图片 EXIF 清理
+- **运行观测**：健康/就绪探针、Agent Run/Step 审计、HTTP 延迟、限流、AI 并发、Token 与队列积压指标
 
 ## 🛠️ 技术栈
 
@@ -199,7 +264,9 @@ Self-discipline-system/
 - **PostgreSQL** 14+
 - **Redis** 7+
 
-本项目默认不使用 Docker：Redis 与 PostgreSQL 在本机运行，Embedding 和聊天模型通过远程 API 调用。PostgreSQL 需要启用 `vector` 扩展；Alembic 首次迁移会执行 `CREATE EXTENSION IF NOT EXISTS vector`。HNSW 不可用时会自动继续使用精确向量检索。
+聊天与 Embedding 均通过阿里云百炼远程 API 调用，不会在本地下载或运行向量模型。PostgreSQL 需要启用 `vector` 扩展；Alembic 首次迁移会执行 `CREATE EXTENSION IF NOT EXISTS vector`，HNSW 不可用时自动继续使用精确向量检索。
+
+Redis 与 PostgreSQL 可以直接安装在本机，也可以使用仓库中的 `docker-compose.yml` 启动。前后端既支持本机开发模式，也支持完整 Docker Compose 编排。
 
 ### 快速开始
 
@@ -210,7 +277,19 @@ git clone https://github.com/amazzfanfan/Self-discipline-system.git
 cd Self-discipline-system
 ```
 
-#### 2. 后端配置
+#### 2. 准备 PostgreSQL 与 Redis
+
+任选一种方式：
+
+```bash
+# 方式 A：使用 Docker 只启动基础设施
+docker compose up -d postgres redis
+
+# 方式 B：直接使用本机 PostgreSQL 14+ 和 Redis 7+
+# 请确保二者已启动，并按实际账号修改 backend/.env
+```
+
+#### 3. 后端配置
 
 ```bash
 cd backend
@@ -250,7 +329,7 @@ python -m scripts.worker
 python -m scripts.scheduler
 ```
 
-#### 3. 前端配置
+#### 4. 前端配置
 
 ```bash
 cd frontend
@@ -262,10 +341,12 @@ npm install
 npm run dev
 ```
 
-#### 4. 访问应用
+#### 5. 访问应用
 
 - 前端：http://localhost:5174
 - 后端API文档：http://localhost:8000/docs
+
+如需完全使用 Docker，可在根目录配置环境变量后运行 `docker compose up --build`，前端访问地址为 http://localhost:3000。
 
 ### 环境变量说明
 
@@ -381,8 +462,7 @@ python -m scripts.ai_gate_probe --requests 12 --concurrency 12
 登录后，系统会引导你完成初始评估：
 - 输入身高、体重、年龄、性别
 - 所有用户都完成四组结构化状态问题
-- 上传照片（可选；正面肖像仅用于 Face++ 肤质观察）
-- 全身照片只作为成长对比素材，不参与初始评分
+- 上传头像和正面肖像（可选；头像仅用于展示，正面肖像仅用于 Face++ 肤质观察）
 
 ### 3. 查看每日任务
 
@@ -423,45 +503,6 @@ python -m scripts.ai_gate_probe --requests 12 --concurrency 12
 3. 提交更改：`git commit -m 'Add some feature'`
 4. 推送到分支：`git push origin feature/your-feature`
 5. 提交 Pull Request
-
-## 📝 版本历史
-
-### v9.0 (2026-08-09)
-- 🔐 私有图片鉴权、EXIF 清理、Argon2、HttpOnly refresh Cookie 与会话轮换
-- 📈 将画像基线、行为完成率和成长动量解耦，增加每日 Check-in 与周复盘
-- 🎯 增加任务预算、难度反馈、无惩罚延后和可量化目标
-- 🧾 持久化 Agent Run/Step、待审批动作、Token/成本指标和 Redis Stream Worker
-- 🧠 增加中文 n-gram 降级检索、可控记忆、数据导出和账号删除
-- 🧪 增加 Agent 安全评测集、前端单测和 Playwright E2E
-
-### v8.0 (2026-08-09)
-- ♻️ 将单轮意图分发重做为可迭代 Agent Runtime
-- 🛡️ 增加工具 schema、危险操作确认、重复调用与 Prompt Injection 护栏
-- 🔭 增加实时执行 trace、运行指标和持久化审计数据
-- 🧠 修复记忆相似度方向、缓存键隔离，并加入衰减重排
-- 🎨 重做对话页，加入动态背景、微交互、执行时间线与页面转场
-- ⚙️ 增加路由懒加载、CI、健康检查、幂等任务生成和可运行 Docker 编排
-
-### v4.0 (2026-05-10)
-- ✨ 集成face++旷视肤质分析API
-- ✨ 初版 Face++ 肤质分析（后续版本已移除随机视觉兜底）
-- ✨ 聊天界面肤质分析功能
-- 🎨 统一markdown格式显示
-- 🐛 修复时区问题（使用北京时间）
-- 🐛 优化任务列表UI
-
-### v3.0 (2026-05-10)
-- 🐛 修复AI四维评分功能
-- 🐛 修复照片分析功能
-- ✨ 添加socksio代理支持
-
-### v2.0
-- ✨ AI四维评分功能
-- ✨ 问卷评估系统
-- ✨ 任务生成系统
-
-### v1.0
-- 🎉 初始版本发布
 
 ## 📄 许可证
 
