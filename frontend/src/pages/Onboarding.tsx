@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import { useNotification } from '../components/notification-context';
 import api from '../services/api';
 
-type PhotoType = 'avatar' | 'portrait' | 'front' | 'side';
+type PhotoType = 'avatar' | 'portrait';
 type EvalStage = 'upload' | 'assess' | 'done';
 
 interface QuestionOption {
@@ -262,14 +262,10 @@ export default function Onboarding() {
   const [photos, setPhotos] = useState<Record<PhotoType, File | null>>({
     avatar: null,
     portrait: null,
-    front: null,
-    side: null,
   });
   const [previews, setPreviews] = useState<Record<PhotoType, string>>({
     avatar: '',
     portrait: '',
-    front: '',
-    side: '',
   });
   const [evaluating, setEvaluating] = useState(false);
   const [evalStage, setEvalStage] = useState<EvalStage>('upload');
@@ -277,8 +273,6 @@ export default function Onboarding() {
 
   const avatarInputRef = useRef<HTMLInputElement>(null);
   const portraitInputRef = useRef<HTMLInputElement>(null);
-  const frontInputRef = useRef<HTMLInputElement>(null);
-  const sideInputRef = useRef<HTMLInputElement>(null);
 
   const bmi = useMemo(() => {
     const heightValue = Number(height);
@@ -316,8 +310,6 @@ export default function Onboarding() {
         const formData = new FormData();
         if (photos.avatar) formData.append('avatar', photos.avatar);
         if (photos.portrait) formData.append('portrait_photo', photos.portrait);
-        if (photos.front) formData.append('front_photo', photos.front);
-        if (photos.side) formData.append('side_photo', photos.side);
         const uploadResponse = await api.post('/users/me/photos/upload', formData, {
           headers: { 'Content-Type': 'multipart/form-data' },
         });
@@ -543,12 +535,10 @@ export default function Onboarding() {
     <motion.div key="photos" initial={{ opacity: 0, x: 30 }} animate={{ opacity: 1, x: 0 }}>
       <p className="text-xs font-medium uppercase tracking-[0.2em] text-cyan-300/60">02 · Optional photo</p>
       <h2 className="mt-2 text-2xl font-semibold text-white">照片资料</h2>
-      <p className="mt-2 text-sm leading-6 text-slate-400">正面肖像用于 Face++ 肤质观察；全身照片仅作为日后成长对比素材，不参与初始评分。</p>
+      <p className="mt-2 text-sm leading-6 text-slate-400">头像仅用于账号展示；正面肖像用于 Face++ 肤质观察，两者都不参与四项行为评分。</p>
       <div className="mt-6 grid grid-cols-2 gap-4">
         <PhotoSlot label="头像" description="仅用于账号展示" preview={previews.avatar} onUpload={(file) => selectPhoto(file, 'avatar')} onRemove={() => removePhoto('avatar')} inputRef={avatarInputRef} />
         <PhotoSlot label="正面肖像" description="Face++ 肤质观察" preview={previews.portrait} onUpload={(file) => selectPhoto(file, 'portrait')} onRemove={() => removePhoto('portrait')} inputRef={portraitInputRef} />
-        <PhotoSlot label="正面全身" description="成长对比，不参与评分" preview={previews.front} onUpload={(file) => selectPhoto(file, 'front')} onRemove={() => removePhoto('front')} inputRef={frontInputRef} />
-        <PhotoSlot label="侧面全身" description="成长对比，不参与评分" preview={previews.side} onUpload={(file) => selectPhoto(file, 'side')} onRemove={() => removePhoto('side')} inputRef={sideInputRef} />
       </div>
       <div className="mt-6 flex gap-3">
         <button onClick={() => setStep(1)} className="flex-1 rounded-xl bg-slate-800 py-3 text-sm text-slate-300 transition hover:bg-slate-700">返回</button>
@@ -644,7 +634,7 @@ export default function Onboarding() {
       </div>
       <div className="mt-4 rounded-2xl border border-cyan-400/15 bg-cyan-400/5 p-4 text-sm leading-6 text-slate-400">
         <p className="font-medium text-cyan-200">本次评估如何工作</p>
-        <p className="mt-1">四项分数只由问卷规则计算；{photos.portrait || photos.front ? 'Face++ 会额外生成独立肤质观察。' : '你没有上传面部照片，本次不会调用 Face++。'}</p>
+        <p className="mt-1">四项分数只由问卷规则计算；{photos.portrait ? 'Face++ 会额外生成独立肤质观察。' : '你没有上传正面肖像，本次不会调用 Face++。'}</p>
       </div>
       {evalError && <p className="mt-4 rounded-xl bg-rose-500/10 px-4 py-3 text-sm text-rose-300">{evalError}</p>}
       <div className="mt-6 flex gap-3">

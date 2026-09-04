@@ -294,8 +294,6 @@ async def upload_photos(
     request: Request,
     avatar: UploadFile | None = File(None),
     portrait_photo: UploadFile | None = File(None),
-    front_photo: UploadFile | None = File(None),
-    side_photo: UploadFile | None = File(None),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db, scope="function"),
 ):
@@ -328,24 +326,6 @@ async def upload_photos(
         profile.portrait_photo_url = saved.url
         uploaded["portrait_photo_url"] = profile.portrait_photo_url
         uploaded["portrait_quality"] = saved.quality
-        await delete_saved_image(previous)
-    
-    # 保存正面图
-    if front_photo:
-        previous = profile.front_photo_url
-        saved = await save_image_upload(front_photo, f"{user_id}_front")
-        profile.front_photo_url = saved.url
-        uploaded["front_photo_url"] = profile.front_photo_url
-        uploaded["front_quality"] = saved.quality
-        await delete_saved_image(previous)
-    
-    # 保存侧面图
-    if side_photo:
-        previous = profile.side_photo_url
-        saved = await save_image_upload(side_photo, f"{user_id}_side")
-        profile.side_photo_url = saved.url
-        uploaded["side_photo_url"] = profile.side_photo_url
-        uploaded["side_quality"] = saved.quality
         await delete_saved_image(previous)
     
     await db.flush()
@@ -492,7 +472,7 @@ async def evaluate(
     skin_analysis = profile.skin_analysis if isinstance(profile.skin_analysis, dict) else None
     skin_source = "none"
     photo_hash = None
-    photo_for_skin = profile.portrait_photo_url or profile.front_photo_url
+    photo_for_skin = profile.portrait_photo_url
     if photo_for_skin:
         try:
             photo_path = resolve_image_path(photo_for_skin)

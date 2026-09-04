@@ -6,6 +6,7 @@ from fastapi import HTTPException, UploadFile
 from starlette.datastructures import Headers
 from PIL import Image
 
+from app.main import app
 from app.services import upload_service
 
 
@@ -53,3 +54,14 @@ def test_save_image_rejects_unsupported_declared_type():
         asyncio.run(upload_service.save_image_upload(upload, "user"))
 
     assert exc_info.value.status_code == 415
+
+
+def test_onboarding_upload_contract_excludes_full_body_photos():
+    schema = app.openapi()
+    request_schema = schema["paths"]["/api/users/me/photos/upload"]["post"][
+        "requestBody"
+    ]["content"]["multipart/form-data"]["schema"]
+    component_name = request_schema["$ref"].rsplit("/", 1)[-1]
+    properties = schema["components"]["schemas"][component_name]["properties"]
+
+    assert set(properties) == {"avatar", "portrait_photo"}
